@@ -101,9 +101,10 @@ expanded to the RGB24 plane), and `jpeg_quality`/`compress_level` (false or 0..9
 Encodings.order appends as the Tight pseudo-encodings -32+q and -256+l - only when `enable_tight`
 is on, since without Tight no server reads them. Servers only send Tight JPEG at 32 bpp, so JPEG
 quality does nothing at 16/8-bit. normalise() resets anything else to the default (24 / false).
-A change applies on the next connection only, and the menu says so (entry text, long-press help,
-and a short notice when it is changed while connected): a live SetPixelFormat would race updates
-already in flight in the old format, and the client cannot tell those apart from the new ones.
+A change to any of these (or to the menu's Tight toggle) applies on the next connection only,
+and the menu says so (entry text, long-press help, and a short notice when it is changed while
+connected): a live SetPixelFormat would race updates already in flight in the old format, and the
+client cannot tell those apart from the new ones.
 
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be

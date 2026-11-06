@@ -224,6 +224,13 @@ function MenuBuilder.open(app)
         mandatory = depth_label(settings.color_depth),
         help_text = NEXT_CONNECTION,
     }
+    item_table[#item_table + 1] = {
+        text = _("Tight encoding (next connection)"),
+        mandatory = settings.enable_tight and "✓" or "-",
+        help_text = NEXT_CONNECTION .. "\n"
+            .. _("Tight can send JPEG, so lowering JPEG quality saves bandwidth on photos."),
+        callback = set_connection_setting("enable_tight", not settings.enable_tight),
+    }
     -- JPEG quality and compression level are Tight pseudo-encodings: without Tight the server
     -- never sees them, so the entries are dimmed (and have no submenu to open).
     local function level_entry(text, key, help_text)

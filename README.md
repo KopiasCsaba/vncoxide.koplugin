@@ -79,8 +79,8 @@ keyboard, the **Menu** key (F1 on KOReader's own keymap) toggles it too.
 
 **The menu** offers the connection list, a status line, the zoom presets, a "keyboard always
 visible" toggle, show/hide keyboard, the screen orientation (including rotations), "use current
-orientation as default", the bandwidth settings (colour depth, and with Tight on, JPEG quality and
-compression level), sending single keys (Enter/Tab/Esc/Delete), **Disconnect** (with a
+orientation as default", the bandwidth settings (colour depth, the Tight toggle, and with Tight on,
+JPEG quality and compression level), sending single keys (Enter/Tab/Esc/Delete), **Disconnect** (with a
 confirmation) and **Leave (keep connection)**. If the connection has just dropped, it leads with
 **Reconnect to …**.
 
@@ -224,8 +224,8 @@ more than one profile for `autoconnect`, the first keeps the flag and the rest a
 - Encodings: ZRLE, TRLE, Hextile, RRE, CopyRect and Raw — all of RFC 6143 — plus DesktopSize
   (servers that resize their desktop are followed automatically).
 - **Tight** compression is implemented but **off by default**: it is not part of RFC 6143 and
-  servers interpret its control byte differently, so it is opt-in (`["enable_tight"] = true`) until
-  it has been tested against the server you use.
+  servers interpret its control byte differently, so it is opt-in (the menu's **Tight encoding**
+  entry, or `["enable_tight"] = true`) until it has been tested against the server you use.
 - **Lower bandwidth**: the menu's **Colour depth** (24/16/8-bit) asks the server for fewer bits
   per pixel; with Tight on, **JPEG quality** and **Compression level** (Off or 0–9; Off leaves the
   server's default) trade picture quality and CPU for bytes. JPEG is only used at 24-bit colour.

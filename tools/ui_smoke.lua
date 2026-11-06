@@ -1868,9 +1868,26 @@ check("bandwidth_menu_entries", function()
     UIManager:close(top())
     app:close_menu()
 
-    s.enable_tight = true
+    -- the Tight toggle sits before the two Tight-only entries and turns them on
+    app:open_menu()
+    local tight = entry("Tight encoding")
+    assert_true(tight.text:find("next connection", 1, true), "the Tight entry says when it applies")
+    assert_true(tight.help_text and tight.help_text:find(NEXT, 1, true)
+        and tight.help_text:find("JPEG", 1, true), "the Tight help mentions the next connection and JPEG")
+    assert_true(tight.mandatory == "-", "Tight is shown off")
+    local pos = {}
+    for i, item in ipairs(app.menu.item_table) do pos[item] = i end
+    assert_true(pos[tight] < pos[entry("JPEG quality")] and pos[tight] < pos[entry("Compression level")],
+        "the Tight entry comes before JPEG quality and compression level")
+    tight.callback()
+    assert_true(s.enable_tight == true, "toggling the entry turns Tight on")
+    assert_true(top().text == NEXT, "a connected session is told the toggle applies next time")
+    UIManager:close(top())
     app:open_menu()
     jpeg, level = entry("JPEG quality"), entry("Compression level")
+    assert_true(entry("Tight encoding").mandatory == "✓", "Tight is shown on")
+    assert_true(jpeg.select_enabled ~= false and not jpeg.dim and level.select_enabled ~= false
+        and not level.dim, "with Tight on the two entries are enabled")
     assert_true(jpeg.sub_item_table and #jpeg.sub_item_table == 11, "Off plus 0..9 qualities")
     assert_true(level.sub_item_table and #level.sub_item_table == 11, "Off plus 0..9 levels")
     assert_true(jpeg.mandatory == "Off", "off is shown as Off")
