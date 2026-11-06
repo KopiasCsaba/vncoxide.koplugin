@@ -19,6 +19,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
+local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 
 local Dialogs = {}
@@ -64,8 +65,8 @@ local PICTURE_FOOTER = _("Changes take effect on the next connection.")
 local PICTURE_HELP = {}
 for key, entry in pairs(PICTURE_TEXT) do PICTURE_HELP[key] = entry.name .. ": " .. entry.body end
 
---- Always shown in the picture dialog (ButtonDialog's title is a TextBoxWidget, which honours PTF):
---- what each setting does, with the setting names in bold.
+--- Shown by the picture dialog's Help button in a TextViewer (its ScrollTextWidget/TextBoxWidget
+--- honours PTF): what each setting does, with the setting names in bold.
 local PICTURE_EXPLANATION
 do
     local TextBoxWidget = require("ui/widget/textboxwidget")
@@ -127,7 +128,7 @@ end
 --[[--
 The picture settings of one connection: colour depth, Tight, and Tight's JPEG
 quality and compression level (indented under it, dimmed while it is off). An
-explanation of every setting stays visible above the rows (ButtonDialog's title area).
+Help button opens the explanation of every setting in a scrollable viewer on top of this dialog.
 
 Edits `picture` in place. Picking a value reopens this dialog so its labels follow; Done, Back or
 a tap outside calls `on_done`. Nothing is stored here: the editor saves (or drops) the choice.
@@ -195,7 +196,7 @@ function Dialogs.picture_settings(picture, on_done)
     end
 
     dialog = ButtonDialog:new{
-        title = PICTURE_EXPLANATION,
+        title = _("Long-press a setting for details, or tap Help."),
         buttons = {
             { {
                 text = T(_("Colour depth: %1"), depth_label(picture.color_depth)),
@@ -211,6 +212,13 @@ function Dialogs.picture_settings(picture, on_done)
             } },
             tight_sub_item(_("JPEG quality: %1"), _("JPEG quality"), "jpeg_quality"),
             tight_sub_item(_("Compression level: %1"), _("Compression level"), "compress_level"),
+            { {
+                text = _("Help"),
+                callback = function()
+                    -- On top of this dialog, which stays as it is (choices and hidden keyboard).
+                    UIManager:show(TextViewer:new{ title = _("Picture settings"), text = PICTURE_EXPLANATION })
+                end,
+            } },
             { {
                 text = _("Done"),
                 callback = function()

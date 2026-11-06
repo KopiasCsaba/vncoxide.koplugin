@@ -251,8 +251,8 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   long-pressed, while it is off. JPEG is only used at 24-bit colour. The choice is stored when the
   connection is saved and **takes effect on the next connection** — saving the connection that is live says to
   reconnect when one of these (or the host, port or password) changed. New connections start with
-  Tight off. The dialog explains every setting, with the setting names in bold; long-press a row for that
-  setting's explanation.
+  Tight off. The **Help** button opens a scrollable explanation of every setting, with the setting names in bold;
+  long-press a row for that setting's explanation.
 - **Sharp scaling (faster)**: a switch in the viewer menu, next to **Page buttons send**. It scales
   by repeating pixels instead of blending them: much faster redraws when the zoom is not 100% and
   crisper text, but uneven at non-whole zoom levels. It is one global setting (not per connection)

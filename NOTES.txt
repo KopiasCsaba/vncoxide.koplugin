@@ -127,7 +127,7 @@ quality does nothing at 16/8-bit. normalise() resets anything else to the defaul
 `enable_tight` was a released global setting: normalise() takes a stored global true as the value
 of every profile without its own `enable_tight`, then drops the global (the other three never
 shipped as globals and are just dropped). A change applies on the next connection only, and the
-editor says so (the picture dialog's explanation block, which is PTF text with the setting names in
+editor says so (the picture dialog's Help button, which shows PTF text in a TextViewer with the setting names in
 bold and ends "Changes take effect on the next connection."; each row's long-press help is its
 paragraph as plain text; and "Reconnect to apply the new settings." after saving the live
 connection, only when host, port, password or one of these four changed): a live SetPixelFormat

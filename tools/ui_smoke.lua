@@ -2128,28 +2128,42 @@ check("editor_picture_settings_save_and_cancel", function()
     for _, row in ipairs(pic.buttons) do
         assert_true(not row[1].text:find("Sharp", 1, true), "no sharp row in the picture dialog: " .. row[1].text)
     end
-    assert_true(not pic.title:find("Sharp", 1, true) and not pic.title:find("sharp", 1, true),
+    local SHORT = "Long-press a setting for details, or tap Help."
+    assert_true(pic.title == SHORT, "the title is the short line, got " .. tostring(pic.title))
+    for _, word in ipairs({ "Its main advantage", "next connection", "how many bits", "Sharp" }) do
+        assert_true(not pic.title:find(word, 1, true), "no paragraph text in the title: " .. word)
+    end
+    local before = #stack()
+    find_button(pic, "Help").callback()
+    local viewer = top()
+    assert_true(#stack() == before + 1 and viewer ~= pic and viewer.text, "Help opens a viewer on top: " .. stack_desc())
+    assert_true(viewer.title == "Picture settings", "viewer title, got " .. tostring(viewer.title))
+    assert_true(not editor:isKeyboardVisible(), "the keyboard stays hidden while the viewer is open")
+    assert_true(viewer.text:find("Its main advantage is JPEG", 1, true) and viewer.text:find("next connection", 1, true),
+        "the full explanation, got " .. viewer.text)
+    assert_true(not viewer.text:find("Sharp", 1, true) and not viewer.text:find("sharp", 1, true),
         "the explanation does not mention sharp scaling")
-    assert_true(pic.title:find("Its main advantage is JPEG", 1, true) and pic.title:find("next connection", 1, true),
-        "the new explanation, got " .. pic.title)
+    assert_true(not viewer.text:find("needs", 1, true), "no 'needs' in the explanation")
     local TextBoxWidget = require("ui/widget/textboxwidget")
-    assert_true(pic.title:sub(1, #TextBoxWidget.PTF_HEADER) == TextBoxWidget.PTF_HEADER, "title is PTF text")
-    assert_true(pic.title:find(TextBoxWidget.PTF_BOLD_START .. "Colour depth" .. TextBoxWidget.PTF_BOLD_END
+    assert_true(viewer.text:sub(1, #TextBoxWidget.PTF_HEADER) == TextBoxWidget.PTF_HEADER, "viewer text is PTF text")
+    assert_true(viewer.text:find(TextBoxWidget.PTF_BOLD_START .. "Colour depth" .. TextBoxWidget.PTF_BOLD_END
         .. ": how many bits", 1, true), "setting names are bold")
-    assert_true(not pic.title:find("needs", 1, true), "no 'needs' in the explanation")
-    local tbw = pic.title_group and pic.title_group[1] and pic.title_group[1][1]
-    assert_true(tbw and tbw._ptf_char_is_bold, "the rendering TextBoxWidget honours PTF (bold map built)")
+    local tbw = viewer.box_widget
+    assert_true(tbw and tbw._ptf_char_is_bold, "the viewer's TextBoxWidget honours PTF (bold map built)")
     local bold_n = 0
     for _ in pairs(tbw._ptf_char_is_bold) do bold_n = bold_n + 1 end
     assert_true(bold_n == #("Colour depth") + #("Tight") + #("JPEG quality") + #("Compression level"),
         "exactly the four names are bold, got " .. bold_n)
     assert_true(tbw.text:find("Colour depth: how many bits", 1, true) and not tbw.text:find("\u{FFF2}", 1, true),
         "markers are stripped from the rendered text")
+    viewer:onClose()
+    assert_true(top() == pic and #stack() == before, "closing the viewer returns to the picture dialog: " .. stack_desc())
+    assert_true(button_starting(pic, "Colour depth").text == "Colour depth: 24-bit", "choices intact after Help")
+    assert_true(not editor:isKeyboardVisible(), "the keyboard is still hidden")
     local order = {}
     for _, row in ipairs(pic.buttons) do order[#order + 1] = row[1].text:match("^[^:]+") end
     assert_true(table.concat(order, "|") == "Colour depth|Tight encoding|"
-        .. SUB .. "JPEG quality|" .. SUB .. "Compression level|Done", "row order, got " .. table.concat(order, "|"))
-    assert_true(type(pic.title) == "string" and pic.title:find("Tight", 1, true), "the explanation is shown")
+        .. SUB .. "JPEG quality|" .. SUB .. "Compression level|Help|Done", "row order, got " .. table.concat(order, "|"))
     -- long press shows the same help as the old menu entries
     jpeg.hold_callback()
     assert_true(top().text and top().text:find("JPEG quality: Off sends everything lossless.", 1, true)
