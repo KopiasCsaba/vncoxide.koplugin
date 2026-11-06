@@ -2489,7 +2489,14 @@ end)
 check("canvas_dithered_paint_reports_its_blit_time", function()
     local bb = require("ffi/blitbuffer")
     local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BB8)
+    local Util = require("vnc.util")
+    local real_on = Util.timing_enabled
+    Util.timing_enabled = function() return false end
     remote:draw_to(target, cx, cy, cw, ch, true)
+    assert_true(remote.last_blit_ms == nil, "no blit time is measured while timing is off")
+    Util.timing_enabled = function() return true end
+    remote:draw_to(target, cx, cy, cw, ch, true)
+    Util.timing_enabled = real_on
     assert_true(type(remote.last_blit_ms) == "number", "the blit time must be measured")
     target:free(); remote:free()
 end)
