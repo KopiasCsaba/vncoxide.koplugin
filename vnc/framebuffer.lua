@@ -265,6 +265,26 @@ function Remote:rect_to_canvas(rect, cx, cy)
     return x, y, w, h
 end
 
+--- The view as the scaler draws it: at scale 1 the offset is rounded to whole pixels.
+function Remote:_render_view()
+    local s, vx, vy = self.scale, self.view_x, self.view_y
+    if s == 1 then
+        vx, vy = math.floor(vx + 0.5), math.floor(vy + 0.5)
+    end
+    return { x = vx, y = vy, scale = s }
+end
+
+--[[--
+The canvas rect (relative to the canvas origin, clipped to the canvas) whose pixels depend on
+any pixel of a remote rect, in the current view and scaling mode: what @{Remote:draw_to}
+recomputes for it, and so what has to reach the screen when it changes.
+--- @tparam table remote_rect `{x, y, w, h}` in remote coordinates
+--- @treturn table|nil `{x, y, w, h}`, or nil when it is not visible
+]]
+function Remote:canvas_rect_for(remote_rect)
+    return Scaler.dst_rect_for(remote_rect, self:_render_view(), self.cw, self.ch, self.scaling)
+end
+
 -- Canvas buffer types the scaler writes; anything else gets an RGB24 buffer and a converting blit.
 local CANVAS_TYPES = { [BB.TYPE_BB8] = true, [BB.TYPE_BBRGB24] = true, [BB.TYPE_BBRGB32] = true }
 
@@ -299,13 +319,10 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
         self._canvas_bb = canvas
     end
 
-    local s, vx, vy = self.scale, self.view_x, self.view_y
-    if s == 1 then
-        vx, vy = math.floor(vx + 0.5), math.floor(vy + 0.5)
-    end
+    local view = self:_render_view()
+    local s, vx, vy = view.scale, view.x, view.y
     local mode = self.scaling
     local f = self._filled
-    local view = { x = vx, y = vy, scale = s }
     if self._all_stale or not f or f.x ~= vx or f.y ~= vy or f.scale ~= s or f.mode ~= mode
             or f.plane ~= self.plane then
         Scaler.render(canvas, self.plane, view, { x = 0, y = 0, w = cw, h = ch }, mode)
@@ -314,7 +331,7 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
     elseif #self._stale > 0 then
         local rects = {}
         for _i, r in ipairs(self._stale) do
-            local d = Scaler.dst_rect_for(r, view, cw, ch, mode)
+            local d = self:canvas_rect_for(r)
             if d then rects = Util.add_rect(rects, d) end
         end
         local px = 0

@@ -373,12 +373,11 @@ function ViewerApp:on_framebuffer_dirty(rect)
     end
     local rects = rect.x and { rect } or rect
     for _i, r in ipairs(rects) do
-        local x, y, w, h = self.remote:rect_to_canvas(r, self.canvas.x, self.canvas.y)
-        local clipped = Util.intersect_rect(
-            { x = x, y = y, w = w, h = h },
-            { x = self.canvas.x, y = self.canvas.y, w = self.canvas.w, h = self.canvas.h })
-        if clipped then
-            UIManager:setDirty(self, "ui", Geom:new(clipped))
+        -- exactly the canvas pixels the remote rect can change (filters reach past its edges)
+        local d = self.remote:canvas_rect_for(r)
+        if d then
+            UIManager:setDirty(self, "ui", Geom:new{ x = self.canvas.x + d.x, y = self.canvas.y + d.y,
+                w = d.w, h = d.h })
         end
     end
 end

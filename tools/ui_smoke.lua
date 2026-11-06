@@ -2307,6 +2307,63 @@ check("canvas_too_many_stale_rects_recompute_everything", function()
     target:free(); remote:free()
 end)
 
+check("a_changed_remote_pixel_refreshes_every_canvas_pixel_it_changed", function()
+    local bb = require("ffi/blitbuffer")
+    local app, remote = new_app()
+    remote:set_scaling("smooth")
+    app:paintTo(Screen.bb, 0, 0)
+    remote:set_scale(2.5)
+    remote:pan_by(-7.3, -4.6)
+    app:paintTo(Screen.bb, 0, 0)
+    canvas_plane(remote, 3)
+    local c = app.canvas
+    local before, after = bb.new(c.w, c.h, bb.TYPE_BBRGB32), bb.new(c.w, c.h, bb.TYPE_BBRGB32)
+    local real_set_dirty = UIManager.setDirty
+    local ok, err = pcall(function()
+        local vx, vy = remote.view_x, remote.view_y
+        assert_true(remote.scale == 2.5 and vx ~= math.floor(vx), "a fractional view at scale 2.5 is needed")
+        -- (the plane is less tall than the canvas here: it is centred, view_y < 0)
+        -- the zoom asked for a flash of the next frame: let it go before looking at regions
+        app:on_framebuffer_dirty({ x = 0, y = 0, w = 1, h = 1 })
+        local x0 = math.floor(vx)
+        local px = { { x0 + 5, math.max(0, math.floor(vy)) + 4 }, { x0 + 40, 150 }, { x0 + 20, remote.h - 1 } }
+        for _, p in ipairs(px) do
+            remote:draw_to(before, 0, 0, c.w, c.h)
+            remote:get_plane():setPixel(p[1], p[2], bb.ColorRGB32(255, 255, 255, 255))
+            remote:mark_dirty(p[1], p[2], 1, 1)
+            remote:draw_to(after, 0, 0, c.w, c.h)
+            local regions = {}
+            UIManager.setDirty = function(_, _w, _mode, region)
+                if region then regions[#regions + 1] = region end
+            end
+            app:on_framebuffer_dirty({ x = p[1], y = p[2], w = 1, h = 1 })
+            UIManager.setDirty = real_set_dirty
+            assert_true(#regions > 0, "a regional refresh was expected")
+            local changed = 0
+            for y = 0, c.h - 1 do
+                for x = 0, c.w - 1 do
+                    local a, b2 = before:getPixel(x, y), after:getPixel(x, y)
+                    if a:getR() ~= b2:getR() or a:getG() ~= b2:getG() or a:getB() ~= b2:getB() then
+                        changed = changed + 1
+                        local sx, sy, hit = c.x + x, c.y + y, false
+                        for _, r in ipairs(regions) do
+                            if sx >= r.x and sx < r.x + r.w and sy >= r.y and sy < r.y + r.h then hit = true end
+                        end
+                        assert_true(hit, string.format("remote %d,%d changed canvas %d,%d outside the refresh",
+                            p[1], p[2], x, y))
+                    end
+                end
+            end
+            assert_true(changed > 6, "the change must show at scale 2.5, changed " .. changed)
+        end
+    end)
+    UIManager.setDirty = real_set_dirty
+    before:free(); after:free()
+    app:onCloseWidget()
+    remote:free()
+    if not ok then error(err, 0) end
+end)
+
 check("canvas_dithered_paint_reports_its_blit_time", function()
     local bb = require("ffi/blitbuffer")
     local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BB8)
