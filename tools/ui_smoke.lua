@@ -2148,7 +2148,8 @@ check("editor_picture_settings_save_and_cancel", function()
         "no setting paragraph mentions sharp scaling")
     assert_true(viewer.text:find("-z 2", 1, true) and viewer.text:find("other than 100%", 1, true),
         "the advice points to the server script's -z and to zoom 100%")
-    assert_true(viewer.text:find("Find fastest picture settings", 1, true), "the advice points to the benchmark")
+    assert_true(viewer.text:find("Measure it: in the connection's menu, tap Find fastest picture settings with your usual content on the PC screen.", 1, true),
+        "the advice points to the benchmark")
     assert_true(not viewer.text:find("needs", 1, true), "no 'needs' in the explanation")
     local TextBoxWidget = require("ui/widget/textboxwidget")
     assert_true(viewer.text:sub(1, #TextBoxWidget.PTF_HEADER) == TextBoxWidget.PTF_HEADER, "viewer text is PTF text")
@@ -2388,7 +2389,7 @@ end)
 -- ---------------------------------------------------------------- find fastest picture settings
 
 local BENCH_BUTTON = "Find fastest picture settings"
-local BENCH_INTRO = "Tries 11 picture-setting combinations on this connection, about 7 seconds each (roughly 1.5 minutes).\n\nBefore starting, make the shared area of the PC keep changing — play a video, scroll a long page or run an animation — and leave it running. Each combination is scored by how many changed screen pixels per second reach this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end."
+local BENCH_INTRO = "Tries 11 picture-setting combinations on this connection, a few seconds each.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end."
 
 --- A stand-in for vnc/benchmark: records what the UI asks of it; the test drives the callbacks.
 local FakeBench = { instances = {} }
@@ -2405,12 +2406,12 @@ local function bench_combo(depth, tight, compr, jpeg, label)
     return { color_depth = depth, enable_tight = tight, compress_level = compr, jpeg_quality = jpeg, label = label }
 end
 local BENCH_RESULTS = {
-    { combination = bench_combo(8, true, 2, false, "8-bit, Tight, compr. 2"), ok = true, still = false,
-      px_per_s = 3456789, ms_per_update = 123.4, bytes_per_s = 204800, full_ms = 812.6 },
-    { combination = bench_combo(24, false, false, false, "24-bit, Tight off"), ok = true, still = false,
-      px_per_s = 1000000, ms_per_update = 40, bytes_per_s = 1048576, full_ms = 95 },
-    { combination = bench_combo(16, false, false, false, "16-bit, Tight off"), ok = true, still = true,
-      px_per_s = 10, ms_per_update = nil, bytes_per_s = 0, full_ms = 300 },
+    { combination = bench_combo(8, true, 2, false, "8-bit, Tight, compr. 2"), ok = true,
+      tile_px_per_s = 3456789, full_px_per_s = 900000, tile_ms = 12.4, full_ms = 812.6, full_bytes = 204800 },
+    { combination = bench_combo(24, false, false, false, "24-bit, Tight off"), ok = true,
+      tile_px_per_s = 1000000, full_px_per_s = 5000000, tile_ms = 40, full_ms = 95, full_bytes = 1048576 },
+    { combination = bench_combo(16, false, false, false, "16-bit, Tight off"), ok = false,
+      error = "no update within 15 s" },
     { combination = bench_combo(24, true, 2, 4, "24-bit, Tight, compr. 2, JPEG 4"), ok = false,
       error = "server refused the format" },
 }
@@ -2472,8 +2473,8 @@ check("bench_start_shows_progress_and_cancel_returns", function()
     assert_true(progress.title == "3/11: 16-bit, Tight off — full screen", "progress text: " .. tostring(progress.title))
     o.on_progress(4, 11, "16-bit, Tight, compr. 1", "connect")
     assert_true(progress.title == "4/11: 16-bit, Tight, compr. 1 — connecting", "progress text: " .. tostring(progress.title))
-    o.on_progress(4, 11, "16-bit, Tight, compr. 1", "live")
-    assert_true(progress.title == "4/11: 16-bit, Tight, compr. 1 — live changes", "progress text: " .. tostring(progress.title))
+    o.on_progress(4, 11, "16-bit, Tight, compr. 1", "tiles")
+    assert_true(progress.title == "4/11: 16-bit, Tight, compr. 1 — small pieces", "progress text: " .. tostring(progress.title))
     find_button(progress, "Cancel").callback()
     assert_true(bench.cancelled, "Cancel cancels the benchmark")
     expect_top(is_actions, "the actions dialog after Cancel")
@@ -2539,9 +2540,9 @@ check("bench_results_table_and_apply_best", function()
     local p3 = text:find("16-bit, Tight off", 1, true)
     local p4 = text:find("24-bit, Tight, compr. 2, JPEG 4", 1, true)
     assert_true(p1 and p2 and p3 and p4 and p1 < p2 and p2 < p3 and p3 < p4, "rows in order:\n" .. text)
-    for _, want in ipairs{ "3.5 Mpx/s", "123 ms/update", "200 KB/s", "full 813 ms", "1.0 Mpx/s", "40 ms/update",
-                           "1024 KB/s", "full 95 ms", "screen was still — not scored",
-                           "failed: server refused the format" } do
+    for _, want in ipairs{ "3.5 Mpx/s small  12 ms/tile  full 813 ms  200 KB/full",
+                           "1.0 Mpx/s small  40 ms/tile  full 95 ms  1024 KB/full",
+                           "failed: no update within 15 s", "failed: server refused the format" } do
         assert_true(text:find(want, 1, true), "missing " .. want .. " in:\n" .. text)
     end
     local buttons = viewer_buttons(viewer)
@@ -2582,9 +2583,9 @@ check("bench_nothing_scored_has_no_apply", function()
     assert_true(viewer.title == "Picture benchmark", "results viewer: " .. stack_desc())
     local buttons = viewer_buttons(viewer)
     assert_true(not buttons["Apply best"] and buttons["Close"], "no Apply best when nothing was scored")
-    assert_true(viewer.text:find("keeps changing", 1, true) and viewer.text:find("run", 1, true),
-        "explains what to do:\n" .. viewer.text)
-    assert_true(viewer.text:find("screen was still — not scored", 1, true), "rows still listed")
+    assert_true(viewer.text:find("No combination could be scored", 1, true) and not viewer.text:find("changing", 1, true),
+        "says nothing was scored:\n" .. viewer.text)
+    assert_true(viewer.text:find("failed: no update within 15 s", 1, true), "rows still listed")
     viewer_buttons(viewer)["Close"].callback()
     require("vnc/dialogs").Benchmark = nil
 end)

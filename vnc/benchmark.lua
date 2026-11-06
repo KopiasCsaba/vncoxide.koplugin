@@ -3,25 +3,34 @@ Picture-settings benchmark: measures picture-setting combinations against the li
 
 Each combination gets its own fresh @{vnc.session} (a copy of the profile with the combination's
 picture fields, `shared = true` like every session), so a live session of the same profile is never
-disturbed and no setting is ever written. One combination runs at a time, in two phases:
+disturbed and no setting is ever written. One combination runs at a time, in two phases, on
+whatever the remote screen shows; it does not need to change. Every request is non-incremental, so
+the server encodes and sends the requested pixels each time even when they are identical:
 
-1. **full**: `FULL_SAMPLES` non-incremental full-screen requests, each timed from the request to
-   the end of its FramebufferUpdate (decode included, draw not). The incremental request that
-   normally follows every update is held meanwhile (`Session.hold_incremental`), so the update
-   timed is really the full-screen one. `full_ms` is their mean.
-2. **live**: the "live" progress is reported first, and the window starts on the next tick, so
-   the e-ink refresh of the progress dialog is not counted in it (updates in between are not
-   counted either). Then `live_seconds` of normal incremental updates of whatever changes on the remote screen.
-   Every update adds its rect area (remote pixels) and bytes; every poll tick that has changes draws
-   them with @{Remote:draw_to} into one off-screen BlitBuffer of the viewer's canvas size and type
-   (allocated once per run) with the viewer's view and scaling, like the viewer would. The score is
-   the changed remote pixels per second of wall time, and that time includes network, decode and
-   draw.
+1. **full**: `FULL_SAMPLES` whole-screen requests, one at a time. When more than one is taken, the
+   first is a warm-up and not counted (it pays for the connection's first encoder setup, caches
+   and the progress dialog's screen refresh).
+2. **tiles**: the `TILES` areas of a square grid over the framebuffer (4×4 for 16), row by row,
+   one at a time, all counted. The "tiles" progress is reported first, and the first tile is
+   requested on the next tick, so the e-ink refresh of the progress dialog is not counted in it.
+
+Each request is timed from the moment it is sent until its FramebufferUpdate has been decoded and
+drawn. Every received rect is marked dirty by the session and drawn with @{Remote:draw_to} into one
+off-screen BlitBuffer of the viewer's canvas size and type (allocated once per run), with the
+viewer's view, scaling and dither flag (`canvas.dither`), like the viewer would; so decode and
+draw are paid on every request. Per phase the run sums the elapsed wall time, the remote pixels
+received, the bytes, and the decode and draw CPU time. The incremental request that normally
+follows every update is held for the whole combination (`Session.hold_incremental`), and the next
+request settles it, so exactly one request is outstanding and only the requested ones are timed.
+
+Scores: `tile_px_per_s` and `full_px_per_s` (pixels received / summed elapsed time), `tile_ms`
+and `full_ms` (mean time per tile / per full frame). The main score is `tile_px_per_s`, the
+closest to everyday small updates (see @{Benchmark._sort}).
 
 No viewer is attached: the benchmark attaches a minimal sink of its own (the app interface the
 session calls), which draws into the off-screen buffer. Attaching registers the session's normal
-poll task, so updates keep being requested and decoded exactly as in the viewer. The draw uses the
-viewer's dither flag (`canvas.dither`).
+poll task, which reads and decodes the updates exactly as in the viewer. The session has no view
+area, so its requests cover the whole framebuffer; the tiles are explicit rect requests.
 
 For the whole run, every attached session in `opts.sessions` (the plugin's live connections, the
 open viewer's included) is detached, so its polling, decoding and drawing does not compete with the
@@ -31,8 +40,8 @@ cancelled or ends in an error (`attach` requests a full update, which resynchron
 A combination that fails before its handshake completes (connection refused, timeout, auth or
 security failure, Wi-Fi not coming up) ends the whole run at once: the other combinations would
 fail the same way. `on_done` then gets that combination's failed row and the error as its second
-argument. A failure after connecting (a rejected format, an error mid-phase) only fails that
-combination, and the run goes on.
+argument. A failure after connecting (a rejected format, no answer within `REQUEST_TIMEOUT`, an
+error mid-phase) only fails that combination, and the run goes on.
 
 Everything is driven from `UIManager` tasks (the session's own poll plus a benchmark tick) and the
 clock is `Session._now`, so tests can run it on a fake clock. The handshake itself is the session's
@@ -41,8 +50,9 @@ synchronous one.
 `cancel()` tears the current session down and frees the buffer; `on_done` is then never called. It
 may be called from anywhere, `on_progress` included: the run checks after every progress report.
 
-An unexpected Lua error inside the run (a tick, `start()`, the connect callback) ends the current
-combination as `ok = false` with the error message as `error`, tears it down, and the run goes on.
+An unexpected Lua error inside the run (a tick, `start()`, the connect callback, the draw) ends the
+current combination as `ok = false` with the error message as `error`, tears it down, and the run
+goes on.
 
 @module vnc.benchmark
 ]]
@@ -56,15 +66,12 @@ local UIManager = require("ui/uimanager")
 local Benchmark = {}
 Benchmark.__index = Benchmark
 
--- Seconds of live updates per combination.
-Benchmark.LIVE_SECONDS = 5
--- Live scores below this fraction of the remote screen's area per second (0.01 = 1 % of the screen
--- changing every second) mean the screen was still: the row is not scored.
-Benchmark.STILL_MIN_PX_PER_S = 0.01
--- Full-screen samples per combination.
-Benchmark.FULL_SAMPLES = 2
--- Seconds to wait for one full-screen update before the combination counts as failed.
-Benchmark.FULL_TIMEOUT = 15
+-- Whole-screen requests per combination (the first is a warm-up when there are more).
+Benchmark.FULL_SAMPLES = 3
+-- Areas of the tiles phase: a square grid (16 = 4x4) over the framebuffer.
+Benchmark.TILES = 16
+-- Seconds to wait for the answer to one request before the combination counts as failed.
+Benchmark.REQUEST_TIMEOUT = 15
 -- Seconds between benchmark ticks (phase deadlines, failures, the next combination).
 Benchmark.TICK = 0.05
 
@@ -92,25 +99,40 @@ table.insert(Benchmark.COMBINATIONS, combination(24, true, 2, 8))
 table.insert(Benchmark.COMBINATIONS, combination(24, true, 2, 4))
 
 --[[--
-Orders results: scored rows by `px_per_s` (highest first), then still rows, then failed rows; the
-original order otherwise.
+Orders results: scored rows by `tile_px_per_s` (highest first), then failed rows; the original
+order otherwise.
 --- @tparam table results
 --- @treturn table a new, sorted list
 ]]
 function Benchmark._sort(results)
-    local function group(r)
-        if not r.ok then return 3 end
-        return r.still and 2 or 1
-    end
     local list = {}
-    for i, r in ipairs(results) do list[i] = { r = r, i = i, g = group(r) } end
+    for i, r in ipairs(results) do list[i] = { r = r, i = i, g = r.ok and 1 or 2 } end
     table.sort(list, function(a, b)
         if a.g ~= b.g then return a.g < b.g end
-        if a.g == 1 and a.r.px_per_s ~= b.r.px_per_s then return a.r.px_per_s > b.r.px_per_s end
+        local ra, rb = a.r.tile_px_per_s, b.r.tile_px_per_s
+        if a.g == 1 and ra ~= rb then return ra > rb end
         return a.i < b.i
     end)
     local out = {}
     for i, e in ipairs(list) do out[i] = e.r end
+    return out
+end
+
+--[[--
+The tiles phase's areas: a `n`×`n` grid (`n` = the square root of `count`) over a `w`×`h`
+framebuffer, row by row; the edges are rounded down, so the tiles cover it exactly.
+--- @treturn table `{ {x, y, w, h}, ... }`
+]]
+function Benchmark._tiles(w, h, count)
+    local n = math.floor(math.sqrt(count) + 0.5)
+    local out = {}
+    for r = 0, n - 1 do
+        local y0, y1 = math.floor(r * h / n), math.floor((r + 1) * h / n)
+        for c = 0, n - 1 do
+            local x0, x1 = math.floor(c * w / n), math.floor((c + 1) * w / n)
+            out[#out + 1] = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }
+        end
+    end
     return out
 end
 
@@ -120,16 +142,16 @@ Creates a benchmark; nothing happens until @{Benchmark:start}.
 --- @tparam table opts
 --- @tparam table opts.profile connection profile (copied per combination, never modified)
 --- @tparam[opt] table opts.combinations defaults to `COMBINATIONS`
---- @tparam[opt] number opts.live_seconds defaults to `LIVE_SECONDS`
 --- @tparam table opts.canvas `{ w, h, bb_type, view_mode = "fit"|scale, scaling = "smooth"|"sharp",
 ---   dither }`, `dither` as the viewer passes it to @{Remote:draw_to}
---- @tparam[opt] function opts.on_progress `(i, n, label, phase)`, phase `"connect"|"full"|"live"`
+--- @tparam[opt] function opts.on_progress `(i, n, label, phase)`, phase `"connect"|"full"|"tiles"`
 --- @tparam[opt] table opts.sessions sessions (any keys) to detach while the run lasts
 --- @tparam[opt] function opts.on_done `(results, connect_error)`, sorted (see @{Benchmark._sort}); each row is
----   `{ combination, ok, error, px_per_s, ms_per_update, bytes_per_s, full_ms, still,
----   decode_ms, draw_ms }`. `ms_per_update` is live wall time per update; `decode_ms` and `draw_ms`
----   are the live phase's total decode and draw CPU time. `connect_error` is set when the run
----   stopped because a combination could not connect.
+---   `{ combination, ok, error, tile_px_per_s, full_px_per_s, tile_ms, full_ms, full_bytes, full,
+---   tiles }`. `full_bytes` is the mean bytes per counted full frame; `full` and `tiles` are the
+---   phase totals `{ n, px, bytes, elapsed, decode_ms, draw_ms }` (`n` counted requests, `elapsed`
+---   in seconds, decode and draw as CPU time). `connect_error` is set when the run stopped because
+---   a combination could not connect.
 --- @tparam[opt] table opts.network_mgr passed to every session (tests)
 ]]
 function Benchmark.new(opts)
@@ -139,7 +161,6 @@ function Benchmark.new(opts)
     local self = setmetatable({
         profile = opts.profile,
         combinations = opts.combinations or Benchmark.COMBINATIONS,
-        live_seconds = opts.live_seconds or Benchmark.LIVE_SECONDS,
         canvas = canvas,
         on_progress = opts.on_progress,
         on_done = opts.on_done,
@@ -242,8 +263,9 @@ function Benchmark:_next()
     profile.color_depth, profile.enable_tight = combo.color_depth, combo.enable_tight
     profile.jpeg_quality, profile.compress_level = combo.jpeg_quality, combo.compress_level
 
-    local run = { combination = combo, phase = "connect", samples = {},
-                  px = 0, bytes = 0, updates = 0, decode = 0, draw = 0 }
+    -- `samples`: one `{ elapsed, px, bytes, decode, draw }` per answered request of each phase;
+    -- `cur`: the request in flight
+    local run = { combination = combo, phase = "connect", samples = { full = {}, tiles = {} } }
     self.run = run
     local session
     session = Session.new{
@@ -282,9 +304,10 @@ function Benchmark:_on_connected(run, session)
     self:_progress("full")
     if self.stopped or self.run ~= run then return end
     session.hold_incremental = true
-    run.t_req = Session._now()
+    -- attach sends the first whole-screen request
+    self:_new_request(run)
     session:attach({
-        on_framebuffer_dirty = function() self:_draw(run) end,
+        on_framebuffer_dirty = function() self:_on_dirty(run) end,
         on_remote_resized = function() self:_apply_view() end,
         on_bell = function() end,
     })
@@ -304,29 +327,43 @@ function Benchmark:_apply_view()
     end
 end
 
+--- Starts timing a request.
+function Benchmark:_new_request(run)
+    run.cur = { t0 = Session._now(), px = 0, bytes = 0, decode = 0, draw = 0 }
+end
+
+--[[--
+Sends the next request of the current phase: the whole screen (`rect` nil) or one tile. It is
+flushed at once, so no poll interval is added to its time.
+]]
+function Benchmark:_request(run, rect)
+    local s = self.session
+    self:_new_request(run)
+    if rect then
+        s.proto:request_update(0, rect.x, rect.y, rect.w, rect.h)
+    else
+        s:request_full_update()
+    end
+    s:_flush_now()
+end
+
 function Benchmark:_on_update(run, tm)
-    if run.phase == "full" then
-        -- an empty update is not the full screen asked for
-        if tm.px <= 0 then return end
-        table.insert(run.samples, Session._now() - run.t_req)
-        if #run.samples < Benchmark.FULL_SAMPLES then
-            run.t_req = Session._now()
-            self.session:request_full_update()
-        else
-            -- nothing is counted until the next tick has reported "live" and a later one opens
-            -- the live window (t_live)
-            run.phase = "settle"
-            -- the session's next poll releases the held incremental request
-            self.session.hold_incremental = false
-            -- reported by the next tick: on_progress may cancel, and the session must not be
-            -- disconnected from inside its own update callback
-            run.live_unreported = true
-        end
-    elseif run.phase == "live" then
-        run.px = run.px + tm.px
-        run.bytes = run.bytes + tm.bytes
-        run.decode = run.decode + tm.cpu
-        run.updates = run.updates + 1
+    local cur = run.cur
+    -- an empty update is not the area asked for
+    if not cur or tm.px <= 0 then return end
+    cur.px, cur.bytes, cur.decode = cur.px + tm.px, cur.bytes + tm.bytes, cur.decode + tm.cpu
+    -- complete once drawn (the session hands the rects over later in the same poll tick)
+    cur.received = true
+end
+
+--- The session's sink: draws, and once the answer to the current request is drawn, records it.
+function Benchmark:_on_dirty(run)
+    if self.run ~= run then return end
+    -- an error here would escape into the session's poll task: the tick fails the combination
+    local ok, e = pcall(self._draw, self, run)
+    if not ok then
+        logger.warn("vnc: benchmark draw failed:", e)
+        run.err = run.err or tostring(e)
     end
 end
 
@@ -336,7 +373,31 @@ function Benchmark:_draw(run)
     local c = self.canvas
     local c0 = os.clock()
     remote:draw_to(self.bb, 0, 0, c.w, c.h, c.dither or false)
-    if run.phase == "live" then run.draw = run.draw + (os.clock() - c0) end
+    local cur = run.cur
+    if not cur then return end
+    cur.draw = cur.draw + (os.clock() - c0)
+    if not cur.received then return end
+    cur.elapsed = Session._now() - cur.t0
+    run.cur = nil
+    local phase = run.phase
+    local list = run.samples[phase]
+    list[#list + 1] = cur
+    if phase == "full" then
+        if #list < Benchmark.FULL_SAMPLES then
+            self:_request(run)
+        else
+            -- reported by the next tick (on_progress may cancel, and the session must not be
+            -- disconnected from inside its own callback); a later tick sends the first tile
+            run.phase = "tiles_wait"
+            run.tiles_unreported = true
+        end
+    elseif phase == "tiles" then
+        if #list < #run.tiles then
+            self:_request(run, run.tiles[#list + 1])
+        else
+            run.phase = "done"
+        end
+    end
 end
 
 --- Advances the run (guarded, see @{Benchmark:_guarded}) and schedules the next tick.
@@ -346,21 +407,10 @@ function Benchmark:_tick()
     if not self.stopped then UIManager:scheduleIn(Benchmark.TICK, self._tick_fn) end
 end
 
---- Failures, phase deadlines, the next combination.
+--- Failures, request deadlines, the tiles phase, the next combination.
 function Benchmark:_advance()
     local run = self.run
     local now = Session._now()
-    if run.live_unreported then
-        run.live_unreported = nil
-        self:_progress("live")
-        -- the window opens on a later tick, after the progress title's screen refresh
-        return
-    end
-    if run.phase == "settle" then
-        run.phase = "live"
-        run.t_live = now
-        return
-    end
     if run.connect_failed then
         local result = { combination = run.combination, ok = false, error = run.err }
         logger.info("vnc: benchmark:", result.combination.label, "could not connect, stopping:", result.error)
@@ -369,29 +419,53 @@ function Benchmark:_advance()
         self:_report(result.error)
     elseif run.err then
         self:_end_combination({ combination = run.combination, ok = false, error = run.err })
-    elseif run.phase == "full" and now - run.t_req > Benchmark.FULL_TIMEOUT then
+    elseif run.tiles_unreported then
+        run.tiles_unreported = nil
+        self:_progress("tiles")
+        -- the first tile goes out on a later tick, after the progress title's screen refresh
+    elseif run.phase == "tiles_wait" then
+        local w, h = self.session:get_remote():get_size()
+        run.tiles = Benchmark._tiles(w, h, Benchmark.TILES)
+        run.phase = "tiles"
+        run.t_tiles = now
+        self:_request(run, run.tiles[1])
+    elseif run.phase == "done" then
+        self:_end_combination(self:_score(run))
+    elseif run.cur and now - run.cur.t0 > Benchmark.REQUEST_TIMEOUT then
         self:_end_combination({ combination = run.combination, ok = false,
-            error = string.format("no full-screen update within %d s", Benchmark.FULL_TIMEOUT) })
-    elseif run.phase == "live" and now - run.t_live >= self.live_seconds then
-        self:_end_combination(self:_score(run, now - run.t_live))
+            error = string.format(run.phase == "full" and "no full-screen update within %d s"
+                or "no update within %d s", Benchmark.REQUEST_TIMEOUT) })
     end
 end
 
-function Benchmark:_score(run, elapsed)
-    local w, h = self.session:get_remote():get_size()
-    local full = 0
-    for _, s in ipairs(run.samples) do full = full + s end
-    local px_per_s = run.px / elapsed
+--- Sums a phase's samples, skipping the first `skip`.
+local function totals(list, skip)
+    local t = { n = 0, px = 0, bytes = 0, elapsed = 0, decode_ms = 0, draw_ms = 0 }
+    for i = skip + 1, #list do
+        local smp = list[i]
+        t.n = t.n + 1
+        t.px, t.bytes, t.elapsed = t.px + smp.px, t.bytes + smp.bytes, t.elapsed + smp.elapsed
+        t.decode_ms, t.draw_ms = t.decode_ms + smp.decode * 1000, t.draw_ms + smp.draw * 1000
+    end
+    return t
+end
+
+local function rate(px, elapsed) return elapsed > 0 and px / elapsed or 0 end
+
+function Benchmark:_score(run)
+    local fl = run.samples.full
+    local full = totals(fl, #fl > 1 and 1 or 0)
+    local tiles = totals(run.samples.tiles, 0)
     return {
         combination = run.combination,
         ok = true,
-        px_per_s = px_per_s,
-        ms_per_update = run.updates > 0 and elapsed * 1000 / run.updates or nil,
-        bytes_per_s = run.bytes / elapsed,
-        full_ms = full * 1000 / #run.samples,
-        still = px_per_s < Benchmark.STILL_MIN_PX_PER_S * w * h,
-        decode_ms = run.decode * 1000,
-        draw_ms = run.draw * 1000,
+        tile_px_per_s = rate(tiles.px, tiles.elapsed),
+        full_px_per_s = rate(full.px, full.elapsed),
+        tile_ms = tiles.elapsed * 1000 / tiles.n,
+        full_ms = full.elapsed * 1000 / full.n,
+        full_bytes = full.bytes / full.n,
+        full = full,
+        tiles = tiles,
     }
 end
 

@@ -1674,8 +1674,11 @@ local function main()
                 and off.compress_level == false) then
             return nil, "Tight-off combination fields wrong"
         end
-        if Benchmark.LIVE_SECONDS ~= 5 or Benchmark.STILL_MIN_PX_PER_S ~= 0.01 then
-            return nil, "LIVE_SECONDS / STILL_MIN_PX_PER_S"
+        if Benchmark.FULL_SAMPLES ~= 3 or Benchmark.TILES ~= 16 then
+            return nil, "FULL_SAMPLES / TILES"
+        end
+        if Benchmark.LIVE_SECONDS ~= nil or Benchmark.STILL_MIN_PX_PER_S ~= nil then
+            return nil, "the live phase and the still detection are gone"
         end
         return true
     end)
@@ -1684,24 +1687,42 @@ local function main()
         local Benchmark = require("vnc/benchmark")
         local rows = {
             { ok = false, error = "x", tag = "fail" },
-            { ok = true, still = true, px_per_s = 99999, tag = "still" },
-            { ok = true, still = false, px_per_s = 10, tag = "slow" },
-            { ok = true, still = false, px_per_s = 50, tag = "fast" },
+            { ok = true, tile_px_per_s = 10, full_px_per_s = 99999, tag = "slow" },
+            { ok = true, tile_px_per_s = 50, full_px_per_s = 1, tag = "fast" },
+            { ok = true, tile_px_per_s = 10, full_px_per_s = 5, tag = "slow2" },
         }
         local s = Benchmark._sort(rows)
         local got = {}
         for i, r in ipairs(s) do got[i] = r.tag end
         got = table.concat(got, ",")
-        if got ~= "fast,slow,still,fail" then return nil, "order " .. got end
+        if got ~= "fast,slow,slow2,fail" then return nil, "order " .. got end
         return true
     end)
 
-    -- Changing screen: both combinations scored, sorted, drawn into a 2x canvas with sharp scaling;
-    -- the draw time is counted.
-    check("benchmark_scores_live_changes", function()
+    -- The FramebufferUpdateRequest lines of the mock's log, one list per connection.
+    local function requests_per_connection(log)
+        local conns = {}
+        for line in (read_file(log) or ""):gmatch("[^\n]+") do
+            if line:find("CONNECT", 1, true) and not line:find("DISCONNECT", 1, true) then
+                conns[#conns + 1] = {}
+            else
+                local inc, x, y, w, h = line:match("FramebufferUpdateRequest incremental=(%d) x=(%d+) y=(%d+) w=(%d+) h=(%d+)")
+                if inc and #conns > 0 then
+                    local c = conns[#conns]
+                    c[#c + 1] = string.format("%s %s,%s %sx%s", inc, x, y, w, h)
+                end
+            end
+        end
+        return conns
+    end
+
+    -- Still screen (the mock never repaints): every combination is scored from forced requests,
+    -- with the same pixel counts per phase; 3 whole-screen requests, then the 16 tiles of a 4x4
+    -- grid, all non-incremental, one at a time; drawn into a 2x canvas with sharp scaling.
+    check("benchmark_scores_still_screen", function()
         local env = bench_env()
         local Remote = require("vnc/framebuffer")
-        local pid, port = start_multi{ name = "bench_live", repaint = 0.01 }
+        local pid, port, log = start_multi{ name = "bench_still" }
         local real_draw, draws = Remote.draw_to, {}
         Remote.draw_to = function(self, bb, ...)
             local dither = select(5, ...)
@@ -1712,8 +1733,7 @@ local function main()
         local results, progress = nil, {}
         local b = env.Benchmark.new{
             profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
-            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
-            live_seconds = 1,
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off", "24-bit, Tight, compr. 2"),
             canvas = { w = 400, h = 300, bb_type = BB.TYPE_BB8, view_mode = "fit", scaling = "sharp", dither = true },
             network_mgr = NET,
             on_progress = function(i, n, label, phase) progress[#progress + 1] = i .. "/" .. n .. " " .. phase end,
@@ -1725,16 +1745,49 @@ local function main()
         env.restore()
         stop_mock(pid)
         if not finished then return nil, "benchmark never finished" end
-        if #results ~= 2 then return nil, "expected 2 results, got " .. #results end
+        if #results ~= 3 then return nil, "expected 3 results, got " .. #results end
         for _, r in ipairs(results) do
-            if not r.ok then return nil, "failed: " .. tostring(r.error) end
-            if r.still then return nil, r.combination.label .. " marked still, px/s " .. r.px_per_s end
-            if not (r.px_per_s > 0 and r.bytes_per_s > 0 and r.ms_per_update and r.full_ms) then
-                return nil, "missing figures for " .. r.combination.label
+            local l = r.combination.label
+            if not r.ok then return nil, l .. " failed: " .. tostring(r.error) end
+            if r.still ~= nil then return nil, "no still flag any more" end
+            if not (r.tile_px_per_s > 0 and r.full_px_per_s > 0 and r.tile_ms and r.full_ms
+                    and r.full_bytes and r.full_bytes > 0) then
+                return nil, "missing figures for " .. l
             end
-            if not (r.draw_ms and r.draw_ms > 0) then return nil, "draw time not counted" end
+            -- the warm-up full frame is not counted: 2 of the 3
+            if r.full.n ~= 2 or r.full.px ~= 2 * 200 * 150 then
+                return nil, string.format("%s: full phase %d frames, %d px", l, r.full.n, r.full.px)
+            end
+            if r.tiles.n ~= 16 or r.tiles.px ~= 200 * 150 then
+                return nil, string.format("%s: tiles phase %d tiles, %d px", l, r.tiles.n, r.tiles.px)
+            end
+            if not (r.full.draw_ms > 0 and r.tiles.draw_ms > 0) then return nil, l .. ": draw time not counted" end
+            if not (r.full.bytes > 0 and r.tiles.bytes > 0 and r.full.decode_ms >= 0 and r.tiles.decode_ms >= 0) then
+                return nil, l .. ": bytes / decode time missing"
+            end
+            if math.abs(r.tile_px_per_s - r.tiles.px / r.tiles.elapsed) > 1e-6
+                    or math.abs(r.tile_ms - r.tiles.elapsed * 1000 / 16) > 1e-6
+                    or math.abs(r.full_ms - r.full.elapsed * 1000 / 2) > 1e-6 then
+                return nil, l .. ": scores do not follow from the phase figures"
+            end
         end
-        if results[1].px_per_s < results[2].px_per_s then return nil, "not sorted by px_per_s" end
+        for i = 2, #results do
+            if results[i - 1].tile_px_per_s < results[i].tile_px_per_s then return nil, "not sorted by tile_px_per_s" end
+        end
+        -- the requests, per connection
+        local conns = requests_per_connection(log)
+        if #conns ~= 3 then return nil, "expected 3 connections, got " .. #conns end
+        local want = { "0 0,0 200x150", "0 0,0 200x150", "0 0,0 200x150" }
+        local xs, ys = { 0, 50, 100, 150, 200 }, { 0, 37, 75, 112, 150 }
+        for r = 1, 4 do
+            for c = 1, 4 do
+                want[#want + 1] = string.format("0 %d,%d %dx%d", xs[c], ys[r], xs[c + 1] - xs[c], ys[r + 1] - ys[r])
+            end
+        end
+        for i, got in ipairs(conns) do
+            local a, w = table.concat(got, ";"), table.concat(want, ";")
+            if a ~= w then return nil, string.format("connection %d requests:\n%s\nwant:\n%s", i, a, w) end
+        end
         if #draws == 0 then return nil, "never drawn" end
         local bb1 = draws[1].bb
         for _, d in ipairs(draws) do
@@ -1744,21 +1797,23 @@ local function main()
             if d.bb ~= bb1 then return nil, "the off-screen buffer must be allocated once per run" end
             if d.dither ~= true then return nil, "the canvas dither flag must be passed to draw_to" end
         end
+        if #draws < 3 * (3 + 16) then return nil, "every received update must be drawn, got " .. #draws end
         local p = table.concat(progress, ",")
-        if not p:find("1/2 full", 1, true) or not p:find("2/2 live", 1, true) then return nil, "progress " .. p end
+        if not p:find("1/3 full", 1, true) or not p:find("3/3 tiles", 1, true) or p:find("live", 1, true) then
+            return nil, "progress " .. p
+        end
         return true
     end)
 
-    -- Still screen (no repaint) -> still, ranked before a failed one; a combination the server
-    -- refuses (Tight off against a Tight-only mock) fails and the run continues.
-    check("benchmark_still_and_failed", function()
+    -- A combination the server refuses (Tight off against a Tight-only mock) fails and the run
+    -- continues; the scored one ranks first.
+    check("benchmark_failed_combination", function()
         local env = bench_env()
-        local pid, port, log = start_multi{ name = "bench_still", encoding = "tight" }
+        local pid, port, log = start_multi{ name = "bench_failed", encoding = "tight" }
         local results, run_err
         local b = env.Benchmark.new{
             profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
             combinations = combos(env.Benchmark, "24-bit, Tight off", "24-bit, Tight, compr. 2"),
-            live_seconds = 1,
             canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8, view_mode = 1, scaling = "smooth" },
             network_mgr = NET,
             on_done = function(r, e) results, run_err = r, e end,
@@ -1770,10 +1825,10 @@ local function main()
         if not finished then return nil, "benchmark never finished" end
         if #results ~= 2 then return nil, "expected 2 results" end
         local r1, r2 = results[1], results[2]
-        if not (r1.ok and r1.still and r1.combination.label == "24-bit, Tight, compr. 2") then
-            return nil, string.format("first row: ok=%s still=%s err=%s", tostring(r1.ok), tostring(r1.still), tostring(r1.error))
+        if not (r1.ok and r1.combination.label == "24-bit, Tight, compr. 2") then
+            return nil, string.format("first row: ok=%s err=%s", tostring(r1.ok), tostring(r1.error))
         end
-        if not (r1.full_ms and r1.full_ms >= 0) then return nil, "full-screen time missing" end
+        if not (r1.full_ms and r1.full_ms >= 0 and r1.tile_px_per_s > 0) then return nil, "figures missing" end
         if r2.ok ~= false or type(r2.error) ~= "string" or r2.error == "" then
             return nil, "the refused combination must fail with a reason"
         end
@@ -1800,7 +1855,6 @@ local function main()
             local b = env.Benchmark.new{
                 profile = { host = "127.0.0.1", port = c.port, password = c.password or "", name = "bench" },
                 combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
-                live_seconds = 1,
                 canvas = { w = 100, h = 100, bb_type = BB.TYPE_BB8 },
                 network_mgr = c.net,
                 on_done = function(r, e) calls = calls + 1; results, err = r, e end,
@@ -1825,29 +1879,29 @@ local function main()
         return true
     end)
 
-    -- Cancel mid-live: the session is torn down, nothing of the benchmark stays scheduled, on_done
+    -- Cancel mid-tiles: the session is torn down, nothing of the benchmark stays scheduled, on_done
     -- never fires, and an attached bystander session (the viewer's) keeps its poll task.
-    check("benchmark_cancel_mid_live", function()
+    check("benchmark_cancel_mid_tiles", function()
         local env = bench_env()
         local Session = require("vnc/session")
-        local pid, port = start_multi{ name = "bench_cancel", repaint = 0.01 }
+        local pid, port = start_multi{ name = "bench_cancel" }
         local bpid, bport = start_mock{ name = "bench_bystander", encoding = "raw", pattern = "gradient" }
         local by = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "by" },
                                 network_mgr = NET }
         by:connect(function() end)
         by:attach({ on_framebuffer_dirty = function() end, on_remote_resized = function() end,
                     on_bell = function() end })
-        local done_called, live = false, false
+        local done_called, tiles = false, false
         local b = env.Benchmark.new{
             profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
             combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
             canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
             network_mgr = NET,
-            on_progress = function(_, _, _, phase) if phase == "live" then live = true end end,
+            on_progress = function(_, _, _, phase) if phase == "tiles" then tiles = true end end,
             on_done = function() done_called = true end,
         }
         b:start()
-        local reached = env.run(function() return live end)
+        local reached = env.run(function() return tiles end)
         local s = b.session
         if reached then env.run(nil, 10) end
         b:cancel()
@@ -1861,7 +1915,7 @@ local function main()
         env.restore()
         stop_mock(pid)
         stop_mock(bpid)
-        if not reached then return nil, "live phase never reached" end
+        if not reached then return nil, "tiles phase never reached" end
         if not by_alive then return nil, "the bystander session lost its poll task" end
         if not s or s:get_state() ~= "disconnected" or s.sock or s.remote then
             return nil, "session not torn down"
@@ -1875,16 +1929,15 @@ local function main()
     -- cancel() from inside on_progress, in each phase that is followed by more work: nothing
     -- stays connected, attached or scheduled, and on_done never fires.
     check("benchmark_cancel_from_on_progress", function()
-        local pid, port = start_multi{ name = "bench_reentrant", repaint = 0.01 }
+        local pid, port = start_multi{ name = "bench_reentrant" }
         local problem
-        for _, at in ipairs{ "connect", "full", "live" } do
+        for _, at in ipairs{ "connect", "full", "tiles" } do
             local env = bench_env()
             local list, untrack = track_sessions()
             local done_called, b = false, nil
             b = env.Benchmark.new{
                 profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
                 combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
-                live_seconds = 1,
                 canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
                 network_mgr = NET,
                 on_progress = function(_, _, _, phase) if phase == at then b:cancel() end end,
@@ -1913,7 +1966,7 @@ local function main()
     -- callback, and in a tick)
     -- ends that combination as failed with the message and tears it down; the run goes on.
     check("benchmark_unexpected_error_fails_the_combination", function()
-        local pid, port = start_multi{ name = "bench_error", repaint = 0.01 }
+        local pid, port = start_multi{ name = "bench_error" }
         local problem
         for _, where in ipairs{ "start", "connect", "tick" } do
             local env = bench_env()
@@ -1922,7 +1975,6 @@ local function main()
             local b = env.Benchmark.new{
                 profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
                 combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
-                live_seconds = 1,
                 canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
                 network_mgr = NET,
                 on_done = function(r) results = r end,
@@ -1959,13 +2011,12 @@ local function main()
 
     -- An unexpected error while finishing, with no combination left, still hands over the results.
     check("benchmark_error_in_finish_still_reports", function()
-        local pid, port = start_multi{ name = "bench_finish", repaint = 0.01 }
+        local pid, port = start_multi{ name = "bench_finish" }
         local env = bench_env()
         local results, calls = nil, 0
         local b = env.Benchmark.new{
             profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
             combinations = combos(env.Benchmark, "24-bit, Tight off"),
-            live_seconds = 1,
             canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
             network_mgr = NET,
             on_done = function(r) calls = calls + 1; results = r end,
@@ -1989,7 +2040,7 @@ local function main()
     -- compete with the measurement, and attached again with its app after done and after cancel.
     check("benchmark_detaches_live_sessions", function()
         local Session = require("vnc/session")
-        local pid, port = start_multi{ name = "bench_detach", repaint = 0.01 }
+        local pid, port = start_multi{ name = "bench_detach" }
         local bpid, bport = start_mock{ name = "bench_detach_by", encoding = "raw", pattern = "gradient" }
         local problem
         for _, ending in ipairs{ "done", "cancel" } do
@@ -2006,12 +2057,11 @@ local function main()
             b = env.Benchmark.new{
                 profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
                 combinations = combos(env.Benchmark, "24-bit, Tight off"),
-                live_seconds = 1,
                 canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
                 network_mgr = NET,
                 sessions = { by = by, idle = idle },
                 on_progress = function(_, _, _, phase)
-                    if phase == "live" then
+                    if phase == "tiles" then
                         seen_attached = by:is_attached()
                         seen_task = false
                         for _, t in ipairs(env.tasks) do if t.fn == by._poll_task then seen_task = true end end
@@ -2028,7 +2078,7 @@ local function main()
             local idle_ok = not idle:is_attached()
             by:disconnect()
             env.restore()
-            if seen_attached == nil then problem = ending .. ": live phase never reached"
+            if seen_attached == nil then problem = ending .. ": tiles phase never reached"
             elseif seen_attached or seen_task then problem = ending .. ": the attached session was not detached during the run"
             elseif not back then problem = ending .. ": the session was not attached again (tasks " .. tasks .. ")"
             elseif not idle_ok then problem = ending .. ": a session that was not attached got attached" end
@@ -2040,39 +2090,43 @@ local function main()
         return true
     end)
 
-    -- The "live" progress (an e-ink refresh of the dialog title) is reported before the live window
-    -- starts, and nothing is counted before it.
-    check("benchmark_live_window_starts_after_progress", function()
+    -- The "tiles" progress (an e-ink refresh of the dialog title) is reported before the first
+    -- tile is requested, and that request goes out on a later tick.
+    check("benchmark_tiles_start_after_progress", function()
         local Session = require("vnc/session")
-        local pid, port = start_multi{ name = "bench_window", repaint = 0.01 }
+        local pid, port = start_multi{ name = "bench_window" }
         local env = bench_env()
-        local t_report, t_live_at_report, results, b
+        local t_report, reqs_at_report, results, b
+        local real_req, reqs = Protocol.request_update, 0
+        Protocol.request_update = function(...) reqs = reqs + 1; return real_req(...) end
         b = env.Benchmark.new{
             profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
             combinations = combos(env.Benchmark, "24-bit, Tight off"),
-            live_seconds = 1,
             canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
             network_mgr = NET,
             on_progress = function(_, _, _, phase)
-                if phase == "live" then
+                if phase == "tiles" then
                     t_report = Session._now()
-                    t_live_at_report = b.run and b.run.t_live or false
+                    reqs_at_report = reqs
                 end
             end,
             on_done = function(r) results = r end,
         }
         b:start()
         env.run(function() return t_report ~= nil end)
-        env.run(function() return results ~= nil or (b.run and b.run.t_live) end)
-        local run = b.run
-        local t_live, px = run and run.t_live, run and run.px
+        local unchanged = (reqs_at_report == reqs)
+        env.run(function() return results ~= nil or (b.run and b.run.t_tiles) end)
+        local t_tiles = b.run and b.run.t_tiles
         env.run(function() return results ~= nil end)
+        Protocol.request_update = real_req
         env.restore()
         stop_mock(pid)
-        if not t_report then return nil, "live never reported" end
-        if t_live_at_report then return nil, "the live window started before the live progress was reported" end
-        if not t_live or t_live <= t_report then return nil, "the live window must start on a later tick" end
-        if px ~= 0 then return nil, "updates counted before the live window: " .. tostring(px) end
+        if not t_report then return nil, "tiles never reported" end
+        if reqs_at_report ~= 3 then
+            return nil, "requests before the tiles progress: " .. tostring(reqs_at_report)
+        end
+        if not unchanged then return nil, "a tile was requested in the tick that reported the progress" end
+        if not t_tiles or t_tiles <= t_report then return nil, "the first tile must be requested on a later tick" end
         if not (results and results[1] and results[1].ok) then return nil, "run did not score" end
         return true
     end)
@@ -2232,11 +2286,17 @@ local function main()
             if not (area.x == 60 and area.y == 45 and area.w == 100 and area.h == 75) then
                 error(string.format("bottom-right area: got %d,%d %dx%d", area.x, area.y, area.w, area.h))
             end
+            s.attached = true -- as the viewer's session is
+            local tx_before = #s.tx
             s:set_view_area(area)
             s:set_view_area(area) -- unchanged: nothing more
             local reqs = env.requests()
             if #reqs ~= before + 1 or reqs[#reqs] ~= req_bytes(0, 60, 45, 100, 75) then
                 error("expected exactly one non-incremental request for the newly visible area")
+            end
+            -- written, not flushed: the next poll (its _pump) sends it
+            if #s.tx ~= tx_before + 1 or s.tx[#s.tx] ~= req_bytes(0, 60, 45, 100, 75) then
+                error("set_view_area must leave the request queued for the next poll, not flush it")
             end
             env.pump_until(function() return s.dirty ~= nil end, "the forced update")
             for _ = 1, 5 do s:_pump() end
@@ -2248,6 +2308,32 @@ local function main()
             if reqs[#reqs] ~= req_bytes(1, 60, 45, 100, 75) then
                 error("the follow-up incremental request must carry the new area")
             end
+        end)
+        return env.done(ok, err)
+    end)
+
+    -- Not attached (the viewer is closed): the newly visible area is only queued; attach's
+    -- whole-screen request covers it.
+    check("session_view_area_queued_while_detached", function()
+        local env = view_session("view_detached", {})
+        local ok, err = pcall(function()
+            local s, remote = env.s, env.s:get_remote()
+            zoom_quarter(remote)
+            s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+            first_update(env)
+            local before = #env.requests()
+            remote.view_x, remote.view_y = 80, 60
+            remote:set_canvas(160, 120)
+            s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+            if #env.requests() ~= before then error("nothing may be sent while detached") end
+            if not s.forced then error("the newly visible area must stay owed") end
+            s:attach(s.app)
+            s:detach()
+            local reqs = env.requests()
+            if #reqs ~= before + 1 or reqs[#reqs] ~= req_bytes(0, 0, 0, 160, 120) then
+                error("attach must send exactly its whole-screen request")
+            end
+            if s.forced then error("the whole-screen request covers the owed area") end
         end)
         return env.done(ok, err)
     end)
@@ -2267,10 +2353,10 @@ local function main()
             local before = #env.requests()
             remote.view_x, remote.view_y = 80, 60
             remote:set_canvas(160, 120)
+            s.attached = true -- held by input, not by being detached
             s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
             if #env.requests() ~= before then error("nothing may be sent while input holds requests") end
             clock = 100 + Session.INPUT_QUIET + 0.1
-            s.attached = true
             s:_poll()
             s.attached = false
             local reqs = env.requests()

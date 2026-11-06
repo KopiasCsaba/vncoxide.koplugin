@@ -64,7 +64,7 @@ local PICTURE_FOOTER = _("Changes take effect on the next connection.")
 local PICTURE_ADVICE = {
     {
         name = _("Which is fastest?"),
-        body = _("it depends on the PC, the network and what is on the screen: on a PocketBook Era, 8-bit with compression has felt faster than 24-bit even on fast Wi-Fi. Measure it: in the connection's menu, tap Find fastest picture settings while something keeps changing on the PC."),
+        body = _("it depends on the PC, the network and what is on the screen: on a PocketBook Era, 8-bit with compression has felt faster than 24-bit even on fast Wi-Fi. Measure it: in the connection's menu, tap Find fastest picture settings with your usual content on the PC screen."),
     },
     {
         name = _("Scale on the PC, not on the e-reader"),
@@ -331,19 +331,19 @@ end
 --- The benchmark engine; tests replace it with a stand-in (nil means @{vnc.benchmark}).
 Dialogs.Benchmark = nil
 
-local BENCH_INTRO = _("Tries 11 picture-setting combinations on this connection, about 7 seconds each (roughly 1.5 minutes).\n\nBefore starting, make the shared area of the PC keep changing — play a video, scroll a long page or run an animation — and leave it running. Each combination is scored by how many changed screen pixels per second reach this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end.")
+local BENCH_INTRO = _("Tries 11 picture-setting combinations on this connection, a few seconds each.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end.")
 local BENCH_PHASES = {
     connect = _("connecting"),
     full = _("full screen"),
-    live = _("live changes"),
+    tiles = _("small pieces"),
 }
 
-local function is_scored(r) return r.ok and not r.still end
+local function is_scored(r) return r.ok end
 
 --[[--
 The benchmark results as text: a header, then one entry per result in the given (ranked) order,
 the label on its own line and the figures indented below it, so that a narrow screen does not
-wrap the columns. Scored rows are numbered; still and failed rows are marked "-".
+wrap the columns. Scored rows are numbered; failed rows are marked "-".
 
 --- @tparam table results sorted rows from @{vnc.benchmark}
 --- @treturn string
@@ -355,9 +355,9 @@ function Dialogs.benchmark_table(results)
         if is_scored(r) then scored = true break end
     end
     if scored then
-        lines[1] = _("Fastest first: changed screen pixels per second reaching this screen, decoding and drawing included.")
+        lines[1] = _("Fastest first: screen pixels per second reaching this screen in small pieces (and the time per piece and per full screen), decoding and drawing included.")
     else
-        lines[1] = _("No combination could be scored. Start something on the PC that keeps changing the shared area — a video, a scrolling page or an animation — and run the benchmark again.")
+        lines[1] = _("No combination could be scored: every one failed, for the reasons below.")
     end
     lines[2] = ""
     local rank = 0
@@ -371,13 +371,10 @@ function Dialogs.benchmark_table(results)
         local figures
         if not r.ok then
             figures = T(_("failed: %1"), tostring(r.error))
-        elseif r.still then
-            figures = _("screen was still — not scored")
         else
-            figures = string.format("%.1f Mpx/s  %s ms/update  %d KB/s  full %d ms",
-                r.px_per_s / 1e6,
-                r.ms_per_update and string.format("%d", math.floor(r.ms_per_update + 0.5)) or "-",
-                math.floor(r.bytes_per_s / 1024 + 0.5), math.floor(r.full_ms + 0.5))
+            figures = string.format("%.1f Mpx/s small  %d ms/tile  full %d ms  %d KB/full",
+                r.tile_px_per_s / 1e6, math.floor(r.tile_ms + 0.5), math.floor(r.full_ms + 0.5),
+                math.floor(r.full_bytes / 1024 + 0.5))
         end
         lines[#lines + 1] = "   " .. figures
     end

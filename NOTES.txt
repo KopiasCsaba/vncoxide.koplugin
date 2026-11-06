@@ -112,11 +112,14 @@ sent and decoded. Whenever the whole remote screen is visible the area is the wh
 the requests are byte-identical to before; request_full_update (attach, DesktopSize) and the
 benchmark's own session stay whole-screen. Pixels outside the area go stale, so when the area moves
 the bounding box of its part the previous area did not cover gets one non-incremental request. It
-is sent at once even though an incremental request is outstanding: a server answers an incremental
-request only when something inside it changes, so on a still screen a request queued behind it
-would never go out, and libvncserver folds every pending request into the one requested region the
-next update answers (so no second request is left outstanding there). While requests are held for key input it waits, and then goes out instead of the
-owed incremental one, as one non-incremental request of their union.
+is written at once (the next poll tick flushes it, so a paint does no socket I/O) even though an
+incremental request is outstanding: a server answers an incremental request only when something
+inside it changes, so on a still screen a request queued behind it would never go out. Merging
+outstanding requests is libvncserver behaviour (rfbserver.c ORs every request into
+requestedRegion, which the next update answers), so there no second request is left outstanding;
+other servers may differ. While requests are held for key input it waits, and then goes out
+instead of the owed incremental one, as one non-incremental request of their union. While the
+session is detached it is only owed: attach's whole-screen request covers it.
 
 Detach/attach. Leaving the viewer detaches (unschedules the poll, stops reading, keeps the socket
 and the plane). Re-attaching sends a non-incremental request for the whole screen, which is both
@@ -168,9 +171,10 @@ copy because save_profile does not keep an omitted password). Every way out retu
 per-connection dialog. The draw canvas is VNC:benchmark_canvas: the open viewer's canvas, else the
 screen in the viewer's default orientation without the keyboard; both fitted zoom modes are
 measured as "fit". Tests inject a fake engine through Dialogs.Benchmark. The engine reports the
-"live" phase from its next tick rather than from the session's update callback, so a cancel() from
+"tiles" phase from its next tick rather than from the session's callbacks, so a cancel() from
 on_progress never disconnects a session from inside its own callback; an unexpected Lua error in a
-tick, start() or the connect callback ends that combination as failed (Benchmark:_guarded).
+tick, start(), the connect callback or the draw ends that combination as failed
+(Benchmark:_guarded, and a pcall around the draw sink).
 For the whole run the engine detaches every attached session it gets as opts.sessions (the UI
 passes plugin.sessions, so the open viewer's too), so their polling, decoding and drawing do not
 skew the scores, and re-attaches exactly those, with their app, when the run finishes, is
@@ -178,9 +182,14 @@ cancelled or errors (attach requests the full update that resyncs them). A combi
 before its handshake completes (refused, timeout, auth/security, Wi-Fi) ends the whole run:
 on_done(results, connect_error), and the UI shows "Could not connect: <reason>" instead of the
 table. Failures after connecting (rejected format, mid-phase error) fail only that combination.
-The "live" progress is reported one tick before the live window opens, so the e-ink refresh of
-the progress title is not measured, and the draw uses the viewer's dither flag (canvas.dither,
-BB8 screen plus Screen.sw_dithering).
+It needs no changing content: every request is non-incremental (3 whole-screen ones, the first a
+warm-up, then the 16 tiles of a 4x4 grid, one at a time, the held incremental request settled by
+each), so the server re-encodes and re-sends identical pixels every time and every combination
+gets the same pixel counts on a still screen. Each request is timed from sending (flushed at once)
+until its update is decoded and drawn; the main score is the tiles' pixels per second, the closest
+to everyday small updates. The "tiles" progress is reported one tick before the first tile is
+requested, so the e-ink refresh of the progress title is not measured, and the draw uses the
+viewer's dither flag (canvas.dither, BB8 screen plus Screen.sw_dithering).
 
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be

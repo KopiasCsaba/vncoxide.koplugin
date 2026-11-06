@@ -626,12 +626,15 @@ nothing that is off screen. The pixels of the new area that the previous one did
 not kept up to date, so one non-incremental request for them (the bounding box of that part) is
 sent, and they arrive even when they did not change.
 
-That request goes out at once, even though an incremental one is outstanding: a server answers an
-incremental request only once something inside it changes, so on a still screen a request queued
-behind it would never be sent. libvncserver folds every pending request into one requested region
-(`requestedRegion`) that the next update answers, so there this does not leave a second request
-behind. Only while requests are held (`_holding`) it waits; it then goes out with the
-owed incremental one as a single non-incremental request of their union.
+That request is written at once (the next poll tick flushes it; this is called from the viewer's
+paint, which must not do socket I/O), even though an incremental one is outstanding: a server
+answers an incremental request only once something inside it changes, so on a still screen a
+request queued behind it would never be sent. libvncserver folds every pending request into one
+requested region (`requestedRegion`) that the next update answers, so there this does not leave a
+second request behind; other servers may differ. While requests are held (`_holding`) it waits;
+it then goes out with the owed incremental one as a single non-incremental request of their union.
+While the session is not attached it is only owed: `attach` requests the whole screen, which
+covers it.
 --- @tparam table|nil rect `{x, y, w, h}` in remote coordinates; nil means the whole framebuffer
 ]]
 function Session:set_view_area(rect)
@@ -644,10 +647,7 @@ function Session:set_view_area(rect)
     local missing = uncovered_bbox(new or whole, old)
     if not missing then return end
     self.forced = Util.union_rect(self.forced, missing)
-    if not self:_holding() then
-        self:_send_forced()
-        self:_flush_now()
-    end
+    if self.attached and not self:_holding() then self:_send_forced() end
 end
 
 --- Sends the owed non-incremental request for newly visible pixels (merged with an owed
