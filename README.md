@@ -81,8 +81,8 @@ keyboard, the **Menu** key (F1 on KOReader's own keymap) toggles it too.
 **The menu** offers the connection list, a status line, the zoom presets, a "keyboard always
 visible" toggle, show/hide keyboard, the screen orientation (including rotations), "use current
 orientation as default", what the page buttons send, sending single keys (Enter/Tab/Esc/Delete),
-**Disconnect** (with a confirmation) and **Leave (keep connection)**. If the connection has just dropped, it leads with
-**Reconnect to …**.
+**Disconnect** (with a confirmation) and **Leave (keep connection)**. If the connection has just
+dropped, it leads with **Reconnect to …**.
 
 **The keyboard** is drawn over the framebuffer, and showing it leaves the zoom alone — except in
 **Fit (with keyboard)**, the mode that deliberately fits the zoom into the space the keyboard
@@ -245,7 +245,7 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   quality** and **Compression level** (Off or 0–9; Off leaves the server's default) trade picture
   quality and CPU for bytes. JPEG is only used at 24-bit colour. The choice is stored when the
   connection is saved and **takes effect on the next connection** — saving the connection that is
-  live says to reconnect. Long-press a setting for its help.
+  live says to reconnect. New connections start with Tight off. Long-press a setting for its help.
 - **Page buttons**: the menu's **Page buttons send** chooses what a device's page-turn buttons do.
   The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
   scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also

@@ -546,7 +546,7 @@ end
 --- @tparam boolean down
 function Session:send_key(keysym, down)
     if not self.proto then return end
-    self:note_input()
+    if down then self:note_input() end
     self.proto:send_key(keysym, down)
     self:_flush_now()
 end

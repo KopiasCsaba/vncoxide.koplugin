@@ -105,18 +105,18 @@ and the plane). Re-attaching sends a non-incremental request for the whole scree
 the resynchronisation and the way updates pushed while detached are absorbed. Only Disconnect
 closes the socket and restores Wi-Fi, and only Wi-Fi that the plugin turned on is turned off.
 
-Settings. There is no schema version and no migration - the plugin has no released file format to
-be compatible with. vnc/settings.lua:normalise() just keeps the file in shape on load:
-missing global settings get their defaults, unknown keys are dropped, profiles without a usable
-name are dropped. One invariant is enforced there too: at most one profile may carry
-`autoconnect` (see below), so the first flagged one keeps it and the rest are cleared.
-Never add migration code "just in case" before a format has actually shipped.
+Settings. There is no schema version. The only migration is for the released global `enable_tight`
+(see "Pixel format and bandwidth" below). vnc/settings.lua:normalise() otherwise just keeps the
+file in shape on load: missing global settings get their defaults, unknown keys are dropped,
+profiles without a usable name are dropped. One invariant is enforced there too: at most one
+profile may carry `autoconnect` (see below), so the first flagged one keeps it and the rest are
+cleared.
 
 Pixel format and bandwidth. These are per-connection profile fields (vnc/settings.lua
 PROFILE_FIELDS), edited behind the connection editor's Picture button (Dialogs.picture_settings)
 and stored only on Save; save_profile keeps a field the caller omits. The session reads them from
-the connecting profile once per connection: `color_depth` (24, 16 or 8; vnc/pxfmt.lua:for_depth gives 32 bpp RGB, RGB565 or BGR233, all
-expanded to the RGB24 plane), and `jpeg_quality`/`compress_level` (false or 0..9), which
+the connecting profile once per connection: `color_depth` (24, 16 or 8; vnc/pxfmt.lua:for_depth
+gives 32 bpp RGB, RGB565 or BGR233, all expanded to the RGB24 plane), and `jpeg_quality`/`compress_level` (false or 0..9), which
 Encodings.order appends as the Tight pseudo-encodings -32+q and -256+l - only when `enable_tight`
 is on, since without Tight no server reads them. Servers only send Tight JPEG at 32 bpp, so JPEG
 quality does nothing at 16/8-bit. normalise() resets anything else to the default (24 / false).
@@ -366,8 +366,7 @@ TIMING TRACE (finding out where a lag goes)
 
 Every line starts with "vnc-timing:" and goes through logger.dbg, so it exists only while KOReader's
 debug logging is on (Util.timing_enabled() reads dbg.is_on live; off = one field read per event, no
-formatting). Enable: Settings (gear) -> Developer options -> Enable debug logging (KOReader may need
-a restart on some builds). Reproduce, then take koreader/crash.log (the "koreader" folder on the
+formatting). Enable: Settings (gear) -> Developer options -> Enable debug logging. Reproduce, then take koreader/crash.log (the "koreader" folder on the
 device: it is where KOReader writes its log). Filter with: grep 'vnc-timing' crash.log
 
   vnc-timing: input key|wheel           a key / wheel press was noted (Session:note_input)

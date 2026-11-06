@@ -1542,7 +1542,11 @@ check("page_buttons_count_as_input_taps_do_not", function()
     local after_pointer = s.last_input
     s:send_key(0xFF56, true)
     local after_key = s.last_input
+    s.last_input = nil
+    s:send_key(0xFF56, false)
+    local after_release = s.last_input
     Session._now = real_now
+    assert_true(after_release == nil, "a key release must not be noted as input")
     assert_true(after_pointer == nil, "a pointer event must not hold screen updates")
     assert_true(after_key == 50, "a key must record the input time, got " .. tostring(after_key))
 end)
