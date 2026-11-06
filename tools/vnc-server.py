@@ -100,6 +100,8 @@ def parse_zoom(zoom, sharp):
     if factor <= 0:
         die("-z must look like 2, 1.5 or 4/3")
     if factor == 1:
+        if sharp:
+            die("--sharp needs -z other than 1")
         return None, 1
     return zoom + (":nb" if sharp else ""), factor
 

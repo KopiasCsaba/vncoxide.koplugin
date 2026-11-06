@@ -241,30 +241,6 @@ function Remote:screen_to_remote(sx, sy)
     return rx, ry
 end
 
---- The source rect in plane coordinates that covers the canvas (may exceed the plane).
---- @treturn number, number, number, number x, y, w, h
-function Remote:get_view_rect()
-    return math.floor(self.view_x), math.floor(self.view_y),
-        math.ceil(self.cw / self.scale), math.ceil(self.ch / self.scale)
-end
-
---[[--
-Maps a remote rect onto canvas coordinates, for dirty regions.
-
-The result is deliberately generous by a pixel: a scaled rect's edges can land between
-pixels, and repainting one extra row/column is cheaper than a missing one.
---- @tparam table rect `{x, y, w, h}` in remote coordinates
---- @tparam number cx, cy canvas origin
---- @treturn number, number, number, number
-]]
-function Remote:rect_to_canvas(rect, cx, cy)
-    local x = cx + math.floor((rect.x - self.view_x) * self.scale)
-    local y = cy + math.floor((rect.y - self.view_y) * self.scale)
-    local w = math.ceil(rect.w * self.scale) + 1
-    local h = math.ceil(rect.h * self.scale) + 1
-    return x, y, w, h
-end
-
 --- The view as the scaler draws it: at scale 1 the offset is rounded to whole pixels.
 function Remote:_render_view()
     local s, vx, vy = self.scale, self.view_x, self.view_y
@@ -345,9 +321,13 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
     if #self._stale > 0 then self._stale = {} end
 
     if dither then
-        local t0 = time.now()
-        bb:ditherblitFrom(canvas, cx, cy, 0, 0, cw, ch)
-        self.last_blit_ms = time.to_ms(time.now() - t0)
+        if Util.timing_enabled() then
+            local t0 = time.now()
+            bb:ditherblitFrom(canvas, cx, cy, 0, 0, cw, ch)
+            self.last_blit_ms = time.to_ms(time.now() - t0)
+        else
+            bb:ditherblitFrom(canvas, cx, cy, 0, 0, cw, ch)
+        end
     else
         bb:blitFrom(canvas, cx, cy, 0, 0, cw, ch)
     end

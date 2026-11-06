@@ -34,8 +34,10 @@ vnc/util.lua        Byte reader/writer for protocol fields, rect unions, UTF-8 s
 vnc/keysyms.lua     KOReader key names / characters -> X11 keysyms.
 vnc/session.lua     The transport driver: LuaSocket TCP, Wi-Fi, the poll task, tx/rx
                           buffering, attach/detach, reconnect, dirty-rect plumbing.
-vnc/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer) and the view transform
-                          (fit / zoom / pan / draw).
+vnc/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer), the view transform
+                          (fit / zoom / pan / draw) and the persistent canvas buffer that
+                          holds the scaled view between draws.
+vnc/scaler.lua      Global-coordinate sharp/smooth scaler used for partial redraws.
 vnc/app.lua         The full-screen viewer widget: canvas, gestures, on-screen keyboard,
                           menu wiring, remote input.
 vnc/menu.lua        The in-app menu.

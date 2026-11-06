@@ -115,6 +115,8 @@ class Pure(unittest.TestCase):
                 vs.parse_zoom(bad, False)
         with self.assertRaises(SystemExit):
             vs.parse_zoom(None, True)
+        with self.assertRaises(SystemExit):
+            vs.parse_zoom("1", True)
 
 
 class FrameNoLib(unittest.TestCase):

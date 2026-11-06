@@ -711,7 +711,9 @@ check("a_view_that_fits_goes_above_the_keyboard", function()
     assert_true(app.canvas.h == size.h - kbd_h,
         string.format("the canvas must be the space above the keyboard, got %d of %d", app.canvas.h, size.h))
     assert_true(remote:get_scale() == 0.5, "placing the view must not change the zoom")
-    local dx, dy, dw, dh = remote:rect_to_canvas({ x = 0, y = 0, w = 400, h = 300 }, app.canvas.x, app.canvas.y)
+    local cr = remote:canvas_rect_for({ x = 0, y = 0, w = 400, h = 300 })
+    assert_true(cr ~= nil, "the whole remote screen must be visible")
+    local dx, dy, dw, dh = app.canvas.x + cr.x, app.canvas.y + cr.y, cr.w, cr.h
     assert_true(dy >= app.canvas.y and dy + dh <= app.canvas.y + app.canvas.h + 1,
         string.format("the whole remote screen must be above the keyboard: y %d..%d, keyboard at %d",
             dy, dy + dh, app.canvas.y + app.canvas.h))
@@ -741,8 +743,9 @@ check("a_view_that_fits_goes_above_the_keyboard", function()
     -- "fit (with keyboard)" always fits there, by choosing the scale
     app:zoom_to("fit_with_keyboard")
     assert_true(app.canvas.h == size.h - kbd_h, "the keyboard-aware fit uses the space above the keyboard")
-    local _dx2, dy2, _dw2, dh2 = remote:rect_to_canvas({ x = 0, y = 0, w = 400, h = 300 },
-        app.canvas.x, app.canvas.y)
+    local cr2 = remote:canvas_rect_for({ x = 0, y = 0, w = 400, h = 300 })
+    assert_true(cr2 ~= nil, "the whole remote screen must be visible")
+    local dy2, dh2 = app.canvas.y + cr2.y, cr2.h
     assert_true(dy2 >= app.canvas.y and dy2 + dh2 <= app.canvas.y + app.canvas.h + 1,
         "and the whole remote screen is inside it")
 
@@ -1804,7 +1807,9 @@ check("the_menu_lands_on_the_panel", function()
     UIManager:forceRePaint()
     app:zoom_to(1)                    -- 1:1, so a pixel probe below means what it says
     UIManager:forceRePaint()
-    local dx, dy = remote:rect_to_canvas({ x = 0, y = 0, w = 400, h = 300 }, app.canvas.x, app.canvas.y)
+    local cr = remote:canvas_rect_for({ x = 0, y = 0, w = 400, h = 300 })
+    assert_true(cr ~= nil, "the whole remote screen must be visible")
+    local dx, dy = app.canvas.x + cr.x, app.canvas.y + cr.y
     app:on_framebuffer_dirty({ x = 0, y = 0, w = 400, h = 300 })
     UIManager:forceRePaint()
     assert_true(stale_pixels() == 0, "the frame must reach the panel")
@@ -1838,7 +1843,9 @@ check("a_popup_leaves_the_panel_alone_but_not_the_plane", function()
     UIManager:forceRePaint()
     app:zoom_to(1)
     UIManager:forceRePaint()
-    local dx, dy = remote:rect_to_canvas({ x = 0, y = 0, w = 400, h = 300 }, app.canvas.x, app.canvas.y)
+    local cr = remote:canvas_rect_for({ x = 0, y = 0, w = 400, h = 300 })
+    assert_true(cr ~= nil, "the whole remote screen must be visible")
+    local dx, dy = app.canvas.x + cr.x, app.canvas.y + cr.y
     local plane = remote:get_plane()
     plane:paintRect(0, 0, 400, 300, bb.COLOR_GRAY_7)
     remote:mark_dirty()
