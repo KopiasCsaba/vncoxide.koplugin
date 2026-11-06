@@ -284,10 +284,17 @@ tools/vnc-server.py --list                       # connected outputs and their g
 tools/vnc-server.py                              # primary monitor, port 5900, asks for a password once
 tools/vnc-server.py -o HDMI-1 -n                 # a named output, no password
 tools/vnc-server.py -s 632x840 -O 0,40 -f        # top-left 632x840 below a 40 px taskbar, with a red frame
+tools/vnc-server.py -s 632x840 -z 2 --sharp      # frames scaled 2x on the PC (1264x1680 for the reader)
 tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; extra args go to x11vnc
 ```
 
 - `-s WxH` / `-O X,Y` select the area, handy to match the reader's screen size.
+- `-z ZOOM` (`2`, `1.5`, `4/3`) makes x11vnc scale the frames before sending (`-scale`); `--sharp`
+  adds nearest-neighbour scaling (no blending, crisper text). The start-up line shows the frame size
+  the viewer will get, e.g. `-s 632x840 -z 2` gives 1264x1680 for a 1264x1680 screen. Set the viewer
+  zoom to 100% then: the reader does no scaling and draws fastest, at the price of zoom² times the
+  pixels to transfer and decode. The viewer's per-connection "Sharp scaling" is the client-side
+  alternative that keeps the bandwidth low.
 - `-f` draws a thin red frame (50% opacity with a compositor) just outside the shared area, so
   you can see what the reader shows. It is removed when the server stops; if it cannot be drawn
   you get one warning and the server runs without it.

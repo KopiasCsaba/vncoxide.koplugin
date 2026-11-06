@@ -97,6 +97,25 @@ class Pure(unittest.TestCase):
         self.assertEqual(cmd[7:11], ["-rfbauth", "p", "-allow", "1.2.3.4"])
         self.assertEqual(cmd[-1], "-v")
 
+    def test_build_cmd_scale(self):
+        cmd = vs.build_cmd(":0", (632, 840, 0, 0), 5900, ["-nopw"], None, [], scale="2:nb")
+        self.assertEqual(cmd[3:7], ["-clip", "632x840+0+0", "-scale", "2:nb"])
+        self.assertEqual(cmd[7], "-rfbport")
+        self.assertNotIn("-scale", vs.build_cmd(":0", (1, 2, 3, 4), 5900, [], None, []))
+
+    def test_parse_zoom(self):
+        self.assertEqual(vs.parse_zoom("2", False), ("2", 2))
+        self.assertEqual(vs.parse_zoom("2", True), ("2:nb", 2))
+        self.assertEqual(vs.parse_zoom("4/3", False)[0], "4/3")
+        self.assertEqual(vs.parse_zoom("1.5", False)[0], "1.5")
+        self.assertEqual(vs.parse_zoom(None, False), (None, 1))
+        self.assertEqual(vs.parse_zoom("1", False), (None, 1))
+        for bad in ("0", "abc", "-2", "1/0", "0/5", "2x", ""):
+            with self.assertRaises(SystemExit):
+                vs.parse_zoom(bad, False)
+        with self.assertRaises(SystemExit):
+            vs.parse_zoom(None, True)
+
 
 class FrameNoLib(unittest.TestCase):
     def test_start_without_libx11(self):
@@ -151,6 +170,23 @@ class MainEndToEnd(unittest.TestCase):
         self.assertEqual(self.argv(), ["-display", ":7", "-clip", "632x840+2560+40", "-rfbport", "5901",
                                        "-nopw", "-allow", "10.0.0.2", "-forever", "-shared", "-cursor",
                                        "arrow", "-wait", "50", "-defer", "100", "-noxrecord", "-ncache", "0", "-v"])
+
+    def test_zoom(self):
+        rc, out, err = self.run_main("-n", "-s", "632x840", "-z", "2", "--sharp")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("scaled 2 sharp -> 1264x1680\n", out)
+        a = self.argv()
+        self.assertEqual(a[a.index("-clip"):a.index("-clip") + 4], ["-clip", "632x840+0+0", "-scale", "2:nb"])
+        rc, out, _ = self.run_main("-n", "-s", "632x840", "-z", "4/3")
+        self.assertIn("scaled 4/3 -> 843x1120\n", out)
+        self.assertEqual(self.argv()[self.argv().index("-scale") + 1], "4/3")
+
+    def test_zoom_errors(self):
+        for args, msg in ((("-z", "0"), "-z must look like"), (("-z", "abc"), "-z must look like"),
+                          (("--sharp",), "--sharp needs -z")):
+            rc, _, err = self.run_main("-n", *args)
+            self.assertEqual(rc, 1)
+            self.assertIn(msg, err)
 
     def test_default_primary_and_password_file(self):
         pw = os.path.join(self.d, "pw")

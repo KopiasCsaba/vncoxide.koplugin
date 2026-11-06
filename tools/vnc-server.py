@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import threading
+from fractions import Fraction
 
 APT_HINT = "Debian/Ubuntu: sudo apt install x11vnc x11-xserver-utils"
 _LINE = re.compile(r"^(\S+) connected( primary)?\s*(?:(\d+)x(\d+)\+(\d+)\+(\d+))?")
@@ -86,9 +87,29 @@ def frame_rects(area, out):
     return rects
 
 
-def build_cmd(display, area, port, auth, allow, extra):
+def parse_zoom(zoom, sharp):
+    """(x11vnc -scale value or None, numeric factor) from -z/--sharp; factor 1 means no scaling."""
+    if zoom is None:
+        if sharp:
+            die("--sharp needs -z")
+        return None, 1
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)|(\d+)/(\d+)", zoom)
+    factor = 0
+    if m:
+        factor = Fraction(zoom) if m.group(1) else Fraction(int(m.group(2)), int(m.group(3))) if int(m.group(3)) else 0
+    if factor <= 0:
+        die("-z must look like 2, 1.5 or 4/3")
+    if factor == 1:
+        return None, 1
+    return zoom + (":nb" if sharp else ""), factor
+
+
+def build_cmd(display, area, port, auth, allow, extra, scale=None):
     w, h, x, y = area
-    cmd = ["x11vnc", "-display", display, "-clip", "%dx%d+%d+%d" % (w, h, x, y), "-rfbport", str(port)] + list(auth)
+    cmd = ["x11vnc", "-display", display, "-clip", "%dx%d+%d+%d" % (w, h, x, y)]
+    if scale:
+        cmd += ["-scale", scale]
+    cmd += ["-rfbport", str(port)] + list(auth)
     if allow:
         cmd += ["-allow", allow]
     # -cursor arrow: pointer drawn into the image (visible on e-ink); -wait/-defer batch updates.
@@ -205,6 +226,10 @@ def make_parser():
     p.add_argument("-s", metavar="WxH", help="share only the top-left WxH of the output, e.g. 632x840")
     p.add_argument("-O", metavar="X,Y", default="0,0",
                    help="offset of the shared area from the output's top-left, e.g. 0,40 to skip a taskbar")
+    p.add_argument("-z", metavar="ZOOM",
+                   help="scale the frame server-side (x11vnc -scale), e.g. 2, 1.5 or 4/3; "
+                        "use 100%% zoom in the viewer then")
+    p.add_argument("--sharp", action="store_true", help="with -z: nearest-neighbour scaling (no blending)")
     p.add_argument("-p", metavar="PORT", type=int, default=5900, help="TCP port (default: 5900)")
     p.add_argument("-a", metavar="IPS", help="comma list of allowed client IPs/prefixes (default: any)")
     p.add_argument("-n", action="store_true", help="no password (otherwise uses/creates the -P file)")
@@ -263,6 +288,7 @@ def main(argv=None):
 
 
 def _main(args, extra):
+    scale, factor = parse_zoom(args.z, args.sharp)
     display = args.d or os.environ.get("DISPLAY") or ":0"
     need = ["xrandr"] if args.list else ["x11vnc", "xrandr"]
     for c in need:
@@ -290,8 +316,12 @@ def _main(args, extra):
                 die("could not store the VNC password in %s" % args.P)
         auth = ["-rfbauth", args.P]
     w, h, x, y = area
-    print("Sharing %s (%dx%d+%d+%d) of %s on port %d" % (out["name"], w, h, x, y, display, args.p), flush=True)
-    cmd = build_cmd(display, area, args.p, auth, args.a, extra)
+    note = ""
+    if scale:
+        note = " scaled %s%s -> %dx%d" % (args.z, " sharp" if args.sharp else "", round(w * factor), round(h * factor))
+    print("Sharing %s (%dx%d+%d+%d) of %s on port %d%s" % (out["name"], w, h, x, y, display, args.p, note),
+          flush=True)
+    cmd = build_cmd(display, area, args.p, auth, args.a, extra, scale)
     rects = frame_rects(area, out) if args.f else None
     if args.f and not rects:
         print("warning: frame disabled (shared area fills the whole output)", file=sys.stderr)
