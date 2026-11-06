@@ -1703,8 +1703,9 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
     tap(find_item(find_item(menu.item_table, "Zoom…").sub_item_table, "100%"))
     assert_true(app.menu == nil, "a zoom choice closes the menu")
     menu = app:open_menu()
-    tap(find_item(find_item(menu.item_table, "Send key").sub_item_table, "Tab"))
-    assert_true(app.menu == nil, "a sent key closes the menu")
+    tap(find_item(menu.item_table, "Send keys…"))
+    assert_true(app.menu == nil and app.key_panel ~= nil, "Send keys… closes the menu and opens the panel")
+    app:close_key_panel()
 
     app:onCloseWidget()
     remote:free()
@@ -3070,6 +3071,454 @@ check("viewer_reports_the_visible_area", function()
     assert_true(same(last(), { x = 0, y = 0, w = 400, h = 300 }), "back at fit: " .. show(last()))
     app:onCloseWidget()
     remote:free()
+end)
+
+-- ---------------------------------------------------------------- the "Send keys" panel
+
+local CTRL, SHIFT, ALT, SUPER = 0xFFE3, 0xFFE1, 0xFFE9, 0xFFEB
+
+--- The keys sent so far as "+0x..,-0x.." (down/up), then forgets them.
+local function take_keys(sent)
+    local out = {}
+    for _, e in ipairs(sent.key) do
+        out[#out + 1] = string.format("%s0x%X", e.down and "+" or "-", e.keysym)
+    end
+    sent.key = {}
+    return table.concat(out, ",")
+end
+
+--- Opens the panel the way a user does: from the viewer menu.
+local function open_key_panel(app)
+    local menu = app:open_menu()
+    menu:onMenuSelect(find_item(menu.item_table, "Send keys…"))
+    UIManager:_checkTasks()
+    return app.key_panel
+end
+
+--- The centre of a widget's painted rectangle, as a gesture position.
+local function centre_of(dimen, nx, n)
+    nx, n = nx or 1, n or 1
+    return Geom:new{ x = dimen.x + math.floor(dimen.w * (nx - 0.5) / n), y = dimen.y + math.floor(dimen.h / 2) }
+end
+
+--- Touches a panel button where a finger would: through the real widget stack, after a paint
+--- (a button only learns where it is when it is painted).
+local function touch(panel, id)
+    UIManager:forceRePaint()
+    local button = panel.button_by_id[id]
+    assert_true(button ~= nil, "no panel button " .. id)
+    dispatch_gesture{ ges = "tap", pos = centre_of(button.dimen) }
+end
+
+--- Picks a tab (1-based) on the panel's segmented switch, with a tap on that segment.
+local function pick_tab(panel, n)
+    UIManager:forceRePaint()
+    local switch = panel.tab_switch
+    dispatch_gesture{ ges = "tap", pos = centre_of(switch.dimen, n, #switch.toggle) }
+    assert_true(panel.tab == n, "tab " .. n .. " must be selected, got " .. tostring(panel.tab))
+end
+
+--- Records keys and pointer events in the order they go out: "+0xFFE3" / "-0xFFE3" for keys,
+--- "p<mask>" for pointer events.
+local function wire_log(app)
+    local log = {}
+    local session = app.session
+    local send_key, send_pointer = session.send_key, session.send_pointer
+    session.send_key = function(s_, keysym, down)
+        log[#log + 1] = string.format("%s0x%X", down and "+" or "-", keysym)
+        return send_key(s_, keysym, down)
+    end
+    session.send_pointer = function(s_, x, y, mask)
+        log[#log + 1] = "p" .. mask
+        return send_pointer(s_, x, y, mask)
+    end
+    return function()
+        local out = table.concat(log, ",")
+        for i = #log, 1, -1 do log[i] = nil end
+        return out
+    end
+end
+
+local function close_viewer(app, remote)
+    app:onCloseWidget()
+    remote:free()
+end
+
+check("key_panel_opens_from_the_menu_and_leaves_the_canvas_usable", function()
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    local size = Screen:getSize()
+    assert_true(app.menu == nil, "the menu closes")
+    assert_true(panel ~= nil and top() == panel, "the panel is on top: " .. stack_desc())
+    local s = stack()
+    assert_true(s[#s - 1] == app, "the viewer stays on the stack right under the panel")
+    assert_true(panel.dimen.h < size.h and panel.dimen.h > 0, "the panel is not full screen: " .. panel.dimen.h)
+    assert_true(panel.dimen.w == size.w and panel.dimen.y + panel.dimen.h == size.h, "it is bottom-anchored, full width")
+    assert_true(panel.covers_fullscreen ~= true, "the viewer under it keeps painting")
+    assert_true(not app:_modal_above() and app:_input_target(), "the panel does not count as a popup")
+    assert_true(app.vk_visible == false, "the keyboard makes room for the panel")
+
+    -- a remote update still reaches the screen under the panel
+    UIManager:forceRePaint()
+    app._needs_flash = false
+    local dirtied = false
+    local real_dirty = UIManager.setDirty
+    UIManager.setDirty = function(self_, w, ...)
+        if w == app then dirtied = true end
+        return real_dirty(self_, w, ...)
+    end
+    app:on_framebuffer_dirty({ x = 0, y = 0, w = 10, h = 10 })
+    UIManager.setDirty = real_dirty
+    assert_true(dirtied, "the viewer keeps refreshing the remote while the panel is up")
+
+    -- a tap above the panel clicks the remote; one on the panel (even between buttons) does not
+    UIManager:forceRePaint()
+    sent.pointer = {}
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 20, y = 20 } }
+    assert_true(#sent.pointer == 3, "a tap above the panel must click the remote, got " .. #sent.pointer)
+    sent.pointer = {}
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 1, y = panel.dimen.y + 1 } }
+    dispatch_gesture{ ges = "hold", pos = Geom:new{ x = 1, y = panel.dimen.y + 1 } }
+    assert_true(#sent.pointer == 0, "the panel's own area must never click the remote, got " .. #sent.pointer)
+    assert_true(take_keys(sent) == "", "opening the panel sends no key")
+
+    -- opening it again does not stack a second one
+    assert_true(app:open_key_panel() == panel and count(function(w) return w == panel end) == 1, "one panel")
+    close_viewer(app, remote)
+end)
+
+check("key_panel_armed_modifier_wraps_the_next_key_only", function()
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    touch(panel, "mod:Ctrl")
+    assert_true(panel:modifier_state("Ctrl") == "armed", "a tap arms Ctrl")
+    assert_true(take_keys(sent) == "", "arming sends nothing")
+    assert_true(panel.button_by_id["combo"].text == "Ctrl+…", "the combo shows it: " .. panel.button_by_id["combo"].text)
+    pick_tab(panel, 3) -- Letters
+    touch(panel, "key:T")
+    local got = take_keys(sent)
+    assert_true(got == "+0xFFE3,+0x74,-0x74,-0xFFE3", "Ctrl+T on the wire, got " .. got)
+    assert_true(panel:modifier_state("Ctrl") == nil, "Ctrl is disarmed after one key")
+    assert_true(panel.button_by_id["combo"].text == "Tap a key", "the combo is empty again")
+    touch(panel, "key:T")
+    got = take_keys(sent)
+    assert_true(got == "+0x74,-0x74", "the next key goes alone, got " .. got)
+    -- tap, tap again: disarmed, nothing sent
+    touch(panel, "mod:Shift")
+    touch(panel, "mod:Shift")
+    assert_true(panel:modifier_state("Shift") == nil and take_keys(sent) == "", "a second tap disarms")
+    assert_true(top() == panel, "the panel stays open after sending")
+    close_viewer(app, remote)
+end)
+
+check("key_panel_armed_modifiers_go_with_the_next_canvas_action", function()
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    local wire = wire_log(app)
+    local above = Geom:new{ x = 20, y = 20 }
+
+    -- a tap: downs before the press, ups right after the release, then disarmed
+    touch(panel, "mod:Ctrl")
+    wire()
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "tap", pos = above }
+    local got = wire()
+    assert_true(got == "+0xFFE3,p0,p1,p0,-0xFFE3", "Ctrl+click, got " .. got)
+    assert_true(panel:modifier_state("Ctrl") == nil, "Ctrl is disarmed after the click")
+    assert_true(panel.button_by_id["combo"].text == "Tap a key", "and the panel shows it")
+    dispatch_gesture{ ges = "tap", pos = above }
+    got = wire()
+    assert_true(got == "p0,p1,p0", "the next tap has no Ctrl, got " .. got)
+
+    -- a drag: the modifiers stay down from the press to the release
+    touch(panel, "mod:Shift")
+    wire()
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 60, y = 40 }, relative = { x = 40, y = 20 } }
+    assert_true(panel:modifier_state("Shift") == nil, "Shift is disarmed as soon as the drag takes it")
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = 60, y = 40 } }
+    got = wire()
+    assert_true(got == "+0xFFE1,p1,p1,p1,p0,-0xFFE1", "Shift+drag, got " .. got)
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = 40, y = 30 } }
+    got = wire()
+    assert_true(got == "p1,p1,p0", "the next drag has no Shift, got " .. got)
+
+    -- a long press (right click) takes them too; several go down in order, up in reverse
+    touch(panel, "mod:Alt")
+    touch(panel, "mod:Ctrl")
+    wire()
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "hold", pos = above }
+    dispatch_gesture{ ges = "hold_release", pos = above }
+    got = wire()
+    assert_true(got == "+0xFFE3,+0xFFE9,p4,p0,-0xFFE9,-0xFFE3", "Ctrl+Alt+right click, got " .. got)
+
+    -- nothing armed: a two-finger view pan is not an action and sends no key
+    touch(panel, "mod:Super")
+    wire()
+    UIManager:forceRePaint()
+    app:onTwoFingerPan(nil, { relative = { x = 1, y = 1 } })
+    app:onTwoFingerPanRelease(nil, {})
+    assert_true(wire() == "" and panel:modifier_state("Super") == "armed", "a view pan leaves Super armed")
+    close_viewer(app, remote)
+end)
+
+check("key_panel_combo_order_and_modifiers_only", function()
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    -- armed in a scrambled order: the wire order is still Ctrl, Shift, Alt, Super
+    for _, m in ipairs({ "Super", "Alt", "Ctrl", "Shift" }) do touch(panel, "mod:" .. m) end
+    assert_true(panel.button_by_id["combo"].text == "Ctrl+Shift+Alt+Super+…", panel.button_by_id["combo"].text)
+    pick_tab(panel, 2) -- F1–F12
+    touch(panel, "key:F4")
+    local got = take_keys(sent)
+    assert_true(got == "+0xFFE3,+0xFFE1,+0xFFE9,+0xFFEB,+0xFFC1,-0xFFC1,-0xFFEB,-0xFFE9,-0xFFE1,-0xFFE3",
+        "modifier downs in order, key, ups in reverse: " .. got)
+
+    -- the combo display: nothing armed sends nothing; Super alone is pressed and released
+    assert_true(panel.button_by_id["combo"].enabled == false, "with nothing armed the combo is not a button")
+    touch(panel, "combo")
+    assert_true(take_keys(sent) == "", "nothing armed, nothing sent")
+    touch(panel, "mod:Super")
+    touch(panel, "combo")
+    got = take_keys(sent)
+    assert_true(got == "+0xFFEB,-0xFFEB", "Super alone, got " .. got)
+    assert_true(panel:modifier_state("Super") == nil, "and it is disarmed")
+    close_viewer(app, remote)
+end)
+
+check("key_panel_recent_combos_record_and_replay", function()
+    local app, remote, sent = new_app()
+    local flushed = 0
+    app.plugin.settings.flush = function() flushed = flushed + 1 end
+    local panel = open_key_panel(app)
+    pick_tab(panel, 3)
+    touch(panel, "mod:Ctrl")
+    touch(panel, "key:T")
+    assert_true(flushed > 0, "the recent list is saved")
+    local recent = app.settings.recent_combos
+    assert_true(#recent == 1 and recent[1].keysym == 0x74 and recent[1].mods[1] == "Ctrl"
+        and #recent[1].mods == 1 and recent[1].label == "T", "Ctrl+T is recorded")
+    assert_true(panel.button_by_id["recent:1"].text == "Ctrl+T", "and shown")
+    take_keys(sent)
+
+    -- a replay sends exactly that combo, whatever is armed, and leaves the armed state alone
+    touch(panel, "mod:Shift")
+    touch(panel, "recent:1")
+    local got = take_keys(sent)
+    assert_true(got == "+0xFFE3,+0x74,-0x74,-0xFFE3", "replay of Ctrl+T, got " .. got)
+    assert_true(panel:modifier_state("Shift") == "armed", "the armed Shift waits for a panel key")
+    touch(panel, "mod:Shift")
+
+    -- distinct combos, most recent first, at most four; a repeat moves to the front
+    pick_tab(panel, 1)
+    touch(panel, "key:Esc")
+    touch(panel, "key:Tab")
+    touch(panel, "mod:Alt")
+    touch(panel, "key:Tab")
+    touch(panel, "mod:Super")
+    touch(panel, "combo")
+    recent = app.settings.recent_combos
+    assert_true(#recent == 4, "at most four, got " .. #recent)
+    local labels = {}
+    for i = 1, 4 do labels[i] = panel.button_by_id["recent:" .. i].text end
+    local shown = table.concat(labels, "|")
+    assert_true(shown == "Super|Alt+Tab|Tab|Esc", "most recent first: " .. shown)
+    touch(panel, "key:Tab")
+    for i = 1, 4 do labels[i] = panel.button_by_id["recent:" .. i].text end
+    shown = table.concat(labels, "|")
+    assert_true(shown == "Tab|Super|Alt+Tab|Esc", "a repeat moves to the front: " .. shown)
+    take_keys(sent)
+
+    -- a new panel (and a new viewer) starts with the saved list
+    app:close_key_panel()
+    panel = open_key_panel(app)
+    assert_true(panel.button_by_id["recent:1"].text == "Tab", "the list survives the panel")
+    close_viewer(app, remote)
+end)
+
+check("key_panel_release_all", function()
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    assert_true(panel.button_by_id["release_all"].enabled == false, "nothing to release yet")
+    touch(panel, "mod:Ctrl")
+    touch(panel, "mod:Shift")
+    touch(panel, "mod:Super")
+    assert_true(panel.button_by_id["release_all"].enabled == true, "something to release")
+    touch(panel, "release_all")
+    assert_true(take_keys(sent) == "", "armed modifiers were never pressed: nothing goes out")
+    for _, m in ipairs({ "Ctrl", "Shift", "Alt", "Super" }) do
+        assert_true(panel:modifier_state(m) == nil, m .. " is cleared")
+    end
+    assert_true(panel.button_by_id["combo"].text == "Tap a key", "the combo is empty")
+    assert_true(panel.button_by_id["release_all"].enabled == false, "and there is nothing left to release")
+    close_viewer(app, remote)
+end)
+
+check("key_panel_close_paths_release_everything", function()
+    local Key = require("device/key")
+    local paths = {
+        ["close button"] = function(app, panel)
+            UIManager:forceRePaint()
+            local x = panel.title_bar.right_button
+            dispatch_gesture{ ges = "tap", pos = centre_of(x.dimen) }
+        end,
+        ["Back key"] = function(app, panel)
+            UIManager:sendEvent(Event:new("KeyPress", Key:new("Back", {})))
+            UIManager:sendEvent(Event:new("KeyRelease", Key:new("Back", {})))
+        end,
+        ["Menu key"] = function(app, panel)
+            UIManager:sendEvent(Event:new("KeyPress", Key:new("Menu", {})))
+            UIManager:sendEvent(Event:new("KeyRelease", Key:new("Menu", {})))
+        end,
+        ["leaving the viewer"] = function(app, panel) UIManager:close(app) end,
+    }
+    for name, close in pairs(paths) do
+        -- armed only: nothing was ever pressed, so nothing at all goes out
+        local app, remote, sent = new_app()
+        local panel = open_key_panel(app)
+        touch(panel, "mod:Ctrl")
+        take_keys(sent)
+        close(app, panel)
+        UIManager:_checkTasks()
+        local got = take_keys(sent)
+        assert_true(got == "", name .. " with Ctrl armed must send nothing, got " .. got)
+        assert_true(app.key_panel == nil and count(function(w) return w == panel end) == 0, name .. " closes it")
+        if name ~= "leaving the viewer" then
+            assert_true(top() == app and app:_input_target(), name .. ": the viewer is on top again")
+            assert_true(app.menu == nil, name .. " does not open the menu")
+            -- a new panel starts clean
+            panel = open_key_panel(app)
+            assert_true(panel:modifier_state("Ctrl") == nil, name .. ": no pending state survives")
+            app:close_key_panel()
+        end
+        close_viewer(app, remote)
+
+        -- in the middle of a Ctrl+drag: the pending Ctrl up goes out, exactly once
+        app, remote, sent = new_app()
+        panel = open_key_panel(app)
+        touch(panel, "mod:Ctrl")
+        UIManager:forceRePaint()
+        dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+        got = take_keys(sent)
+        assert_true(got == "+0xFFE3", name .. ": the drag pressed Ctrl, got " .. got)
+        close(app, panel)
+        UIManager:_checkTasks()
+        got = take_keys(sent)
+        assert_true(got == "-0xFFE3", name .. " during a Ctrl+drag must release Ctrl, got " .. got)
+        app:onPanRelease(nil, { pos = Geom:new{ x = 40, y = 30 } })
+        close_viewer(app, remote)
+        got = take_keys(sent)
+        assert_true(got == "", name .. ": nothing more after that, got " .. got)
+    end
+end)
+
+check("key_panel_disconnect_mid_drag_releases_modifiers_before_teardown", function()
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    touch(panel, "mod:Shift")
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+    assert_true(take_keys(sent) == "+0xFFE1", "a Shift+drag is under way")
+    local order = {}
+    local session = app.session
+    local real_send = session.send_key
+    session.send_key = function(s, keysym, down)
+        order[#order + 1] = string.format("%s0x%X", down and "+" or "-", keysym)
+        return real_send(s, keysym, down)
+    end
+    session.disconnect = function() order[#order + 1] = "teardown" end
+    -- the plugin's real disconnect path (main.lua), around this viewer and its session
+    local plugin = setmetatable({ sessions = { test = session }, app = app }, { __index = plugin_module })
+    plugin_module.disconnect_session(plugin, "test")
+    local got = table.concat(order, ",")
+    assert_true(got == "-0xFFE1,teardown", "Shift is released before the socket goes, got " .. got)
+    remote:free()
+end)
+
+check("key_panel_every_tab_sends_its_keysyms", function()
+    local tabs = {
+        { "Keys", {
+            { "Esc", 0xFF1B }, { "Tab", 0xFF09 }, { "Enter", 0xFF0D }, { "Backspace", 0xFF08 },
+            { "Delete", 0xFFFF }, { "Insert", 0xFF63 }, { "Home", 0xFF50 }, { "End", 0xFF57 },
+            { "Page Up", 0xFF55 }, { "Page Down", 0xFF56 }, { "Space", 0x20 }, { "Menu", 0xFF67 },
+            { "←", 0xFF51 }, { "↑", 0xFF52 }, { "↓", 0xFF54 }, { "→", 0xFF53 },
+            { "Print Screen", 0xFF61 }, { "Pause", 0xFF13 }, { "Caps Lock", 0xFFE5 } } },
+        { "F1–F12", {} },
+        { "Letters", {} },
+        { "Symbols", {
+            { "`", 0x60 }, { "-", 0x2D }, { "=", 0x3D }, { "[", 0x5B }, { "]", 0x5D }, { "\\", 0x5C },
+            { ";", 0x3B }, { "'", 0x27 }, { ",", 0x2C }, { ".", 0x2E }, { "/", 0x2F } } },
+    }
+    for i = 1, 12 do table.insert(tabs[2][2], { "F" .. i, 0xFFBE + i - 1 }) end
+    for c = string.byte("a"), string.byte("z") do
+        table.insert(tabs[3][2], { string.char(c):upper(), c })
+    end
+    for d = 0, 9 do table.insert(tabs[3][2], { tostring(d), 0x30 + d }) end
+
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    local height = panel.dimen.h
+    for n, tab in ipairs(tabs) do
+        pick_tab(panel, n)
+        assert_true(panel.tab_switch.toggle[n] == tab[1], "tab " .. n .. " is " .. tab[1])
+        assert_true(panel.dimen.h == height, tab[1] .. ": the panel keeps its height")
+        local count_keys = 0
+        for id in pairs(panel.button_by_id) do
+            if id:sub(1, 4) == "key:" then count_keys = count_keys + 1 end
+        end
+        assert_true(count_keys == #tab[2], string.format("%s has %d keys, expected %d", tab[1], count_keys, #tab[2]))
+        for _, key in ipairs(tab[2]) do
+            touch(panel, "key:" .. key[1])
+            local want = string.format("+0x%X,-0x%X", key[2], key[2])
+            local got = take_keys(sent)
+            assert_true(got == want, string.format("%s / %s must send %s, got %s", tab[1], key[1], want, got))
+        end
+    end
+    close_viewer(app, remote)
+end)
+
+check("key_panel_follows_a_rotation", function()
+    local app, remote = new_app()
+    local panel = open_key_panel(app)
+    local start = Screen:getRotationMode()
+    app:set_rotation_mode((start + 1) % 4)
+    local size = Screen:getSize()
+    assert_true(app.key_panel == panel, "the panel stays open")
+    assert_true(panel.dimen.w == size.w and panel.dimen.y + panel.dimen.h == size.h,
+        "and is re-laid out for the new orientation")
+    app:set_rotation_mode(start)
+    close_viewer(app, remote)
+end)
+
+check("recent_combos_setting_is_kept_in_shape", function()
+    local Settings = require("vnc/settings")
+    local store = Settings.open(data_dir .. "/recent_combos_check.lua")
+    store.data.settings.recent_combos = {
+        { mods = { "Ctrl" }, keysym = 0x74, label = "T" },
+        { mods = { "Hyper" }, keysym = 0x74, label = "T" },          -- unknown modifier
+        "junk",
+        { mods = {}, label = "nothing" },                             -- neither key nor modifier
+        { mods = { "Super" }, label = "" },                           -- a modifier on its own is fine
+        { mods = {}, keysym = 0xFF1B, label = "Esc" },
+        { mods = {}, keysym = 0xFF09, label = "Tab" },
+        { mods = {}, keysym = 0x20, label = "Space" },                -- a fifth valid one
+    }
+    store:flush()
+    store = Settings.open(data_dir .. "/recent_combos_check.lua")
+    local list = store.data.settings.recent_combos
+    local labels = {}
+    for _, c in ipairs(list) do labels[#labels + 1] = table.concat(c.mods, "+") .. ":" .. tostring(c.keysym) end
+    local got = table.concat(labels, " ")
+    assert_true(got == "Ctrl:116 Super:nil :65307 :65289", "valid entries only, at most four: " .. got)
+    store.data.settings.recent_combos = "nonsense"
+    store:flush()
+    store = Settings.open(data_dir .. "/recent_combos_check.lua")
+    assert_true(type(store.data.settings.recent_combos) == "table" and #store.data.settings.recent_combos == 0,
+        "garbage becomes an empty list")
 end)
 
 if failures > 0 then

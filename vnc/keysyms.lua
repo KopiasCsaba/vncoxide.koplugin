@@ -40,6 +40,42 @@ for i = 1, 12 do
     Keysyms.special["F" .. i] = 0xFFBE + (i - 1)
 end
 
+--- Keysyms by their X11 name, for keys sent by name rather than from a KOReader key event (the
+--- "Send keys" panel). Kept apart from @{Keysyms.special}, whose reverse map drives the server.
+Keysyms.x11 = {
+    Escape    = 0xFF1B,
+    Tab       = 0xFF09,
+    Return    = 0xFF0D,
+    BackSpace = 0xFF08,
+    Delete    = 0xFFFF,
+    Insert    = 0xFF63,
+    Home      = 0xFF50,
+    End       = 0xFF57,
+    Prior     = 0xFF55,   -- Page Up
+    Next      = 0xFF56,   -- Page Down
+    space     = 0x20,
+    Menu      = 0xFF67,
+    Left      = 0xFF51,
+    Up        = 0xFF52,
+    Right     = 0xFF53,
+    Down      = 0xFF54,
+    Print     = 0xFF61,
+    Pause     = 0xFF13,
+    Caps_Lock = 0xFFE5,
+    Control_L = 0xFFE3,
+    Shift_L   = 0xFFE1,
+    Alt_L     = 0xFFE9,
+    Super_L   = 0xFFEB,
+}
+
+--- The modifiers a combo can carry, in the order they are pressed (released in reverse).
+Keysyms.modifiers = {
+    { name = "Ctrl",  keysym = Keysyms.x11.Control_L },
+    { name = "Shift", keysym = Keysyms.x11.Shift_L },
+    { name = "Alt",   keysym = Keysyms.x11.Alt_L },
+    { name = "Super", keysym = Keysyms.x11.Super_L },
+}
+
 --- Keysyms -> KOReader key names, for the server side (which receives keysyms and has to
 --- produce KOReader key events). Built from @{Keysyms.special}; where two names share a keysym
 --- (the page keys) the first one wins.

@@ -177,25 +177,29 @@ function ViewerApp:getSize()
     return self.dimen
 end
 
---- Height of the on-screen keyboard while it is visible (0 when it is not).
-function ViewerApp:_keyboard_height()
-    if not (self.vk and self.vk_visible) then return 0 end
-    return self.vk:getSize().h or 0
+--- Height of what covers the bottom of the screen: the on-screen keyboard while it is visible,
+--- else the "Send keys" panel while it is open (the keyboard makes room for it), else 0.
+function ViewerApp:_bottom_cover_height()
+    if self.vk and self.vk_visible then
+        return self.vk:getSize().h or 0
+    end
+    if self.key_panel then return self.key_panel.dimen.h end
+    return 0
 end
 
 --[=[--
 The canvas: the area the framebuffer may be drawn in.
 
-That is the whole widget -- the on-screen keyboard is drawn *over* the framebuffer rather than
-shrinking it -- except when the whole remote screen, at the current zoom, fits in the space the
-visible keyboard leaves. Then the view belongs above the keyboard: spreading it over the full
-screen would hide part of it behind the keys and gain nothing. The zoom itself never changes
-here; only where the very same view is placed.
+That is the whole widget -- the on-screen keyboard (or the "Send keys" panel, which works the same
+way) is drawn *over* the framebuffer rather than shrinking it -- except when the whole remote
+screen, at the current zoom, fits in the space the visible keyboard leaves. Then the view belongs
+above the keyboard: spreading it over the full screen would hide part of it behind the keys and
+gain nothing. The zoom itself never changes here; only where the very same view is placed.
 ]=]
 function ViewerApp:_layout(x, y)
     x, y = x or 0, y or 0
     local size = self.dimen
-    local kbd_h = self:_keyboard_height()
+    local kbd_h = self:_bottom_cover_height()
     if kbd_h > 0 and self.remote then
         local w, h = self.remote:get_size()
         local scale = self.remote:get_scale()
@@ -225,7 +229,7 @@ function ViewerApp:_fit_zoom_mode()
         self.remote:fit_view(size.w, size.h)
         return true
     elseif mode == "fit_with_keyboard" then
-        self.remote:fit_view(size.w, size.h - self:_keyboard_height())
+        self.remote:fit_view(size.w, size.h - self:_bottom_cover_height())
         return true
     end
     return false
@@ -274,6 +278,8 @@ KOReader's generic screen-size change notification (also broadcast by the device
 ]]
 function ViewerApp:onScreenResize(dimen)
     if dimen then self.dimen = dimen end
+    -- the panel's height goes into the canvas: lay it out for the new size first
+    if self.key_panel then self.key_panel:relayout() end
     self:_reflow()
     self:_refresh_keyboard()
     self:updateTouchZonesOnScreenResize(self.dimen)
@@ -434,6 +440,10 @@ end
 function ViewerApp:onCloseWidget()
     -- never leave our own menu orphaned on the window stack
     self:close_menu()
+    -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
+    -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
+    self:_drop_key_panel()
+    self:_release_action_mods()
     if self._text_input_asserted then
         self._text_input_asserted = false
         Device:stopTextInput()
@@ -461,8 +471,15 @@ end
 
 -- ---------------------------------------------------------------- input plumbing
 
+--- Widgets above us that are part of the viewer rather than popups over it: the on-screen
+--- keyboard, the "Send keys" panel, and toasts.
+function ViewerApp:_is_overlay(w)
+    return w.toast or w == self.vk or w == self.key_panel
+end
+
 --[[--
-True when no other widget is stacked above us, ignoring the virtual keyboard and toasts.
+True when no other widget is stacked above us, ignoring the virtual keyboard, the key panel and
+toasts.
 
 Without this guard a tap our own Menu does not consume would be forwarded to the server as
 a pointer click.
@@ -472,7 +489,7 @@ function ViewerApp:_input_target()
     for i = #stack, 1, -1 do
         local w = stack[i].widget
         if w == self then return true end
-        if not w.toast and w ~= self.vk then return false end
+        if not self:_is_overlay(w) then return false end
     end
     return false
 end
@@ -483,7 +500,7 @@ function ViewerApp:_modal_above()
     for i = #stack, 1, -1 do
         local w = stack[i].widget
         if w == self then return false end
-        if not w.toast and w ~= self.vk then return true end
+        if not self:_is_overlay(w) then return true end
     end
     return false
 end
@@ -506,15 +523,43 @@ function ViewerApp:send_key(keysym, down)
     self.session:send_key(keysym, down)
 end
 
+--[[--
+A canvas action (tap, long press, drag) begins: the modifiers armed on the "Send keys" panel go
+down now, before the pointer press, and are disarmed there - they are for this one action only.
+`_release_action_mods` lets them go after the pointer release.
+]]
+function ViewerApp:_press_armed()
+    self:_release_action_mods()
+    if not self.key_panel then return end
+    local keysyms = self.key_panel:take_armed()
+    if #keysyms == 0 then return end
+    for _i, keysym in ipairs(keysyms) do
+        self:send_key(keysym, true)
+    end
+    self._action_mods = keysyms
+end
+
+--- Releases the modifiers a canvas action holds (in reverse order); nothing when there are none.
+function ViewerApp:_release_action_mods()
+    local keysyms = self._action_mods
+    if not keysyms then return end
+    self._action_mods = nil
+    for i = #keysyms, 1, -1 do
+        self:send_key(keysyms[i], false)
+    end
+end
+
 -- ---------------------------------------------------------------- canvas gestures
 
 function ViewerApp:onTap(_, ges)
     if not self:_input_target() then return nil end
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+    self:_press_armed()
     -- move, press, release: what a real mouse click looks like on the wire
     self:send_pointer(rx, ry, 0)
     self:send_pointer(rx, ry, 1)
     self:send_pointer(rx, ry, 0)
+    self:_release_action_mods()
     return true
 end
 
@@ -525,6 +570,8 @@ function ViewerApp:onPan(_, ges)
         -- recovers the exact press position without depending on `start_pos`.
         local rel = ges.relative or { x = 0, y = 0 }
         local rx, ry = self:_to_remote(ges.pos.x - rel.x, ges.pos.y - rel.y)
+        -- armed modifiers stay down for the whole drag (Shift+drag selects, Alt+drag moves)
+        self:_press_armed()
         self:send_pointer(rx, ry, 1)
         self._drag_active = true
     end
@@ -538,12 +585,15 @@ function ViewerApp:onPanRelease(_, ges)
     self._drag_active = nil
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 0)
+    self:_release_action_mods()
     return true
 end
 
 function ViewerApp:onHold(_, ges)
     if not self:_input_target() then return nil end
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+    -- a long press is a right click: the armed modifiers go with it, like with a tap
+    self:_press_armed()
     self:send_pointer(rx, ry, 4)
     return true
 end
@@ -552,6 +602,7 @@ function ViewerApp:onHoldRelease(_, ges)
     if not self:_input_target() then return nil end
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 0)
+    self:_release_action_mods()
     return true
 end
 
@@ -716,6 +767,8 @@ end
 
 function ViewerApp:onKeyPress(key)
     self:_ensure_text_input()
+    -- a new press: whatever release was pending from the key that closed the panel is moot
+    self._swallow_release = nil
     if self:_is_menu_key(key) then
         self:toggle_menu()
         return true
@@ -739,6 +792,11 @@ function ViewerApp:onKeyPress(key)
 end
 
 function ViewerApp:onKeyRelease(key)
+    -- the release of the key that closed the key panel: its press never reached the remote
+    if self._swallow_release and self._swallow_release == key.key then
+        self._swallow_release = nil
+        return true
+    end
     if self:_is_menu_key(key) or self:_back_leaves(key) then return true end
     if self:_wheel_direction(key) then return true end
     local keysym = Keysyms.special[key.key]
@@ -793,6 +851,8 @@ end
 --- takes the keyboard out of the way, and it comes back when that popup is gone.
 function ViewerApp:_wanted_keyboard_visible()
     if self:_modal_above() then return false end
+    -- the key panel sits where the keyboard would
+    if self.key_panel then return false end
     return self:is_keyboard_wanted()
 end
 
@@ -944,6 +1004,41 @@ function ViewerApp:close_menu()
         -- framebuffer view (and its keyboard) ourselves.
         self:_sync_keyboard_later()
     end
+end
+
+--- Opens the "Send keys" panel (see @{vnc.keypanel}), or returns the one already open.
+function ViewerApp:open_key_panel()
+    if self.key_panel then return self.key_panel end
+    self.key_panel = require("vnc/keypanel"):new{ app = self }
+    UIManager:show(self.key_panel, "ui")
+    self:_bottom_cover_changed()
+    return self.key_panel
+end
+
+--- Closes the key panel; a drag still under way lets go of the modifiers it took from it.
+--- @tparam[opt] string key_name the KOReader key that closed it: its release is not forwarded
+function ViewerApp:close_key_panel(key_name)
+    if not self.key_panel then return end
+    self:_drop_key_panel()
+    self:_release_action_mods()
+    self._swallow_release = key_name
+    self:_bottom_cover_changed()
+end
+
+function ViewerApp:_drop_key_panel()
+    local panel = self.key_panel
+    if not panel then return end
+    self.key_panel = nil
+    UIManager:close(panel)
+end
+
+--- The panel came or went: the keyboard follows (it makes room for the panel), and the view is
+--- placed against the new free space, like it is for the keyboard.
+function ViewerApp:_bottom_cover_changed()
+    self:evaluate_keyboard()
+    self:_fit_zoom_mode()
+    self:update_canvas()
+    self:_wholesale_change()
 end
 
 function ViewerApp:disconnect_session()

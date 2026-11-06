@@ -41,6 +41,8 @@ vnc/scaler.lua      Global-coordinate sharp/smooth scaler used for partial redra
 vnc/app.lua         The full-screen viewer widget: canvas, gestures, on-screen keyboard,
                           menu wiring, remote input.
 vnc/menu.lua        The in-app menu.
+vnc/keypanel.lua    The "Send keys" panel: one-shot modifier toggles and every key, for
+                          any hotkey; owned by the viewer (ViewerApp:open_key_panel).
 vnc/dialogs.lua     Connection list, per-connection actions, profile editor (with its picture
                     settings).
 vnc/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via a stub inputbox.
@@ -212,6 +214,25 @@ zoom is never changed by that; only the placement. "Fit (with keyboard)" is the 
 space the keyboard leaves (and therefore follows the keyboard); "Fit screen" fills the screen and
 fixed ratios are absolute. Remote:set_canvas() keeps the view's own idea of its space in step,
 which matters because set_scale()/zoom_at() clamp and centre against it.
+
+Send keys panel (vnc/keypanel.lua). A bottom-anchored, non-modal widget above the viewer that the
+viewer treats as part of itself, like its keyboard (ViewerApp:_is_overlay): canvas taps still reach
+the remote, remote updates keep repainting under it, and the canvas places a view that fits above
+it, exactly as for the keyboard (ViewerApp:_bottom_cover_height; the keyboard hides while it is
+open). The panel swallows gestures on its own rectangle that none of its buttons took, so the gaps
+between buttons never click the hidden remote; a drag belongs to where it started. Its height never
+changes with the tab (every grid is four key rows tall), so switching tabs never moves the view.
+Modifiers are armed by a tap and used by exactly one action, then disarmed; nothing stays down
+between actions. A panel key: armed modifier downs in Ctrl, Shift, Alt, Super order, key down, key
+up, ups in reverse. A canvas tap, long press or drag: ViewerApp:_press_armed takes them from the
+panel and sends the downs before the pointer press; _release_action_mods sends the ups after the
+pointer release (for a drag, at its PanRelease). A drag cut short by the panel closing
+(ViewerApp:close_key_panel) or the viewer closing (ViewerApp:onCloseWidget, which leave_app and
+disconnect_session both reach before the session is detached or torn down) gets its ups there.
+Gestures off the panel never reach its buttons (KeyPanel:handleEvent): a button rebuilt since the
+last paint does not know its place yet. The release of the Back key that closed the panel is not
+forwarded (its press never was).
+Recent combos live in the `recent_combos` setting (validated on load, at most four).
 
 The on-screen keyboard yields to popups. KOReader stacks a non-modal Menu *below* the modal
 VirtualKeyboard, so the keyboard would cover a menu's lower half; ViewerApp:evaluate_keyboard()
@@ -501,7 +522,9 @@ it, the fitted zoom modes and the keyboard-aware placement behave, the keyboard 
 the keyboard swipes behave (a swipe up from the bottom strip shows the keyboard - after a rotation
 and a keyboard height change too - a swipe down above it hides it again, and the always-visible
 setting wins over both), platform text input is enabled exactly while the viewer is shown, typed
-text and physical keys reach the remote (through KOReader's own SDL event handler), and the
+text and physical keys reach the remote (through KOReader's own SDL event handler), the Send keys
+panel's combos, locks, recent list, close paths and per-tab keysyms behave (with taps on its
+buttons delivered through the real widget stack), and the
 settings store survives a hand-edited or empty file. It also covers the server menu's autostart
 toggle, the environment overrides' parsing rules and precedence (through read_env's lookup seam),
 that a flush after them leaves the settings file byte-identical, and that the deferred tick starts

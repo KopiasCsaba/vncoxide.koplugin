@@ -17,7 +17,6 @@ local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 
 local Dialogs = require("vnc/dialogs")
-local Keysyms = require("vnc/keysyms")
 
 local Screen = Device.screen
 
@@ -261,21 +260,11 @@ function MenuBuilder.open(app)
         end,
     }, function(item) item.mandatory = settings.scaling == "sharp" and "✓" or "-" end)
 
-    -- ---- keys the on-screen keyboard does not have
-    local function send(keysym)
-        return action(function()
-            app:send_key(keysym, true)
-            app:send_key(keysym, false)
-        end)
-    end
+    -- ---- any key or hotkey the on-screen keyboard cannot send
     item_table[#item_table + 1] = {
-        text = _("Send key"),
-        sub_item_table = {
-            { text = _("Enter"), callback = send(Keysyms.special.Press) },
-            { text = _("Tab"), callback = send(Keysyms.special.Tab) },
-            { text = _("Esc"), callback = send(Keysyms.special.Back) },
-            { text = _("Delete"), callback = send(Keysyms.special.Del) },
-        },
+        text = _("Send keys…"),
+        help_text = _("A panel at the bottom of the screen with Ctrl, Shift, Alt and Super, special and function keys, letters and symbols. Tap a modifier to use it once: with the next key from the panel, or with the next tap, long press or drag on the screen."),
+        callback = action(function() app:open_key_panel() end),
     }
 
     -- ---- session

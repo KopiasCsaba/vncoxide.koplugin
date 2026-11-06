@@ -17,8 +17,9 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
 - Touch control: taps, long presses and drags drive the remote pointer, and two-finger gestures
   pan, zoom and rotate the view.
 - An on-screen keyboard that types into the remote session, plus a physical keyboard with
-  modifiers, arrows, function keys and auto-repeat. Keys the on-screen keyboard does not have
-  (Enter, Tab, Esc, Delete) are in the menu.
+  modifiers, arrows, function keys and auto-repeat.
+- A **Send keys** panel for any key or hotkey the on-screen keyboard cannot type (Ctrl+Alt+T,
+  Super, F5, Print Screen, ...), with the last four combos one tap away.
 - Connection profiles (name, host, port, password) you can add, edit and delete from KOReader.
 - One connection can be flagged to connect by itself at KOReader's start (and to appear as
   **VNC auto connect** in KOReader's **Start with** menu).
@@ -82,11 +83,24 @@ keyboard, the **Menu** key (F1 on KOReader's own keymap) toggles it too.
 
 **The menu** offers the connection list, a status line, the zoom presets, a "keyboard always
 visible" toggle, show/hide keyboard, the screen orientation (including rotations), "use current
-orientation as default", what the page buttons send, sending single keys (Enter/Tab/Esc/Delete),
+orientation as default", what the page buttons send, **Send keys…** (see below),
 **Disconnect** (with a confirmation) and **Leave (keep connection)**. If the connection has just
 dropped, it leads with **Reconnect to …**. Settings toggles keep the menu open; anything that
-rotates the screen (the orientation choices, Rotate screen), changes the zoom or sends a key closes
-it ("use current orientation as default" does not rotate, so it stays).
+rotates the screen (the orientation choices, Rotate screen), changes the zoom or opens the Send
+keys panel closes it ("use current orientation as default" does not rotate, so it stays).
+
+**Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable)
+above it. Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns
+black), tap again to cancel. Armed modifiers go with exactly one action and are then let go: the
+next key from the panel, or the next tap, long press or drag on the screen (Ctrl+click,
+Shift+click or Shift+drag to select, Alt+drag). The text to the right shows what goes with the
+next action; tap it to send just the modifiers (Super on its own opens most desktops' launcher). The tabs hold the special keys (Esc,
+Tab, Enter, Backspace, Delete, Insert, Home, End, Page Up/Down, Space, Menu, arrows, Print Screen,
+Pause, Caps Lock), F1-F12, letters and digits, and the symbol keys of a US keyboard (use Shift for
+the shifted ones). The bottom row repeats your last four combos exactly, and **Release all** disarms
+every modifier. Nothing stays pressed between actions. The panel stays open until its close button,
+Back or the Menu key; closing it, leaving the viewer or disconnecting in the middle of a drag lets
+go of the modifiers that drag holds.
 
 **The keyboard** is drawn over the framebuffer, and showing it leaves the zoom alone — except in
 **Fit (with keyboard)**, the mode that deliberately fits the zoom into the space the keyboard

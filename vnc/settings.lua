@@ -14,6 +14,8 @@ dropped, and profiles that cannot be used are dropped - so a hand-edited file st
 local LuaSettings = require("luasettings")
 local logger = require("logger")
 
+local Keysyms = require("vnc/keysyms")
+
 local Settings = {}
 Settings.__index = Settings
 
@@ -41,7 +43,32 @@ Settings.DEFAULTS = {
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
     scaling = "smooth",              -- viewer scaling: "smooth" (blended) or "sharp" (nearest neighbour)
+    -- the "Send keys" panel's last combos, most recent first: { mods = {"Ctrl", ...}, keysym, label }
+    recent_combos = {},
 }
+
+--- How many combos the "Send keys" panel remembers.
+Settings.RECENT_COMBOS_MAX = 4
+
+local modifier_name = {}
+for _, m in ipairs(Keysyms.modifiers) do modifier_name[m.name] = true end
+
+--- One remembered combo, or nil when it is not one: known modifiers, and a key or at least one
+--- modifier.
+local function clean_combo(c)
+    if type(c) ~= "table" or type(c.mods) ~= "table" or type(c.label) ~= "string" then return nil end
+    local keysym = c.keysym
+    if keysym ~= nil and (type(keysym) ~= "number" or keysym ~= math.floor(keysym) or keysym <= 0) then
+        return nil
+    end
+    local mods = {}
+    for _, name in ipairs(c.mods) do
+        if not modifier_name[name] then return nil end
+        mods[#mods + 1] = name
+    end
+    if keysym == nil and #mods == 0 then return nil end
+    return { mods = mods, keysym = keysym, label = c.label }
+end
 
 --- Settings whose value is not just "the type of the default": each maps a raw value to a usable
 --- one, falling back to the default.
@@ -53,6 +80,15 @@ local SETTING_CHECKS = {
     scaling = function(value)
         if value == "sharp" then return value end
         return Settings.DEFAULTS.scaling
+    end,
+    recent_combos = function(value)
+        local list = {}
+        if type(value) ~= "table" then return list end
+        for _, c in ipairs(value) do
+            if #list >= Settings.RECENT_COMBOS_MAX then break end
+            list[#list + 1] = clean_combo(c)
+        end
+        return list
     end,
 }
 
