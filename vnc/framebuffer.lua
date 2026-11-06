@@ -6,17 +6,25 @@ The plane is a `TYPE_BBRGB24` BlitBuffer holding the remote pixels 1:1 (that is 
 uniform `scale` (screen pixels per remote pixel) plus an offset `view_x, view_y` naming the
 remote coordinate shown at the canvas' top-left corner.
 
+What the view shows is kept in a persistent canvas-sized buffer (see @{Remote:draw_to}): a remote
+update rescales only the canvas pixels that depend on the remote rects it changed
+(@{vnc.scaler}), and every paint blits the whole buffer.
+
 @module vnc.framebuffer
 ]]
 
 local BB = require("ffi/blitbuffer")
-local logger = require("logger")
+local Scaler = require("vnc/scaler")
+local Util = require("vnc/util")
+local time = require("ui/time")
 
 local Remote = {}
 Remote.__index = Remote
 
 Remote.MIN_SCALE = 0.05
 Remote.MAX_SCALE = 8
+-- More stale rects than this between two paints recompute the whole canvas instead.
+Remote.MAX_STALE_RECTS = 1024
 
 --[[--
 Creates a plane of `width` x `height` remote pixels.
@@ -34,7 +42,13 @@ function Remote.new(width, height)
         cw = width,     -- canvas size (screen pixels) the view was last fitted to
         ch = height,
         version = 0,    -- bumped whenever the plane may have changed
-        _scaled = nil,  -- cached scaled buffer for the current view
+        scaling = "smooth",
+        _canvas_bb = nil,   -- persistent canvas-sized buffer holding the scaled view
+        _filled = nil,      -- what _canvas_bb was last fully computed for (view, size, mode)
+        _stale = {},        -- remote rects changed since _canvas_bb was last updated
+        _all_stale = true,  -- the whole buffer must be recomputed
+        last_recomputed_px = 0, -- canvas pixels the last draw_to rescaled
+        last_blit_ms = nil,     -- the last draw_to's blit time, when it dithered
     }, Remote)
     return self
 end
@@ -42,13 +56,11 @@ end
 --[[--
 The plane, for writing.
 
-Handing the plane out advances the version counter, which invalidates the scale cache in
-@{Remote:draw_to}.
-
-Note that this happens *before* the write, and a decode can span several UI ticks (a frame
-can be several hundred KiB), so a repaint may well happen while the plane is half written.
-Every writer must therefore also call @{Remote:mark_dirty} once it is done (the session does
-this from its `on_rect` callback).
+Handing the plane out advances the version counter, but does not mark anything stale: the
+write happens *after* this, and a decode can span several UI ticks (a frame can be several
+hundred KiB), so a repaint may well happen while the plane is half written. Every writer must
+therefore call @{Remote:mark_dirty} once it is done (the session does this from its `on_rect`
+callback), which makes the next @{Remote:draw_to} rescale what it wrote.
 --- @treturn BlitBuffer
 ]]
 function Remote:get_plane()
@@ -56,9 +68,38 @@ function Remote:get_plane()
     return self.plane
 end
 
---- Marks the plane as possibly changed without handing it out (e.g. after a resize).
-function Remote:mark_dirty()
+--[[--
+Marks a remote rect as changed, for the next @{Remote:draw_to} to rescale.
+
+Without arguments the whole plane counts as changed.
+--- @tparam[opt] number x, y, w, h the rect in remote coordinates
+]]
+function Remote:mark_dirty(x, y, w, h)
     self.version = self.version + 1
+    if x == nil then
+        self._all_stale = true
+    elseif not self._all_stale and w > 0 and h > 0 then
+        local stale = self._stale
+        if #stale >= Remote.MAX_STALE_RECTS then
+            -- e.g. many updates while a popup hides the viewer: one full recompute instead
+            self._all_stale, self._stale = true, {}
+        else
+            stale[#stale + 1] = { x = x, y = y, w = w, h = h }
+        end
+    end
+end
+
+--[[--
+Chooses how the view is scaled: `"smooth"` (bilinear up, area average down) or `"sharp"`
+(nearest neighbour). A change recomputes the whole canvas on the next paint.
+--- @tparam string mode
+]]
+function Remote:set_scaling(mode)
+    assert(mode == "smooth" or mode == "sharp", "vnc.framebuffer: unknown scaling mode")
+    if mode ~= self.scaling then
+        self.scaling = mode
+        self._all_stale = true
+    end
 end
 
 --- @treturn number, number plane size in remote pixels
@@ -76,22 +117,22 @@ function Remote:viewport(x, y, w, h)
     return self:get_plane():viewport(x, y, w, h)
 end
 
-local function drop_cache(self)
-    if self._scaled then
-        self._scaled.bb:free()
-        self._scaled = nil
+local function drop_canvas(self)
+    if self._canvas_bb then
+        self._canvas_bb:free()
+        self._canvas_bb = nil
     end
+    self._filled = nil
 end
 
 --[[--
 Replaces the plane with one of the new size and re-fits the view.
 ]]
 function Remote:resize(w, h)
-    drop_cache(self)
     self.plane:free()
     self.plane = BB.new(w, h, BB.TYPE_BBRGB24)
     self.w, self.h = w, h
-    self.version = self.version + 1
+    self:mark_dirty()
     if self.cw and self.ch and self.cw > 0 and self.ch > 0 then
         self:fit_view(self.cw, self.ch)
     else
@@ -111,9 +152,9 @@ function Remote:set_canvas(cw, ch)
     self:_clamp()
 end
 
---- Frees the plane and the cached scaled buffer.
+--- Frees the plane and the canvas buffer.
 function Remote:free()
-    drop_cache(self)
+    drop_canvas(self)
     if self.plane then
         self.plane:free()
         self.plane = nil
@@ -185,11 +226,16 @@ function Remote:zoom_at(sx, sy, factor)
     self:_clamp()
 end
 
---- Canvas coordinates -> remote coordinates, clamped to the plane.
+--[[--
+Canvas coordinates -> remote coordinates, clamped to the plane.
+
+Maps the canvas pixel's centre, which is the remote pixel the sharp mode draws there (and the
+one nearest to what the smooth mode shows there).
 --- @treturn number, number
+]]
 function Remote:screen_to_remote(sx, sy)
-    local rx = math.floor(self.view_x + sx / self.scale)
-    local ry = math.floor(self.view_y + sy / self.scale)
+    local rx = math.floor(self.view_x + (sx + 0.5) / self.scale)
+    local ry = math.floor(self.view_y + (sy + 0.5) / self.scale)
     rx = math.max(0, math.min(self.w - 1, rx))
     ry = math.max(0, math.min(self.h - 1, ry))
     return rx, ry
@@ -219,72 +265,76 @@ function Remote:rect_to_canvas(rect, cx, cy)
     return x, y, w, h
 end
 
---[[--
-Draws the visible part of the plane into `bb` at `(cx, cy)`, using a canvas of `cw` x `ch`.
+-- Canvas buffer types the scaler writes; anything else gets an RGB24 buffer and a converting blit.
+local CANVAS_TYPES = { [BB.TYPE_BB8] = true, [BB.TYPE_BBRGB24] = true, [BB.TYPE_BBRGB32] = true }
 
-At 1:1 this is a straight blit; otherwise the source rect is scaled through
-`RenderImage:scaleBlitBuffer` (MuPDF) and cached until the plane or the view changes.
+--[[--
+Draws the view into `bb` at `(cx, cy)`, using a canvas of `cw` x `ch`.
+
+The scaled view lives in a persistent canvas-sized buffer of `bb`'s type, (re)allocated only when
+the canvas size or that type changes. A change of view (pan, zoom), canvas size, scaling mode or
+buffer recomputes the whole buffer; otherwise only the canvas pixels depending on the remote rects
+marked by @{Remote:mark_dirty} are recomputed (none at all when nothing changed). The whole buffer
+is then blitted, so the canvas area of `bb` is always fully painted (e.g. after a popup closed).
+
+At scale 1 the view offset is rounded to whole pixels, so the canvas is a plain copy of the plane
+(no filtering); that rounding gives exactly the pixel @{Remote:screen_to_remote} maps a tap to.
+
+Sets `last_recomputed_px` (canvas pixels rescaled) and, when dithering, `last_blit_ms`.
 --- @tparam BlitBuffer bb destination
 --- @tparam boolean dither use the dithered blit (grey-screen screenshot path)
+--- @treturn boolean whether the canvas area was painted
 ]]
 function Remote:draw_to(bb, cx, cy, cw, ch, dither)
-    if not self.plane or cw <= 0 or ch <= 0 then return end
+    self.last_recomputed_px, self.last_blit_ms = 0, nil
+    if not self.plane or cw <= 0 or ch <= 0 then return false end
     self.cw, self.ch = cw, ch
 
-    -- Visible source rect, clipped to the plane.
-    local sx0 = math.max(0, math.floor(self.view_x))
-    local sy0 = math.max(0, math.floor(self.view_y))
-    local sx1 = math.min(self.w, math.ceil(self.view_x + cw / self.scale))
-    local sy1 = math.min(self.h, math.ceil(self.view_y + ch / self.scale))
-    local copy_w, copy_h = sx1 - sx0, sy1 - sy0
-    if copy_w <= 0 or copy_h <= 0 then return end
-
-    local dx = cx + math.floor((sx0 - self.view_x) * self.scale)
-    local dy = cy + math.floor((sy0 - self.view_y) * self.scale)
-
-    local dst_w = math.max(1, math.floor(copy_w * self.scale))
-    local dst_h = math.max(1, math.floor(copy_h * self.scale))
-
-    if dst_w == copy_w and dst_h == copy_h then
-        -- 1:1 (also covers scale == 1 exactly): the C blitter can do this directly.
-        bb:blitFrom(self.plane, dx, dy, sx0, sy0, copy_w, copy_h)
-        return
+    local btype = bb:getType()
+    if not CANVAS_TYPES[btype] then btype = BB.TYPE_BBRGB24 end
+    local canvas = self._canvas_bb
+    if not (canvas and canvas:getWidth() == cw and canvas:getHeight() == ch and canvas:getType() == btype) then
+        drop_canvas(self)
+        canvas = BB.new(cw, ch, btype)
+        self._canvas_bb = canvas
     end
 
-    local cache = self._scaled
-    if not (cache and cache.sx == sx0 and cache.sy == sy0 and cache.w == copy_w
-            and cache.h == copy_h and cache.scale == self.scale
-            and cache.version == self.version) then
-        drop_cache(self)
-        local RenderImage = require("ui/renderimage")
-        local src = self.plane:viewport(sx0, sy0, copy_w, copy_h)
-        local scaled = RenderImage:scaleBlitBuffer(src, dst_w, dst_h, false)
-        if scaled == src then
-            -- scaleBlitBuffer() returns its input untouched when the sizes match; that
-            -- cannot happen here (we handled dst == copy above), but never cache a viewport.
-            logger.warn("vnc: unexpected no-op scale, drawing without cache")
-            scaled = nil
+    local s, vx, vy = self.scale, self.view_x, self.view_y
+    if s == 1 then
+        vx, vy = math.floor(vx + 0.5), math.floor(vy + 0.5)
+    end
+    local mode = self.scaling
+    local f = self._filled
+    local view = { x = vx, y = vy, scale = s }
+    if self._all_stale or not f or f.x ~= vx or f.y ~= vy or f.scale ~= s or f.mode ~= mode
+            or f.plane ~= self.plane then
+        Scaler.render(canvas, self.plane, view, { x = 0, y = 0, w = cw, h = ch }, mode)
+        self._filled = { x = vx, y = vy, scale = s, mode = mode, plane = self.plane }
+        self.last_recomputed_px = cw * ch
+    elseif #self._stale > 0 then
+        local rects = {}
+        for _i, r in ipairs(self._stale) do
+            local d = Scaler.dst_rect_for(r, view, cw, ch, mode)
+            if d then rects = Util.add_rect(rects, d) end
         end
-        if scaled then
-            cache = { bb = scaled, sx = sx0, sy = sy0, w = copy_w, h = copy_h,
-                      scale = self.scale, version = self.version }
-            self._scaled = cache
+        local px = 0
+        for _i, d in ipairs(rects) do
+            Scaler.render(canvas, self.plane, view, d, mode)
+            px = px + d.w * d.h
         end
+        self.last_recomputed_px = px
     end
+    self._all_stale = false
+    if #self._stale > 0 then self._stale = {} end
 
-    local src_bb = cache and cache.bb
-    if not src_bb then
-        -- Fallback: direct nearest-neighbour-free blit of the viewport.
-        bb:blitFrom(self.plane, dx, dy, sx0, sy0, copy_w, copy_h)
-        return
-    end
-
-    local sw, sh = src_bb:getWidth(), src_bb:getHeight()
     if dither then
-        bb:ditherblitFrom(src_bb, dx, dy, 0, 0, sw, sh)
+        local t0 = time.now()
+        bb:ditherblitFrom(canvas, cx, cy, 0, 0, cw, ch)
+        self.last_blit_ms = time.to_ms(time.now() - t0)
     else
-        bb:blitFrom(src_bb, dx, dy, 0, 0, sw, sh)
+        bb:blitFrom(canvas, cx, cy, 0, 0, cw, ch)
     end
+    return true
 end
 
 return Remote

@@ -491,7 +491,7 @@ local function bb_diffs(a, b)
     return out
 end
 
-local SC_SCALES = { 0.75, 1, 1.37, 2, 2.5 }
+local SC_SCALES = { 0.3, 0.5, 0.75, 1, 1.37, 2, 2.5 }
 local SC_MODES = { "smooth", "sharp" }
 local SC_TYPES = { { "BB8", BB.TYPE_BB8 }, { "RGB32", BB.TYPE_BBRGB32 }, { "RGB24", BB.TYPE_BBRGB24 } }
 -- views showing black margins (negative offsets, plane edge inside the canvas) and plain ones
@@ -590,6 +590,74 @@ local function scaler_checks()
         A:free()
         return ok, "expected black outside the plane"
     end)
+
+    -- smooth values: a flat plane stays flat (bilinear up, box down), and halving averages 2x2 blocks
+    for _, s in ipairs({ 0.75, 2.5 }) do
+        for _, t in ipairs(SC_TYPES) do
+            check(string.format("scaler_smooth_uniform_stays_uniform_%s_%s", s, t[1]), function()
+                local p = BB.new(PW, PH, BB.TYPE_BBRGB24)
+                local d = ffi.cast("uint8_t*", p.data)
+                for y = 0, PH - 1 do
+                    for x = 0, PW - 1 do
+                        local o = y * p.stride + x * 3
+                        d[o], d[o + 1], d[o + 2] = 200, 120, 40
+                    end
+                end
+                local A = BB.new(CW, CH, t[2])
+                local view = { x = 1.3, y = 0.6, scale = s }
+                Scaler.render(A, p, view, { x = 0, y = 0, w = CW, h = CH }, "smooth")
+                local grey = floor((200 * 77 + 120 * 150 + 40 * 29) / 256)
+                local bad
+                for y = 0, CH - 1 do
+                    for x = 0, CW - 1 do
+                        local u, w = view.x + (x + 0.5) / s, view.y + (y + 0.5) / s
+                        if u >= 0 and u < PW and w >= 0 and w < PH then
+                            local c = A:getPixel(x, y)
+                            if t[2] == BB.TYPE_BB8 then
+                                if c:getColor8().a ~= grey then bad = bad or { x, y } end
+                            else
+                                c = c:getColorRGB32()
+                                if c.r ~= 200 or c.g ~= 120 or c.b ~= 40 then bad = bad or { x, y } end
+                            end
+                        end
+                    end
+                end
+                A:free(); p:free()
+                if bad then return nil, string.format("pixel %d,%d is not the plane's colour", bad[1], bad[2]) end
+                return true
+            end)
+        end
+    end
+
+    for _, t in ipairs(SC_TYPES) do
+        check("scaler_smooth_half_is_the_rounded_2x2_mean_" .. t[1], function()
+            -- the RGB channels are averaged (rounding halves up); BB8 is the grey of that average
+            local W, H = floor(PW / 2), floor(PH / 2)
+            local A = BB.new(W, H, t[2])
+            Scaler.render(A, plane, { x = 0, y = 0, scale = 0.5 }, { x = 0, y = 0, w = W, h = H }, "smooth")
+            for y = 0, H - 1 do
+                for x = 0, W - 1 do
+                    local sum = { 0, 0, 0 }
+                    for k = 0, 3 do
+                        local q = plane:getPixel(2 * x + k % 2, 2 * y + floor(k / 2))
+                        sum[1], sum[2], sum[3] = sum[1] + q:getR(), sum[2] + q:getG(), sum[3] + q:getB()
+                    end
+                    local r, g, b = floor((sum[1] + 2) / 4), floor((sum[2] + 2) / 4), floor((sum[3] + 2) / 4)
+                    local c, ok = A:getPixel(x, y)
+                    if t[2] == BB.TYPE_BB8 then
+                        ok = c:getColor8().a == floor((r * 77 + g * 150 + b * 29) / 256)
+                    else
+                        c = c:getColorRGB32()
+                        ok = c.r == r and c.g == g and c.b == b
+                    end
+                    if not ok then
+                        A:free(); return nil, string.format("pixel %d,%d", x, y)
+                    end
+                end
+            end
+            A:free(); return true
+        end)
+    end
 
     -- brute force: every canvas pixel that changes when one source pixel changes lies in dst_rect_for
     for _, s in ipairs(SC_SCALES) do

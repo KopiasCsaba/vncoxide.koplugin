@@ -233,9 +233,9 @@ function Session:_do_connect()
                 -- turning into one huge (but mostly unchanged) refresh region.
                 self_ref.dirty = Util.add_rect(self_ref.dirty or {}, { x = x, y = y, w = w, h = h })
                 -- A payload larger than one poll tick is decoded across ticks, so a repaint
-                -- can happen while the plane is only half written. Invalidate the scale cache
-                -- *after* the write, or that half-written frame would be reused forever.
-                if self_ref.remote then self_ref.remote:mark_dirty() end
+                -- can happen while the plane is only half written. Mark the rect stale *after*
+                -- the write, or that half-written part would stay in the canvas buffer forever.
+                if self_ref.remote then self_ref.remote:mark_dirty(x, y, w, h) end
             end,
             on_desktop_resize = function(w, h)
                 logger.info("vnc: remote desktop resized to", w, h)

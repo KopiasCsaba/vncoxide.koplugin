@@ -299,7 +299,6 @@ function ViewerApp:paintTo(bb, x, y)
     local timing = Util.timing_enabled()
     local t0 = timing and time.now()
     local size = self:getSize()
-    bb:paintRect(x, y, size.w, size.h, BB.COLOR_BLACK)
     self.canvas = self:_layout(x, y)
     if self.remote then
         -- the view's space has to match the canvas we are drawing into
@@ -311,13 +310,26 @@ function ViewerApp:paintTo(bb, x, y)
     if not self.remote then
         self.remote = self.session:get_remote()
     end
-    if self.remote then
-        self.remote:draw_to(bb, self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, dither)
+    local c = self.canvas
+    if self.remote and self.remote:draw_to(bb, c.x, c.y, c.w, c.h, dither) then
+        -- the canvas buffer covers its whole rect: black only around it
+        local x1, y1 = x + size.w, y + size.h
+        bb:paintRect(x, y, size.w, c.y - y, BB.COLOR_BLACK)
+        bb:paintRect(x, c.y + c.h, size.w, y1 - c.y - c.h, BB.COLOR_BLACK)
+        bb:paintRect(x, c.y, c.x - x, c.h, BB.COLOR_BLACK)
+        bb:paintRect(c.x + c.w, c.y, x1 - c.x - c.w, c.h, BB.COLOR_BLACK)
+    else
+        bb:paintRect(x, y, size.w, size.h, BB.COLOR_BLACK)
     end
     if timing then
-        logger.dbg(string.format("vnc-timing: paint ms=%.1f canvas=%dx%d scale=%s",
-            time.to_ms(time.now() - t0), self.canvas.w, self.canvas.h,
-            self.remote and tostring(self.remote.scale) or "-"))
+        local r = self.remote
+        local line = string.format("vnc-timing: paint ms=%.1f canvas=%dx%d scale=%s mode=%s recomputed_px=%d",
+            time.to_ms(time.now() - t0), c.w, c.h, r and tostring(r.scale) or "-",
+            r and r.scaling or "-", r and r.last_recomputed_px or 0)
+        if r and r.last_blit_ms then
+            line = line .. string.format(" blit_ms=%.1f", r.last_blit_ms)
+        end
+        logger.dbg(line)
     end
 end
 

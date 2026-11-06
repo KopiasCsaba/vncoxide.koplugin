@@ -2167,6 +2167,188 @@ check("viewer_menu_has_no_picture_entries", function()
     remote:free()
 end)
 
+-- ---------------------------------------------------------------- persistent canvas buffer
+
+-- A remote plane with a deterministic pattern, a fresh reference render and a canvas compare.
+local function canvas_plane(remote, seed)
+    local ffi = require("ffi")
+    local p = remote:get_plane()
+    local d = ffi.cast("uint8_t*", p.data)
+    for y = 0, remote.h - 1 do
+        for x = 0, remote.w - 1 do
+            local o = y * p.stride + x * 3
+            d[o] = (x * 37 + y * 101 + seed) % 256
+            d[o + 1] = (x * 11 + y * 59 + seed * 3) % 256
+            d[o + 2] = (x * y * 7 + seed * 5) % 256
+        end
+    end
+    remote:mark_dirty()
+end
+
+--- Number of canvas pixels of `target` (canvas at cx, cy) that differ from a fresh full render.
+local function canvas_mismatch(remote, target, cx, cy, cw, ch, mode)
+    local Scaler = require("vnc/scaler")
+    local bb = require("ffi/blitbuffer")
+    local ref = bb.new(cw, ch, target:getType())
+    local s = remote.scale
+    local vx, vy = remote.view_x, remote.view_y
+    Scaler.render(ref, remote.plane, { x = vx, y = vy, scale = s }, { x = 0, y = 0, w = cw, h = ch },
+        mode or "smooth")
+    local n = 0
+    for y = 0, ch - 1 do
+        for x = 0, cw - 1 do
+            if target:getPixel(cx + x, cy + y):getColorRGB32().r ~= ref:getPixel(x, y):getColorRGB32().r
+                    or target:getPixel(cx + x, cy + y):getColorRGB32().g ~= ref:getPixel(x, y):getColorRGB32().g
+                    or target:getPixel(cx + x, cy + y):getColorRGB32().b ~= ref:getPixel(x, y):getColorRGB32().b then
+                n = n + 1
+            end
+        end
+    end
+    ref:free()
+    return n
+end
+
+local CB_TYPES = { { "BB8", 1 }, { "RGB32", 9 } }
+
+local function canvas_fixture(btype)
+    local Remote = require("vnc/framebuffer")
+    local bb = require("ffi/blitbuffer")
+    local remote = Remote.new(120, 90)
+    local cx, cy, cw, ch = 7, 5, 160, 120
+    local target = bb.new(cw + 20, ch + 12, btype)
+    remote:set_canvas(cw, ch)
+    remote:set_scale(2)
+    remote:pan_by(-13, -9)
+    canvas_plane(remote, 1)
+    return remote, target, cx, cy, cw, ch
+end
+
+for _, t in ipairs(CB_TYPES) do
+    local btype = require("ffi/blitbuffer")["TYPE_" .. (t[1] == "BB8" and "BB8" or "BBRGB32")]
+
+    check("canvas_partial_update_matches_a_full_render_" .. t[1], function()
+        local remote, target, cx, cy, cw, ch = canvas_fixture(btype)
+        remote:draw_to(target, cx, cy, cw, ch)
+        assert_true(remote.last_recomputed_px == cw * ch, "the first paint computes the whole canvas")
+        -- the server changes a small rect
+        local plane = remote:get_plane()
+        plane:paintRect(30, 20, 5, 4, require("ffi/blitbuffer").COLOR_WHITE)
+        remote:mark_dirty(30, 20, 5, 4)
+        remote:draw_to(target, cx, cy, cw, ch)
+        local px = remote.last_recomputed_px
+        assert_true(px > 0 and px < cw * ch * 0.05, "a small change recomputes a small area, got " .. px)
+        local bad = canvas_mismatch(remote, target, cx, cy, cw, ch)
+        assert_true(bad == 0, bad .. " canvas pixels differ from a full render")
+        target:free(); remote:free()
+    end)
+
+    check("canvas_buffer_is_kept_across_updates_" .. t[1], function()
+        local remote, target, cx, cy, cw, ch = canvas_fixture(btype)
+        remote:draw_to(target, cx, cy, cw, ch)
+        local buf = remote._canvas_bb
+        assert_true(buf ~= nil, "a canvas buffer must exist after a paint")
+        for i = 1, 3 do
+            remote:get_plane():paintRect(i * 10, i * 5, 6, 6, require("ffi/blitbuffer").COLOR_BLACK)
+            remote:mark_dirty(i * 10, i * 5, 6, 6)
+            remote:draw_to(target, cx, cy, cw, ch)
+            assert_true(remote._canvas_bb == buf, "update " .. i .. " must reuse the canvas buffer")
+        end
+        remote:draw_to(target, cx, cy, cw - 10, ch - 6)
+        assert_true(remote._canvas_bb ~= buf, "a resized canvas needs a new buffer")
+        assert_true(canvas_mismatch(remote, target, cx, cy, cw - 10, ch - 6) == 0,
+            "and the resized canvas shows a full render")
+        target:free(); remote:free()
+    end)
+
+    check("canvas_pan_recomputes_everything_" .. t[1], function()
+        local remote, target, cx, cy, cw, ch = canvas_fixture(btype)
+        remote:draw_to(target, cx, cy, cw, ch)
+        remote:pan_by(3, -2)
+        remote:draw_to(target, cx, cy, cw, ch)
+        assert_true(remote.last_recomputed_px == cw * ch, "a pan recomputes the whole canvas")
+        local bad = canvas_mismatch(remote, target, cx, cy, cw, ch)
+        assert_true(bad == 0, bad .. " canvas pixels differ after a pan")
+        target:free(); remote:free()
+    end)
+
+    check("canvas_sharp_mode_recomputes_everything_" .. t[1], function()
+        local remote, target, cx, cy, cw, ch = canvas_fixture(btype)
+        remote:set_scale(1.37)
+        remote:draw_to(target, cx, cy, cw, ch)
+        remote:set_scaling("sharp")
+        remote:draw_to(target, cx, cy, cw, ch)
+        assert_true(remote.last_recomputed_px == cw * ch, "a mode change recomputes the whole canvas")
+        local bad = canvas_mismatch(remote, target, cx, cy, cw, ch, "sharp")
+        assert_true(bad == 0, bad .. " canvas pixels differ from a sharp full render")
+        target:free(); remote:free()
+    end)
+
+    check("canvas_paint_without_changes_still_blits_" .. t[1], function()
+        local remote, target, cx, cy, cw, ch = canvas_fixture(btype)
+        remote:draw_to(target, cx, cy, cw, ch)
+        -- a popup covered the canvas and is gone again
+        target:paintRect(cx, cy, cw, ch, require("ffi/blitbuffer").COLOR_GRAY_7)
+        remote:draw_to(target, cx, cy, cw, ch)
+        assert_true(remote.last_recomputed_px == 0, "nothing changed, nothing to recompute")
+        local bad = canvas_mismatch(remote, target, cx, cy, cw, ch)
+        assert_true(bad == 0, bad .. " canvas pixels were not restored")
+        target:free(); remote:free()
+    end)
+end
+
+check("canvas_too_many_stale_rects_recompute_everything", function()
+    local bb = require("ffi/blitbuffer")
+    local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BB8)
+    remote:draw_to(target, cx, cy, cw, ch)
+    for i = 0, remote.MAX_STALE_RECTS do remote:mark_dirty(i % 100, 3, 1, 1) end
+    assert_true(#remote._stale <= remote.MAX_STALE_RECTS, "the stale list must stay bounded")
+    remote:draw_to(target, cx, cy, cw, ch)
+    assert_true(remote.last_recomputed_px == cw * ch, "an overflowing stale list recomputes everything")
+    target:free(); remote:free()
+end)
+
+check("canvas_dithered_paint_reports_its_blit_time", function()
+    local bb = require("ffi/blitbuffer")
+    local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BB8)
+    remote:draw_to(target, cx, cy, cw, ch, true)
+    assert_true(type(remote.last_blit_ms) == "number", "the blit time must be measured")
+    target:free(); remote:free()
+end)
+
+check("a_tap_hits_the_remote_pixel_drawn_under_it", function()
+    local bb = require("ffi/blitbuffer")
+    local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BBRGB32)
+    -- sharp at several scales, and smooth at 1 with a half-pixel view offset (an odd-sized canvas
+    -- centring the plane), which is drawn as a plain copy
+    for _, case in ipairs({ { 1.37, "sharp" }, { 2.5, "sharp" }, { 0.75, "sharp" }, { 1, "smooth", 1 } }) do
+        local s = case[1]
+        if case[3] then cw, ch = cw - case[3], ch - case[3] end
+        remote:set_canvas(cw, ch)
+        remote:set_scale(s)
+        remote:set_scaling(case[2])
+        remote:draw_to(target, cx, cy, cw, ch)
+        local inside = 0
+        for _, c in ipairs({ { 0, 0 }, { 3, 4 }, { 57, 33 }, { 80, 60 }, { cw - 1, ch - 1 } }) do
+            local rx, ry = remote:screen_to_remote(c[1], c[2])
+            -- (at 0.75 the plane is smaller than the canvas: its black margins map to the edge)
+            local ux = remote.view_x + (c[1] + 0.5) / s
+            local uy = remote.view_y + (c[2] + 0.5) / s
+            if ux >= 0 and ux < remote.w and uy >= 0 and uy < remote.h then
+                inside = inside + 1
+                local want = remote.plane:getPixel(rx, ry):getColorRGB32()
+                local got = target:getPixel(cx + c[1], cy + c[2]):getColorRGB32()
+                assert_true(want.r == got.r and want.g == got.g and want.b == got.b,
+                    string.format("scale %s %s: canvas %d,%d does not show remote %d,%d",
+                        s, case[2], c[1], c[2], rx, ry))
+            end
+        end
+        assert_true(inside >= 2, "scale " .. s .. ": too few probes inside the plane")
+    end
+    assert_true(remote.view_x ~= math.floor(remote.view_x) and remote.view_y ~= math.floor(remote.view_y),
+        "the scale-1 case must have a fractional view")
+    target:free(); remote:free()
+end)
+
 -- The timing trace (debug log only): paint, blocked polls and input, silent when off.
 local function capture_dbg(timing_on, fn)
     local logger = require("logger")
@@ -2211,7 +2393,8 @@ end
 check("timing_trace_logs_paint_poll_gap_and_input", function()
     local lines = capture_dbg(true, timing_scenario)
     local joined = table.concat(lines, "\n")
-    assert_true(joined:find("vnc%-timing: paint ms=%d+%.%d canvas=%d+x%d+ scale=%S+"), "paint line: " .. joined)
+    assert_true(joined:find("vnc%-timing: paint ms=%d+%.%d canvas=%d+x%d+ scale=%S+ mode=smooth recomputed_px=%d+"),
+        "paint line: " .. joined)
     local gaps = 0
     for _, l in ipairs(lines) do
         if l:find("vnc-timing: poll gap ms=1500.0", 1, true) then gaps = gaps + 1 end

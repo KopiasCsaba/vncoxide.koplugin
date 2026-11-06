@@ -360,6 +360,19 @@ ges_events with function ranges so they follow rotation without re-registration)
 On e-ink the widget colour type may be BB8: the plane is always RGB24, cross-format blits go
 through BlitBuffer, and the grey path uses ditherblitFrom when Screen.sw_dithering is on.
 
+Drawing: Remote keeps the scaled view in one persistent canvas-sized buffer (`_canvas_bb`, of the
+screen buffer's type: BB8, RGB24 or RGB32; any other type gets RGB24), reallocated only when the
+canvas size or that type changes. The session calls `Remote:mark_dirty(x, y, w, h)` per decoded
+rect; `draw_to` rescales (vnc/scaler.lua) only `Scaler.dst_rect_for` of those rects, merged, and
+recomputes the whole buffer after a pan/zoom, a canvas resize, a scaling-mode change
+(`Remote:set_scaling`), a plane resize or `mark_dirty()` without arguments. Every paint then blits
+the whole buffer (dithered when sw_dithering is on), so a popup closing or the keyboard going away
+needs no special handling: only the scaling is partial. At scale 1 the view offset is rounded to a
+whole pixel so the canvas is a plain copy of the plane. Taps map the canvas pixel's centre
+(`floor(view + (c + 0.5) / scale)`), which is the remote pixel the sharp mode draws there. Desktop
+measurement of the dithered full-canvas blit (1264x1680 BB8 -> BB8): about 5 ms (plain blit under
+1 ms); the device's `blit_ms` in the timing trace shows whether that needs a dithered-rect buffer.
+
 
 TIMING TRACE (finding out where a lag goes)
 -------------------------------------------
@@ -374,8 +387,10 @@ device: it is where KOReader writes its log). Filter with: grep 'vnc-timing' cra
         one FramebufferUpdate. decode_ms = CPU time summed over all poll ticks that worked on it;
         wall_ms = first byte -> on_update_done. wall >> decode means it was spread over many ticks
         or the UI thread was busy elsewhere.
-  vnc-timing: paint ms=P canvas=WxH scale=S
-        one ViewerApp:paintTo (blit/scale of the framebuffer into the screen buffer).
+  vnc-timing: paint ms=P canvas=WxH scale=S mode=smooth|sharp recomputed_px=N [blit_ms=B]
+        one ViewerApp:paintTo (rescale of the changed areas into the canvas buffer, then its blit
+        into the screen buffer). recomputed_px = canvas pixels rescaled (W*H after a pan/zoom, 0
+        when nothing changed); blit_ms, only when dithering, is the dithered blit's share of P.
   vnc-timing: poll gap ms=G             the previous _poll was more than 2 x POLL_INTERVAL (100 ms)
         ago: the UI thread was blocked in between, e.g. in the e-ink refresh. Not logged right
         after attach.
