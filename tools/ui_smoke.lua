@@ -2058,6 +2058,64 @@ check("bandwidth_menu_entries", function()
     remote:free()
 end)
 
+-- The timing trace (debug log only): paint, blocked polls and input, silent when off.
+local function capture_dbg(timing_on, fn)
+    local logger = require("logger")
+    local Util = require("vnc/util")
+    local real_dbg, real_on, lines = logger.dbg, Util.timing_enabled, {}
+    logger.dbg = function(...)
+        local parts = {}
+        for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+        lines[#lines + 1] = table.concat(parts, " ")
+    end
+    Util.timing_enabled = function() return timing_on end
+    local ok, err = pcall(fn)
+    logger.dbg, Util.timing_enabled = real_dbg, real_on
+    if not ok then error(err, 0) end
+    local out = {}
+    for _, l in ipairs(lines) do
+        if l:find("vnc-timing:", 1, true) then out[#out + 1] = l end
+    end
+    return out
+end
+
+local function timing_scenario()
+    local Session = require("vnc/session")
+    local app, remote = new_app()
+    app:paintTo(Screen.bb, 0, 0)
+    local real_now, clock = Session._now, 10
+    Session._now = function() return clock end
+    local s = Session.new{ profile = { host = "h", port = 1, password = "", name = "t" } }
+    s.attached, s._pump = true, function() return "again" end
+    s:_poll() -- first poll: no previous one, no gap
+    clock = clock + Session.POLL_INTERVAL -- on time
+    s:_poll()
+    clock = clock + 1.5 -- the UI thread was blocked
+    s:_poll()
+    s:note_input()
+    s.attached = false
+    Session._now = real_now
+    app:onCloseWidget()
+    remote:free()
+end
+
+check("timing_trace_logs_paint_poll_gap_and_input", function()
+    local lines = capture_dbg(true, timing_scenario)
+    local joined = table.concat(lines, "\n")
+    assert_true(joined:find("vnc%-timing: paint ms=%d+%.%d canvas=%d+x%d+ scale=%S+"), "paint line: " .. joined)
+    local gaps = 0
+    for _, l in ipairs(lines) do
+        if l:find("vnc-timing: poll gap ms=1500.0", 1, true) then gaps = gaps + 1 end
+    end
+    assert_true(gaps == 1, "exactly one poll gap line expected: " .. joined)
+    assert_true(joined:find("vnc-timing: input key", 1, true), "input line: " .. joined)
+end)
+
+check("timing_trace_is_silent_when_debug_logging_is_off", function()
+    local lines = capture_dbg(false, timing_scenario)
+    assert_true(#lines == 0, "no vnc-timing lines expected, got: " .. table.concat(lines, "\n"))
+end)
+
 if failures > 0 then
     print(string.format("%d check(s) failed", failures))
     os.exit(1)

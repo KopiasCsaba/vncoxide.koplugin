@@ -206,4 +206,11 @@ end
 Util.lshift, Util.rshift = lshift, rshift
 Util.ffi = ffi
 
+--- True while KOReader's debug logging is on (Developer options -> "Enable debug logging", which
+--- sets `dbg.is_on`). A plain field read, so the timing trace costs nothing when it is off; a
+--- module field so tests can force it.
+function Util.timing_enabled()
+    return require("dbg").is_on == true
+end
+
 return Util

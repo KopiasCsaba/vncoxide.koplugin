@@ -218,6 +218,14 @@ more than one profile for `autoconnect`, the first keeps the flag and the rest a
 > VNC Authentication is a weak, DES-based scheme anyway, and **nothing in a VNC session is
 > encrypted** — run it over SSH, WireGuard or a trusted network.
 
+## Troubleshooting lag
+
+If page-button presses lag while the screen redraws, KOReader's debug log can show where the time
+goes. Turn on Developer options -> Enable debug logging, reproduce the lag, then look in
+`crash.log` in KOReader's folder (`koreader/crash.log`) for lines starting with `vnc-timing:`
+(`grep vnc-timing crash.log`). They report decode time, paint time, key/wheel presses and gaps where
+the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logging off.
+
 ## Server compatibility
 
 - RFB 3.8 with security type *None* or *VNC Authentication* (password). No TLS/VeNCrypt/SASL, so

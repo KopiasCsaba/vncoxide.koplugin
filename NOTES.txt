@@ -356,6 +356,31 @@ On e-ink the widget colour type may be BB8: the plane is always RGB24, cross-for
 through BlitBuffer, and the grey path uses ditherblitFrom when Screen.sw_dithering is on.
 
 
+TIMING TRACE (finding out where a lag goes)
+-------------------------------------------
+
+Every line starts with "vnc-timing:" and goes through logger.dbg, so it exists only while KOReader's
+debug logging is on (Util.timing_enabled() reads dbg.is_on live; off = one field read per event, no
+formatting). Enable: Settings (gear) -> Developer options -> Enable debug logging (KOReader may need
+a restart on some builds). Reproduce, then take koreader/crash.log (the "koreader" folder on the
+device: it is where KOReader writes its log). Filter with: grep 'vnc-timing' crash.log
+
+  vnc-timing: input key|wheel           a key / wheel press was noted (Session:note_input)
+  vnc-timing: update rects=N bytes=B decode_ms=D wall_ms=W
+        one FramebufferUpdate. decode_ms = CPU time summed over all poll ticks that worked on it;
+        wall_ms = first byte -> on_update_done. wall >> decode means it was spread over many ticks
+        or the UI thread was busy elsewhere.
+  vnc-timing: paint ms=P canvas=WxH scale=S
+        one ViewerApp:paintTo (blit/scale of the framebuffer into the screen buffer).
+  vnc-timing: poll gap ms=G             the previous _poll was more than 2 x POLL_INTERVAL (100 ms)
+        ago: the UI thread was blocked in between, e.g. in the e-ink refresh. Not logged right
+        after attach.
+
+Reading it: after an "input" line, a large "poll gap" means a blocking refresh delayed the next
+event; a large "paint" means our blit is slow; a large decode_ms means decoding hogs the thread.
+Lines carry KOReader's own timestamps, which is how they correlate with each other.
+
+
 TESTS
 -----
 

@@ -33,7 +33,7 @@ Creates a client.
 --- @tparam[opt] table opts.pixel_format client pixel format from @{vnc.pxfmt.for_depth}
 ---   (default: depth 24)
 --- @tparam[opt] function opts.get_plane -> the current remote plane BlitBuffer
---- @tparam[opt] table opts.callbacks on_connected|on_rect|on_desktop_resize|on_bell|on_cut_text
+--- @tparam[opt] table opts.callbacks on_connected|on_update_start|on_rect|on_desktop_resize|on_bell|on_cut_text
 --- @tparam[opt] function opts.hold_updates -> true while the incremental request that follows a
 ---   FramebufferUpdate should be held back (see @{Protocol:release_update})
 --- @treturn Protocol
@@ -217,6 +217,7 @@ function Protocol:_message_loop()
     while true do
         local t = r:u8()
         if t == 0 then -- FramebufferUpdate
+            self:_fire("on_update_start")
             r:u8() -- padding
             local nrects = r:u16()
             for _ = 1, nrects do

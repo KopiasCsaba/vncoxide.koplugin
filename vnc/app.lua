@@ -30,6 +30,7 @@ local InputContainer = require("ui/widget/container/inputcontainer")
 local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
+local time = require("ui/time")
 
 local Keyboard = require("vnc/keyboard")
 local Keysyms = require("vnc/keysyms")
@@ -295,6 +296,8 @@ end
 -- ---------------------------------------------------------------- paint
 
 function ViewerApp:paintTo(bb, x, y)
+    local timing = Util.timing_enabled()
+    local t0 = timing and time.now()
     local size = self:getSize()
     bb:paintRect(x, y, size.w, size.h, BB.COLOR_BLACK)
     self.canvas = self:_layout(x, y)
@@ -311,7 +314,11 @@ function ViewerApp:paintTo(bb, x, y)
     if self.remote then
         self.remote:draw_to(bb, self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, dither)
     end
-
+    if timing then
+        logger.dbg(string.format("vnc-timing: paint ms=%.1f canvas=%dx%d scale=%s",
+            time.to_ms(time.now() - t0), self.canvas.w, self.canvas.h,
+            self.remote and tostring(self.remote.scale) or "-"))
+    end
 end
 
 --[[--
@@ -644,7 +651,7 @@ function ViewerApp:scroll_wheel(direction)
     -- the remote may have shrunk since the pointer was recorded
     x, y = math.max(0, math.min(x, w - 1)), math.max(0, math.min(y, h - 1))
     local mask = direction > 0 and 16 or 8
-    self.session:note_input()
+    self.session:note_input("wheel")
     for _ = 1, ViewerApp.WHEEL_NOTCHES do
         self:send_pointer(x, y, mask)
         self:send_pointer(x, y, 0)

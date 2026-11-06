@@ -1181,6 +1181,121 @@ local function main()
         return true
     end)
 
+    -- 16. Timing trace: a decoded update logs rects/bytes/decode/wall, only while debug logging
+    -- is on.
+    local function timing_case(name, timing_on)
+        local Session = load_session()
+        local logger = require("logger")
+        local Util = require("vnc/util")
+        local pid, port = start_mock{
+            name = name, encoding = "raw", pattern = "gradient", width = 32, height = 24,
+        }
+        local real_dbg, real_on = logger.dbg, Util.timing_enabled
+        local lines = {}
+        logger.dbg = function(...)
+            lines[#lines + 1] = table.concat({ ... }, " ")
+        end
+        Util.timing_enabled = function() return timing_on end
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = name },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        }
+        local function done(ok, err)
+            logger.dbg, Util.timing_enabled = real_dbg, real_on
+            s:disconnect()
+            stop_mock(pid)
+            return ok, err
+        end
+        local connected, cerr
+        s:connect(function(ok, err) connected, cerr = ok, err end)
+        if not connected then return done(nil, "connect failed: " .. tostring(cerr)) end
+        s.app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
+                  on_bell = function() end }
+        s:request_full_update()
+        s:_flush_now()
+        local deadline = os.time() + 20
+        while not s.dirty and os.time() < deadline do
+            if s:_pump() == "error" then return done(nil, "pump failed") end
+            socket.sleep(0.01)
+        end
+        if not s.dirty then return done(nil, "the FramebufferUpdate was not decoded") end
+        for _ = 1, 5 do s:_pump() end
+        local found
+        for _, l in ipairs(lines) do
+            if l:find("^vnc%-timing: update rects=%d+ bytes=%d+ decode_ms=%d+%.%d wall_ms=%d+%.%d$") then
+                found = l
+            end
+        end
+        if timing_on and not found then return done(nil, "no update line in: " .. table.concat(lines, " | ")) end
+        if timing_on and tonumber(found:match("bytes=(%d+)")) < 32 * 24 * 3 then
+            return done(nil, "implausible byte count: " .. found)
+        end
+        if not timing_on then
+            for _, l in ipairs(lines) do
+                if l:find("vnc-timing:", 1, true) then return done(nil, "timing line while off: " .. l) end
+            end
+        end
+        return done(true)
+    end
+    check("session_logs_update_timing", function() return timing_case("timing_on", true) end)
+    check("session_update_timing_silent_when_off", function() return timing_case("timing_off", false) end)
+
+    -- 17. A request held during input, then detach + attach: attach sends a full request and
+    -- clears the owed one, so nothing more is owed after the quiet period.
+    check("session_attach_after_held_request_owes_nothing", function()
+        local Session = load_session()
+        local pid, port, log = start_mock{
+            name = "hold_attach", encoding = "raw", pattern = "gradient", width = 32, height = 24,
+        }
+        local real_now, clock = Session._now, 100
+        Session._now = function() return clock end
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "hold_attach" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        }
+        local function done(ok, err)
+            Session._now = real_now
+            s:disconnect()
+            stop_mock(pid)
+            return ok, err
+        end
+        local connected, cerr
+        s:connect(function(ok, err) connected, cerr = ok, err end)
+        if not connected then return done(nil, "connect failed: " .. tostring(cerr)) end
+        local app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
+                      on_bell = function() end }
+        s.app = app
+        s:note_input()
+        s:request_full_update()
+        s:_flush_now()
+        local deadline = os.time() + 20
+        while not s.dirty and os.time() < deadline do
+            if s:_pump() == "error" then return done(nil, "pump failed") end
+            socket.sleep(0.01)
+        end
+        if not s.dirty then return done(nil, "the FramebufferUpdate was not decoded") end
+        for _ = 1, 5 do s:_pump() end
+        if not s.proto.update_pending then return done(nil, "the request should be held") end
+        s:detach()
+        s:attach(app)
+        if s.proto.update_pending then return done(nil, "attach must clear the owed request") end
+        if not wait_for_log(log, "INPUT FramebufferUpdateRequest incremental=0", 5) then
+            return done(nil, "attach must send a full (non-incremental) request")
+        end
+        socket.sleep(0.2)
+        local inc_before = log_count(log, "INPUT FramebufferUpdateRequest incremental=1")
+        clock = 100 + Session.INPUT_QUIET + 0.1
+        for _ = 1, 3 do s:_poll(); socket.sleep(0.05) end
+        local inc_after = log_count(log, "INPUT FramebufferUpdateRequest incremental=1")
+        s.attached = false
+        -- the full request's own answer may legitimately trigger one incremental follow-up
+        if inc_after - inc_before > 1 then
+            return done(nil, "no extra incremental request is owed, got " .. (inc_after - inc_before))
+        end
+        if s.proto.update_pending then return done(nil, "nothing may be owed after the quiet period") end
+        return done(true)
+    end)
+
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
         os.exit(1)

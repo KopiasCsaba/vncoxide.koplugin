@@ -46,15 +46,6 @@ Session.HANDSHAKE_SOCKET_TIMEOUT = 5
 -- "connecting" that cannot finish.
 Session.WIFI_WAIT_TIMEOUT = 30
 
---[[--
-Creates a session. Nothing is opened until @{Session:connect} is called.
-
---- @tparam table opts
---- @tparam table opts.profile connection profile (see @{vnc.settings})
---- @tparam[opt] table opts.plugin the plugin instance (for settings)
---- @tparam[opt] function opts.on_state `(state, err)` on every transition
---- @tparam[opt] table opts.network_mgr override the network manager (tests)
-]]
 -- Seconds without key input before the screen update request held during a key burst is sent.
 -- E-ink redraws block the UI thread, so a redraw started mid-burst delays the next key press.
 Session.INPUT_QUIET = 0.3
@@ -64,6 +55,15 @@ function Session._now()
     return time.to_s(time.now())
 end
 
+--[[--
+Creates a session. Nothing is opened until @{Session:connect} is called.
+
+--- @tparam table opts
+--- @tparam table opts.profile connection profile (see @{vnc.settings})
+--- @tparam[opt] table opts.plugin the plugin instance (for settings)
+--- @tparam[opt] function opts.on_state `(state, err)` on every transition
+--- @tparam[opt] table opts.network_mgr override the network manager (tests)
+]]
 function Session.new(opts)
     assert(type(opts) == "table" and type(opts.profile) == "table", "Session.new: opts.profile is required")
     return setmetatable({
@@ -225,7 +225,16 @@ function Session:_do_connect()
                 end
                 self_ref:_set_state("connected")
             end,
+            on_update_start = function()
+                if Util.timing_enabled() then
+                    self_ref.tm = { t0 = Session._now(), cpu = 0, bytes = 1, rects = 0 }
+                end
+            end,
+            on_update_done = function()
+                if self_ref.tm then self_ref.tm.finished = true end
+            end,
             on_rect = function(x, y, w, h)
+                if self_ref.tm then self_ref.tm.rects = self_ref.tm.rects + 1 end
                 -- One tick of rectangles is handed to the app as a set of *disjoint* rectangles:
                 -- merging only the ones that touch keeps a couple of small changes far apart from
                 -- turning into one huge (but mostly unchanged) refresh region.
@@ -312,7 +321,19 @@ end
 --- Resumes the protocol, remembering what it asked for.
 --- @treturn boolean false when the session failed
 function Session:_resume(data)
+    local c0 = self.tm and os.clock()
+    if self.tm and data then self.tm.bytes = self.tm.bytes + #data end
     local a, b = self.proto:step(data)
+    local tm = self.tm
+    if tm then
+        -- A tick may end mid-update, so the CPU time of every tick that touched it is summed.
+        tm.cpu = tm.cpu + (os.clock() - (c0 or os.clock()))
+        if tm.finished then
+            self.tm = nil
+            logger.dbg(string.format("vnc-timing: update rects=%d bytes=%d decode_ms=%.1f wall_ms=%.1f",
+                tm.rects, tm.bytes, tm.cpu * 1000, (Session._now() - tm.t0) * 1000))
+        end
+    end
     if a == "need" then
         self.need = b
     elseif a == "done" then
@@ -397,6 +418,7 @@ function Session:attach(app)
     self.app = app
     if self.attached then return end
     self.attached = true
+    self.last_poll = nil -- the time spent detached is not a blocked poll
     UIManager:scheduleIn(Session.POLL_INTERVAL, self._poll, self)
     -- Non-incremental full area: resynchronises after a detach, and absorbs anything the
     -- server pushed while we were not reading.
@@ -415,6 +437,15 @@ end
 --- The poll task. Must stay a single bound method so `UIManager:unschedule` can cancel it.
 function Session:_poll()
     if not self.attached then return end
+    if Util.timing_enabled() then
+        local now = Session._now()
+        if self.last_poll and now - self.last_poll > 2 * Session.POLL_INTERVAL then
+            logger.dbg(string.format("vnc-timing: poll gap ms=%.1f", (now - self.last_poll) * 1000))
+        end
+        self.last_poll = now
+    else
+        self.last_poll = nil
+    end
     local status = self:_pump()
     if status == "error" or status == "done" then
         UIManager:unschedule(self._poll)
@@ -497,8 +528,9 @@ end
 
 --- Records key input: screen update requests are held until input has been quiet for
 --- `INPUT_QUIET` (pointer taps and drags do not count).
-function Session:note_input()
+function Session:note_input(what)
     self.last_input = Session._now()
+    if Util.timing_enabled() then logger.dbg("vnc-timing: input", what or "key") end
 end
 
 --- @treturn boolean true while key input happened less than `INPUT_QUIET` ago
