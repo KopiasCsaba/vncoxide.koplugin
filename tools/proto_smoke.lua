@@ -435,7 +435,210 @@ local function encoding_case(name, encoding, pattern, expect, opts)
     return true
 end
 
+-- ---------------------------------------------------------------- scaler
+
+local floor, ceil = math.floor, math.ceil
+
+local function scaler_plane(w, h)
+    local p = BB.new(w, h, BB.TYPE_BBRGB24)
+    local d = ffi.cast("uint8_t*", p.data)
+    for y = 0, h - 1 do
+        for x = 0, w - 1 do
+            local o = y * p.stride + x * 3
+            d[o] = (x * 37 + y * 101 + (x * y) % 13 * 17) % 256
+            d[o + 1] = (x * 11 + y * 59 + 90) % 256
+            d[o + 2] = (x * y * 7 + 200) % 256
+        end
+    end
+    return p
+end
+
+local function bb_fill(bb, v)
+    ffi.fill(ffi.cast("uint8_t*", bb.data), bb.stride * bb:getHeight(), v)
+end
+
+local SC_BPP = { [BB.TYPE_BB8] = 1, [BB.TYPE_BBRGB24] = 3, [BB.TYPE_BBRGB32] = 4 }
+
+--- First differing pixel of two same-sized buffers, or nil.
+local function bb_diff(a, b)
+    local pa, pb = ffi.cast("uint8_t*", a.data), ffi.cast("uint8_t*", b.data)
+    local bpp = SC_BPP[a:getType()]
+    for y = 0, a:getHeight() - 1 do
+        for x = 0, a:getWidth() - 1 do
+            for k = 0, bpp - 1 do
+                if pa[y * a.stride + x * bpp + k] ~= pb[y * b.stride + x * bpp + k] then
+                    return x, y
+                end
+            end
+        end
+    end
+end
+
+--- All differing pixels as a list of {x, y}.
+local function bb_diffs(a, b)
+    local pa, pb = ffi.cast("uint8_t*", a.data), ffi.cast("uint8_t*", b.data)
+    local bpp, out = SC_BPP[a:getType()], {}
+    for y = 0, a:getHeight() - 1 do
+        for x = 0, a:getWidth() - 1 do
+            for k = 0, bpp - 1 do
+                if pa[y * a.stride + x * bpp + k] ~= pb[y * b.stride + x * bpp + k] then
+                    out[#out + 1] = { x, y }
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
+local SC_SCALES = { 0.75, 1, 1.37, 2, 2.5 }
+local SC_MODES = { "smooth", "sharp" }
+local SC_TYPES = { { "BB8", BB.TYPE_BB8 }, { "RGB32", BB.TYPE_BBRGB32 }, { "RGB24", BB.TYPE_BBRGB24 } }
+-- views showing black margins (negative offsets, plane edge inside the canvas) and plain ones
+local SC_VIEWS = { { x = -3.3, y = 2.6 }, { x = 5.25, y = -1.5 }, { x = 0, y = 0 }, { x = 7, y = 3 } }
+
+local function scaler_checks()
+    local Scaler = require("vnc/scaler")
+    local PW, PH, CW, CH = 37, 29, 64, 48
+    local plane = scaler_plane(PW, PH)
+
+    for _, s in ipairs(SC_SCALES) do
+        for _, mode in ipairs(SC_MODES) do
+            for _, t in ipairs(SC_TYPES) do
+                check(string.format("scaler_partial_eq_full_%s_%s_%s", mode, s, t[1]), function()
+                    local A, B = BB.new(CW, CH, t[2]), BB.new(CW, CH, t[2])
+                    for vi, v in ipairs(SC_VIEWS) do
+                        local view = { x = v.x, y = v.y, scale = s }
+                        bb_fill(A, 0x5A); bb_fill(B, 0xA5)
+                        Scaler.render(A, plane, view, { x = 0, y = 0, w = CW, h = CH }, mode)
+                        local xs, ys = { 0, 13, 41, CW }, { 0, 7, 30, CH }
+                        for i = 1, 3 do
+                            for j = 1, 3 do
+                                Scaler.render(B, plane, view, { x = xs[i], y = ys[j],
+                                    w = xs[i + 1] - xs[i], h = ys[j + 1] - ys[j] }, mode)
+                            end
+                        end
+                        for _, r in ipairs({ { x = 0, y = 0, w = 1, h = CH }, { x = CW - 1, y = 0, w = 1, h = CH },
+                                { x = 5, y = CH - 1, w = 7, h = 1 }, { x = 0, y = 0, w = CW, h = 1 },
+                                { x = 17, y = 11, w = 3, h = 2 }, { x = CW - 9, y = CH - 5, w = 9, h = 5 } }) do
+                            Scaler.render(B, plane, view, r, mode)
+                        end
+                        local x, y = bb_diff(A, B)
+                        if x then
+                            A:free(); B:free()
+                            return nil, string.format("view %d differs at %d,%d", vi, x, y)
+                        end
+                        -- a lone rect writes only inside itself
+                        bb_fill(B, 0xA5)
+                        Scaler.render(B, plane, view, { x = 20, y = 9, w = 11, h = 6 }, mode)
+                        local pb, bpp = ffi.cast("uint8_t*", B.data), SC_BPP[t[2]]
+                        for yy = 0, CH - 1 do
+                            for xx = 0, CW - 1 do
+                                local inside = xx >= 20 and xx < 31 and yy >= 9 and yy < 15
+                                if not inside and pb[yy * B.stride + xx * bpp] ~= 0xA5 then
+                                    A:free(); B:free()
+                                    return nil, string.format("view %d wrote outside at %d,%d", vi, xx, yy)
+                                end
+                            end
+                        end
+                    end
+                    A:free(); B:free()
+                    return true
+                end)
+            end
+        end
+    end
+
+    check("scaler_sharp_2x_blocks", function()
+        local A = BB.new(CW, CH, BB.TYPE_BBRGB32)
+        Scaler.render(A, plane, { x = 0, y = 0, scale = 2 }, { x = 0, y = 0, w = CW, h = CH }, "sharp")
+        for y = 0, CH - 1 do
+            for x = 0, CW - 1 do
+                local c, p = A:getPixel(x, y), plane:getPixel(floor(x / 2), floor(y / 2))
+                if c:getR() ~= p:getR() or c:getG() ~= p:getG() or c:getB() ~= p:getB() then
+                    A:free(); return nil, string.format("pixel %d,%d", x, y)
+                end
+            end
+        end
+        A:free(); return true
+    end)
+
+    check("scaler_smooth_1x_is_source", function()
+        local A, G = BB.new(PW, PH, BB.TYPE_BBRGB24), BB.new(PW, PH, BB.TYPE_BB8)
+        local full = { x = 0, y = 0, w = PW, h = PH }
+        Scaler.render(A, plane, { x = 0, y = 0, scale = 1 }, full, "smooth")
+        Scaler.render(G, plane, { x = 0, y = 0, scale = 1 }, full, "smooth")
+        for y = 0, PH - 1 do
+            for x = 0, PW - 1 do
+                local c, p = A:getPixel(x, y), plane:getPixel(x, y)
+                local grey = floor((p:getR() * 77 + p:getG() * 150 + p:getB() * 29) / 256)
+                if c:getR() ~= p:getR() or c:getG() ~= p:getG() or c:getB() ~= p:getB()
+                        or G:getPixel(x, y):getColor8().a ~= grey then
+                    A:free(); G:free(); return nil, string.format("pixel %d,%d", x, y)
+                end
+            end
+        end
+        A:free(); G:free(); return true
+    end)
+
+    check("scaler_outside_plane_black", function()
+        local A = BB.new(CW, CH, BB.TYPE_BB8)
+        bb_fill(A, 0x77)
+        Scaler.render(A, plane, { x = -10, y = -4, scale = 1 }, { x = 0, y = 0, w = CW, h = CH }, "smooth")
+        local ok = A:getPixel(9, 20):getColor8().a == 0 and A:getPixel(5, 3):getColor8().a == 0
+            and A:getPixel(10 + PW, 10):getColor8().a == 0 and A:getPixel(10, 4 + PH):getColor8().a == 0
+        A:free()
+        return ok, "expected black outside the plane"
+    end)
+
+    -- brute force: every canvas pixel that changes when one source pixel changes lies in dst_rect_for
+    for _, s in ipairs(SC_SCALES) do
+        for _, mode in ipairs(SC_MODES) do
+            check(string.format("scaler_dst_rect_for_%s_%s", mode, s), function()
+                local A, B = BB.new(CW, CH, BB.TYPE_BB8), BB.new(CW, CH, BB.TYPE_BB8)
+                local full = { x = 0, y = 0, w = CW, h = CH }
+                for _, v in ipairs(SC_VIEWS) do
+                    local view = { x = v.x, y = v.y, scale = s }
+                    for _, sp in ipairs({ { 0, 0 }, { 12, 9 }, { PW - 1, PH - 1 }, { 0, PH - 1 }, { 20, 0 } }) do
+                        local p = scaler_plane(PW, PH)
+                        Scaler.render(A, p, view, full, mode)
+                        p:setPixel(sp[1], sp[2], BB.ColorRGB24(255, 255, 255))
+                        Scaler.render(B, p, view, full, mode)
+                        p:setPixel(sp[1], sp[2], BB.ColorRGB24(0, 0, 0))
+                        local B2 = BB.new(CW, CH, BB.TYPE_BB8)
+                        Scaler.render(B2, p, view, full, mode)
+                        p:free()
+                        local r = Scaler.dst_rect_for({ x = sp[1], y = sp[2], w = 1, h = 1 }, view, CW, CH, mode)
+                        for _, d in ipairs(bb_diffs(A, B)) do
+                            if not r or d[1] < r.x or d[1] >= r.x + r.w or d[2] < r.y or d[2] >= r.y + r.h then
+                                return nil, string.format("view %.2f,%.2f src %d,%d: %d,%d outside", v.x, v.y,
+                                    sp[1], sp[2], d[1], d[2])
+                            end
+                        end
+                        for _, d in ipairs(bb_diffs(A, B2)) do
+                            if not r or d[1] < r.x or d[1] >= r.x + r.w or d[2] < r.y or d[2] >= r.y + r.h then
+                                return nil, string.format("view %.2f,%.2f src %d,%d: %d,%d outside (black)", v.x, v.y,
+                                    sp[1], sp[2], d[1], d[2])
+                            end
+                        end
+                        B2:free()
+                        -- not absurdly generous: a source pixel covers about s canvas pixels
+                        local lim = ceil(s) + 4
+                        if r and (r.w > lim or r.h > lim) then
+                            return nil, string.format("rect %dx%d too large", r.w, r.h)
+                        end
+                    end
+                end
+                A:free(); B:free()
+                return true
+            end)
+        end
+    end
+end
+
 local function main()
+    scaler_checks()
+
     -- 1. DES against FIPS/NIST vectors (independent of the mock).
     check("des_vectors", function()
         local function hex2s(h)
