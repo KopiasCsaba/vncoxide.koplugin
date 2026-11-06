@@ -106,6 +106,8 @@ Detach/attach. Leaving the viewer detaches (unschedules the poll, stops reading,
 and the plane). Re-attaching sends a non-incremental request for the whole screen, which is both
 the resynchronisation and the way updates pushed while detached are absorbed. Only Disconnect
 closes the socket and restores Wi-Fi, and only Wi-Fi that the plugin turned on is turned off.
+KOReader's UIManager:unschedule matches by function, which is why each session schedules its own
+bound `_poll_task` (one session's detach must not unschedule another's poll).
 A Disconnect chosen in the viewer menu (ViewerApp:disconnect_session) then opens the connection
 list; other disconnects (list actions, errors) and Leave do not.
 
@@ -153,6 +155,16 @@ measured as "fit". Tests inject a fake engine through Dialogs.Benchmark. The eng
 "live" phase from its next tick rather than from the session's update callback, so a cancel() from
 on_progress never disconnects a session from inside its own callback; an unexpected Lua error in a
 tick, start() or the connect callback ends that combination as failed (Benchmark:_guarded).
+For the whole run the engine detaches every attached session it gets as opts.sessions (the UI
+passes plugin.sessions, so the open viewer's too), so their polling, decoding and drawing do not
+skew the scores, and re-attaches exactly those, with their app, when the run finishes, is
+cancelled or errors (attach requests the full update that resyncs them). A combination that fails
+before its handshake completes (refused, timeout, auth/security, Wi-Fi) ends the whole run:
+on_done(results, connect_error), and the UI shows "Could not connect: <reason>" instead of the
+table. Failures after connecting (rejected format, mid-phase error) fail only that combination.
+The "live" progress is reported one tick before the live window opens, so the e-ink refresh of
+the progress title is not measured, and the draw uses the viewer's dither flag (canvas.dither,
+BB8 screen plus Screen.sw_dithering).
 
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be

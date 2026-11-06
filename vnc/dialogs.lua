@@ -438,8 +438,10 @@ end
 
 --[[--
 "Find fastest picture settings": the intro (Start / Cancel), then a progress dialog with Cancel
-while @{vnc.benchmark} runs on the stored profile, then @{Dialogs.benchmark_results}. Every way
-out (Cancel in the intro or the progress, Close, Apply best) ends in `on_back`.
+while @{vnc.benchmark} runs on the stored profile (the plugin's attached sessions are detached
+meanwhile), then @{Dialogs.benchmark_results}, or "Could not connect: <reason>" when the run
+stopped on a connect failure. Every way out (Cancel in the intro or the progress, Close, Apply
+best, the connect failure) ends in `on_back`.
 
 --- @tparam table plugin
 --- @tparam table profile
@@ -467,11 +469,17 @@ function Dialogs.picture_benchmark(plugin, profile, on_back)
         bench = Benchmark.new{
             profile = copy,
             canvas = plugin:benchmark_canvas(),
+            sessions = plugin.sessions,
             on_progress = function(i, n, label, phase)
                 progress:setTitle(T("%1/%2: %3 — %4", i, n, label, BENCH_PHASES[phase] or phase))
             end,
-            on_done = function(results)
+            on_done = function(results, connect_error)
                 UIManager:close(progress)
+                if connect_error then
+                    UIManager:show(InfoMessage:new{ text = T(_("Could not connect: %1"), tostring(connect_error)) })
+                    on_back()
+                    return
+                end
                 UIManager:show(Dialogs.benchmark_results(plugin, copy.name, results, on_back))
             end,
         }

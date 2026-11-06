@@ -9,7 +9,9 @@ disturbed and no setting is ever written. One combination runs at a time, in two
    the end of its FramebufferUpdate (decode included, draw not). The incremental request that
    normally follows every update is held meanwhile (`Session.hold_incremental`), so the update
    timed is really the full-screen one. `full_ms` is their mean.
-2. **live**: `live_seconds` of normal incremental updates of whatever changes on the remote screen.
+2. **live**: the "live" progress is reported first, and the window starts on the next tick, so
+   the e-ink refresh of the progress dialog is not counted in it (updates in between are not
+   counted either). Then `live_seconds` of normal incremental updates of whatever changes on the remote screen.
    Every update adds its rect area (remote pixels) and bytes; every poll tick that has changes draws
    them with @{Remote:draw_to} into one off-screen BlitBuffer of the viewer's canvas size and type
    (allocated once per run) with the viewer's view and scaling, like the viewer would. The score is
@@ -18,7 +20,19 @@ disturbed and no setting is ever written. One combination runs at a time, in two
 
 No viewer is attached: the benchmark attaches a minimal sink of its own (the app interface the
 session calls), which draws into the off-screen buffer. Attaching registers the session's normal
-poll task, so updates keep being requested and decoded exactly as in the viewer.
+poll task, so updates keep being requested and decoded exactly as in the viewer. The draw uses the
+viewer's dither flag (`canvas.dither`).
+
+For the whole run, every attached session in `opts.sessions` (the plugin's live connections, the
+open viewer's included) is detached, so its polling, decoding and drawing does not compete with the
+measurement; the ones detached are attached again, to the same app, when the run finishes, is
+cancelled or ends in an error (`attach` requests a full update, which resynchronises them).
+
+A combination that fails before its handshake completes (connection refused, timeout, auth or
+security failure, Wi-Fi not coming up) ends the whole run at once: the other combinations would
+fail the same way. `on_done` then gets that combination's failed row and the error as its second
+argument. A failure after connecting (a rejected format, an error mid-phase) only fails that
+combination, and the run goes on.
 
 Everything is driven from `UIManager` tasks (the session's own poll plus a benchmark tick) and the
 clock is `Session._now`, so tests can run it on a fake clock. The handshake itself is the session's
@@ -107,12 +121,15 @@ Creates a benchmark; nothing happens until @{Benchmark:start}.
 --- @tparam table opts.profile connection profile (copied per combination, never modified)
 --- @tparam[opt] table opts.combinations defaults to `COMBINATIONS`
 --- @tparam[opt] number opts.live_seconds defaults to `LIVE_SECONDS`
---- @tparam table opts.canvas `{ w, h, bb_type, view_mode = "fit"|scale, scaling = "smooth"|"sharp" }`
+--- @tparam table opts.canvas `{ w, h, bb_type, view_mode = "fit"|scale, scaling = "smooth"|"sharp",
+---   dither }`, `dither` as the viewer passes it to @{Remote:draw_to}
 --- @tparam[opt] function opts.on_progress `(i, n, label, phase)`, phase `"connect"|"full"|"live"`
---- @tparam[opt] function opts.on_done `(results)`, sorted (see @{Benchmark._sort}); each row is
+--- @tparam[opt] table opts.sessions sessions (any keys) to detach while the run lasts
+--- @tparam[opt] function opts.on_done `(results, connect_error)`, sorted (see @{Benchmark._sort}); each row is
 ---   `{ combination, ok, error, px_per_s, ms_per_update, bytes_per_s, full_ms, still,
 ---   decode_ms, draw_ms }`. `ms_per_update` is live wall time per update; `decode_ms` and `draw_ms`
----   are the live phase's total decode and draw CPU time.
+---   are the live phase's total decode and draw CPU time. `connect_error` is set when the run
+---   stopped because a combination could not connect.
 --- @tparam[opt] table opts.network_mgr passed to every session (tests)
 ]]
 function Benchmark.new(opts)
@@ -127,6 +144,8 @@ function Benchmark.new(opts)
         on_progress = opts.on_progress,
         on_done = opts.on_done,
         network_mgr = opts.network_mgr,
+        sessions = opts.sessions,
+        detached = {},   -- session -> its app, for the sessions this run detached
         results = {},
         index = 0,
         session = nil,
@@ -143,6 +162,7 @@ end
 function Benchmark:start()
     local c = self.canvas
     self.bb = BB.new(c.w, c.h, c.bb_type or BB.TYPE_BB8)
+    self:_detach_sessions()
     self:_guarded(self._next)
     if not self.stopped then UIManager:scheduleIn(Benchmark.TICK, self._tick_fn) end
 end
@@ -166,6 +186,7 @@ function Benchmark:_guarded(fn)
         if not combo then
             -- the error came from finishing: stop, but still hand over what was collected
             pcall(self._stop, self)
+            pcall(self._reattach_sessions, self)
             self.stopped = true
             self:_report()
             return
@@ -179,6 +200,26 @@ function Benchmark:_guarded(fn)
             self:_close_session()
             self:_next()
         end)
+    end
+end
+
+--- Detaches every attached session of `opts.sessions`, remembering its app.
+function Benchmark:_detach_sessions()
+    for _, s in pairs(self.sessions or {}) do
+        if s:is_attached() then
+            self.detached[s] = s.app
+            s:detach()
+        end
+    end
+end
+
+--- Attaches the sessions detached by @{Benchmark:_detach_sessions} again; each one on its own.
+function Benchmark:_reattach_sessions()
+    local list = self.detached
+    self.detached = {}
+    for s, app in pairs(list) do
+        local ok, e = pcall(s.attach, s, app)
+        if not ok then logger.warn("vnc: benchmark could not re-attach a session:", e) end
     end
 end
 
@@ -222,6 +263,8 @@ function Benchmark:_next()
         if self.run ~= run then return end
         if not ok then
             run.err = run.err or err or "could not connect"
+            -- before the handshake completed: the next tick ends the whole run
+            run.connect_failed = true
             return
         end
         local ok2, e = pcall(self._on_connected, self, run, session)
@@ -270,8 +313,9 @@ function Benchmark:_on_update(run, tm)
             run.t_req = Session._now()
             self.session:request_full_update()
         else
-            run.phase = "live"
-            run.t_live = Session._now()
+            -- nothing is counted until the next tick has reported "live" and a later one opens
+            -- the live window (t_live)
+            run.phase = "settle"
             -- the session's next poll releases the held incremental request
             self.session.hold_incremental = false
             -- reported by the next tick: on_progress may cancel, and the session must not be
@@ -291,7 +335,7 @@ function Benchmark:_draw(run)
     if not remote then return end
     local c = self.canvas
     local c0 = os.clock()
-    remote:draw_to(self.bb, 0, 0, c.w, c.h, false)
+    remote:draw_to(self.bb, 0, 0, c.w, c.h, c.dither or false)
     if run.phase == "live" then run.draw = run.draw + (os.clock() - c0) end
 end
 
@@ -309,9 +353,21 @@ function Benchmark:_advance()
     if run.live_unreported then
         run.live_unreported = nil
         self:_progress("live")
-        if self.stopped then return end
+        -- the window opens on a later tick, after the progress title's screen refresh
+        return
     end
-    if run.err then
+    if run.phase == "settle" then
+        run.phase = "live"
+        run.t_live = now
+        return
+    end
+    if run.connect_failed then
+        local result = { combination = run.combination, ok = false, error = run.err }
+        logger.info("vnc: benchmark:", result.combination.label, "could not connect, stopping:", result.error)
+        table.insert(self.results, result)
+        self:_stop()
+        self:_report(result.error)
+    elseif run.err then
         self:_end_combination({ combination = run.combination, ok = false, error = run.err })
     elseif run.phase == "full" and now - run.t_req > Benchmark.FULL_TIMEOUT then
         self:_end_combination({ combination = run.combination, ok = false,
@@ -363,6 +419,7 @@ end
 function Benchmark:_stop()
     self.stopped = true
     UIManager:unschedule(self._tick_fn)
+    self:_reattach_sessions()
     self:_close_session()
     if self.bb then
         self.bb:free()
@@ -379,11 +436,11 @@ function Benchmark:_finish()
     self:_report()
 end
 
---- Calls `on_done` with the sorted results, at most once.
-function Benchmark:_report()
+--- Calls `on_done` with the sorted results (and the connect error, if any), at most once.
+function Benchmark:_report(connect_error)
     if self._reported or not self.on_done then return end
     self._reported = true
-    local ok, e = pcall(self.on_done, Benchmark._sort(self.results))
+    local ok, e = pcall(self.on_done, Benchmark._sort(self.results), connect_error)
     if not ok then logger.warn("vnc: benchmark on_done failed:", e) end
 end
 

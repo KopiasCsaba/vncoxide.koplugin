@@ -2463,6 +2463,7 @@ check("bench_start_shows_progress_and_cancel_returns", function()
     assert_true(o.canvas.w > 0 and o.canvas.h > 0 and o.canvas.bb_type == Screen.bb:getType(),
         "canvas from the screen")
     assert_true(type(o.on_progress) == "function" and type(o.on_done) == "function", "callbacks")
+    assert_true(o.sessions == plugin.sessions, "the plugin's sessions are handed over, to be detached for the run")
     assert_true(find_button(progress, "Cancel"), "progress has Cancel")
     assert_true(progress.dismissable == false, "the progress dialog is not dismissed by a stray tap")
     o.on_progress(3, 11, "16-bit, Tight off", "full")
@@ -2500,6 +2501,18 @@ check("bench_canvas_follows_zoom_scaling_and_orientation", function()
     c = plugin:benchmark_canvas()
     assert_true(c.view_mode == "fit" and c.scaling == "smooth", "fitted modes fit")
     assert_true(c.w == Screen:getWidth() and c.h == Screen:getHeight(), "same orientation: the screen")
+    -- the viewer's dither flag: software dithering on a BB8 screen only
+    local BBm = require("ffi/blitbuffer")
+    local real_dither, real_bb = Screen.sw_dithering, Screen.bb
+    local bb8, bbrgb = BBm.new(4, 4, BBm.TYPE_BB8), BBm.new(4, 4, BBm.TYPE_BBRGB32)
+    for _, case in ipairs{ { bb8, true, true }, { bb8, false, false }, { bbrgb, true, false } } do
+        Screen.bb, Screen.sw_dithering = case[1], case[2]
+        c = plugin:benchmark_canvas()
+        assert_true(c.dither == case[3], string.format("dither: type %d sw %s: got %s",
+            case[1]:getType(), tostring(case[2]), tostring(c.dither)))
+    end
+    Screen.bb, Screen.sw_dithering = real_bb, real_dither
+    bb8:free(); bbrgb:free()
     plugin.app = { canvas = { x = 0, y = 0, w = 321, h = 123 } }
     c = plugin:benchmark_canvas()
     assert_true(c.w == 321 and c.h == 123, "an open viewer's canvas wins")
@@ -2572,6 +2585,22 @@ check("bench_nothing_scored_has_no_apply", function()
         "explains what to do:\n" .. viewer.text)
     assert_true(viewer.text:find("screen was still — not scored", 1, true), "rows still listed")
     viewer_buttons(viewer)["Close"].callback()
+    require("vnc/dialogs").Benchmark = nil
+end)
+
+check("bench_connect_failure_shows_reason", function()
+    open_bench_actions()
+    local bench, progress = start_bench()
+    bench.opts.on_done({ { combination = BENCH_RESULTS[2].combination, ok = false, error = "connection refused" } },
+        "connection refused")
+    local info = top()
+    assert_true(info.text == "Could not connect: connection refused", "connect failure message: " .. stack_desc())
+    for _, w in ipairs(stack()) do
+        assert_true(w ~= progress, "progress closed")
+        assert_true(w.title ~= "Picture benchmark", "no results table on a connect failure")
+    end
+    UIManager:close(info)
+    expect_top(is_actions, "the actions dialog under the message")
     require("vnc/dialogs").Benchmark = nil
 end)
 

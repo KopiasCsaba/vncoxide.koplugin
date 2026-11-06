@@ -1623,12 +1623,33 @@ local function main()
         local log = string.format("%s/%s.log", TMP, o.name)
         os.remove(log)
         local cmd = string.format("python3 %s --port %d --encoding %s --pattern gradient --width 200 --height 150 --log %s%s",
-            MOCK, port, o.encoding or "raw", log, o.repaint and (" --repaint " .. o.repaint) or "")
+            MOCK, port, o.encoding or "raw", log, (o.repaint and (" --repaint " .. o.repaint) or "") .. (o.extra or ""))
         local h = assert(io.popen(cmd .. " > " .. log .. ".stdout 2>&1 & echo $!", "r"))
         local pid = (h:read("*l") or ""):gsub("%s", "")
         h:close()
         if not wait_for_log(log, "LISTENING", 10) then error("mock did not start: " .. log) end
         return pid, port, log
+    end
+
+    -- Records every session the benchmark creates.
+    local function track_sessions()
+        local Session = require("vnc/session")
+        local real_new, list = Session.new, {}
+        Session.new = function(o)
+            local s = real_new(o)
+            list[#list + 1] = s
+            return s
+        end
+        return list, function() Session.new = real_new end
+    end
+    local function all_torn_down(list)
+        for i, s in ipairs(list) do
+            if s:get_state() ~= "disconnected" or s.sock or s.remote or s:is_attached() then
+                return false, string.format("session %d left %s (sock=%s attached=%s)", i,
+                    tostring(s:get_state()), tostring(s.sock ~= nil), tostring(s:is_attached()))
+            end
+        end
+        return true
     end
 
     check("benchmark_combination_list", function()
@@ -1683,8 +1704,9 @@ local function main()
         local pid, port = start_multi{ name = "bench_live", repaint = 0.01 }
         local real_draw, draws = Remote.draw_to, {}
         Remote.draw_to = function(self, bb, ...)
+            local dither = select(5, ...)
             draws[#draws + 1] = { scaling = self.scaling, scale = self:get_scale(), w = bb:getWidth(),
-                                  h = bb:getHeight(), bb = bb }
+                                  h = bb:getHeight(), bb = bb, dither = dither }
             return real_draw(self, bb, ...)
         end
         local results, progress = nil, {}
@@ -1692,7 +1714,7 @@ local function main()
             profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
             combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
             live_seconds = 1,
-            canvas = { w = 400, h = 300, bb_type = BB.TYPE_BB8, view_mode = "fit", scaling = "sharp" },
+            canvas = { w = 400, h = 300, bb_type = BB.TYPE_BB8, view_mode = "fit", scaling = "sharp", dither = true },
             network_mgr = NET,
             on_progress = function(i, n, label, phase) progress[#progress + 1] = i .. "/" .. n .. " " .. phase end,
             on_done = function(r) results = r end,
@@ -1720,6 +1742,7 @@ local function main()
                 return nil, string.format("draw %s scale %s %dx%d", d.scaling, d.scale, d.w, d.h)
             end
             if d.bb ~= bb1 then return nil, "the off-screen buffer must be allocated once per run" end
+            if d.dither ~= true then return nil, "the canvas dither flag must be passed to draw_to" end
         end
         local p = table.concat(progress, ",")
         if not p:find("1/2 full", 1, true) or not p:find("2/2 live", 1, true) then return nil, "progress " .. p end
@@ -1731,14 +1754,14 @@ local function main()
     check("benchmark_still_and_failed", function()
         local env = bench_env()
         local pid, port, log = start_multi{ name = "bench_still", encoding = "tight" }
-        local results
+        local results, run_err
         local b = env.Benchmark.new{
             profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
             combinations = combos(env.Benchmark, "24-bit, Tight off", "24-bit, Tight, compr. 2"),
             live_seconds = 1,
             canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8, view_mode = 1, scaling = "smooth" },
             network_mgr = NET,
-            on_done = function(r) results = r end,
+            on_done = function(r, e) results, run_err = r, e end,
         }
         b:start()
         local finished = env.run(function() return results ~= nil end)
@@ -1755,30 +1778,51 @@ local function main()
             return nil, "the refused combination must fail with a reason"
         end
         if log_count(log, "AUTH ok") ~= 2 then return nil, "expected 2 connections" end
+        if run_err ~= nil then return nil, "a failure after connecting must not end the run: " .. tostring(run_err) end
         return true
     end)
 
-    check("benchmark_connect_refused", function()
-        local env = bench_env()
-        local results
-        local b = env.Benchmark.new{
-            profile = { host = "127.0.0.1", port = free_port(), password = "", name = "bench" },
-            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
-            live_seconds = 1,
-            canvas = { w = 100, h = 100, bb_type = BB.TYPE_BB8 },
-            network_mgr = NET,
-            on_done = function(r) results = r end,
+    -- A failure before the handshake completes (refused, auth, Wi-Fi) ends the whole run at once:
+    -- one session, one failed row, and on_done gets the error.
+    check("benchmark_stops_on_connect_failure", function()
+        local apid, aport = start_multi{ name = "bench_auth", extra = " --security vnc --password secret" }
+        local cases = {
+            { what = "refused", port = free_port(), net = NET },
+            { what = "auth", port = aport, password = "wrong", net = NET },
+            { what = "wifi", port = free_port(), net = { isWifiOn = function() return false end,
+                turnOnWifiAndWaitForConnection = function() return false end, turnOffWifi = function() end } },
         }
-        b:start()
-        local finished = env.run(function() return results ~= nil end)
-        env.restore()
-        if not finished then return nil, "never finished" end
-        for _, r in ipairs(results) do
-            if r.ok or not tostring(r.error):find("could not connect", 1, true) then
-                return nil, "expected a connect failure, got " .. tostring(r.error)
-            end
+        local problem
+        for _, c in ipairs(cases) do
+            local env = bench_env()
+            local list, untrack = track_sessions()
+            local results, err, calls = nil, nil, 0
+            local b = env.Benchmark.new{
+                profile = { host = "127.0.0.1", port = c.port, password = c.password or "", name = "bench" },
+                combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+                live_seconds = 1,
+                canvas = { w = 100, h = 100, bb_type = BB.TYPE_BB8 },
+                network_mgr = c.net,
+                on_done = function(r, e) calls = calls + 1; results, err = r, e end,
+            }
+            b:start()
+            local finished = env.run(function() return results ~= nil end)
+            env.run(nil, 200)
+            untrack()
+            env.restore()
+            if not finished then problem = c.what .. ": never finished"
+            elseif type(err) ~= "string" or err == "" then problem = c.what .. ": on_done got no error"
+            elseif calls ~= 1 then problem = c.what .. ": on_done called " .. calls .. " times"
+            elseif #list ~= 1 then problem = c.what .. ": " .. #list .. " sessions created, the run must stop"
+            elseif #results ~= 1 or results[1].ok or results[1].error ~= err then
+                problem = c.what .. ": expected the one failed row carrying the error"
+            elseif #env.tasks ~= 0 then problem = c.what .. ": tasks still scheduled" end
+            for _, s2 in ipairs(list) do if s2:get_state() ~= "disconnected" then s2:disconnect() end end
+            if problem then break end
         end
-        return #results == 2, "expected 2 rows"
+        stop_mock(apid)
+        if problem then return nil, problem end
+        return true
     end)
 
     -- Cancel mid-live: the session is torn down, nothing of the benchmark stays scheduled, on_done
@@ -1827,27 +1871,6 @@ local function main()
         if done_called then return nil, "on_done must not be called on cancel" end
         return true
     end)
-
-    -- Records every session the benchmark creates.
-    local function track_sessions()
-        local Session = require("vnc/session")
-        local real_new, list = Session.new, {}
-        Session.new = function(o)
-            local s = real_new(o)
-            list[#list + 1] = s
-            return s
-        end
-        return list, function() Session.new = real_new end
-    end
-    local function all_torn_down(list)
-        for i, s in ipairs(list) do
-            if s:get_state() ~= "disconnected" or s.sock or s.remote or s:is_attached() then
-                return false, string.format("session %d left %s (sock=%s attached=%s)", i,
-                    tostring(s:get_state()), tostring(s.sock ~= nil), tostring(s:is_attached()))
-            end
-        end
-        return true
-    end
 
     -- cancel() from inside on_progress, in each phase that is followed by more work: nothing
     -- stays connected, attached or scheduled, and on_done never fires.
@@ -1959,6 +1982,98 @@ local function main()
         if not ok_start then return nil, "start raised " .. tostring(start_err) end
         if not finished then return nil, "on_done never called" end
         if calls ~= 1 or #results ~= 1 then return nil, "calls=" .. calls .. " rows=" .. #results end
+        return true
+    end)
+
+    -- Every attached session of the plugin (the viewer's) is detached for the run, so it does not
+    -- compete with the measurement, and attached again with its app after done and after cancel.
+    check("benchmark_detaches_live_sessions", function()
+        local Session = require("vnc/session")
+        local pid, port = start_multi{ name = "bench_detach", repaint = 0.01 }
+        local bpid, bport = start_mock{ name = "bench_detach_by", encoding = "raw", pattern = "gradient" }
+        local problem
+        for _, ending in ipairs{ "done", "cancel" } do
+            local env = bench_env()
+            local by = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "by" },
+                                    network_mgr = NET }
+            local idle = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "idle" },
+                                      network_mgr = NET }
+            by:connect(function() end)
+            local app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
+                          on_bell = function() end }
+            by:attach(app)
+            local seen_attached, seen_task, results, b = nil, nil, nil, nil
+            b = env.Benchmark.new{
+                profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+                combinations = combos(env.Benchmark, "24-bit, Tight off"),
+                live_seconds = 1,
+                canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+                network_mgr = NET,
+                sessions = { by = by, idle = idle },
+                on_progress = function(_, _, _, phase)
+                    if phase == "live" then
+                        seen_attached = by:is_attached()
+                        seen_task = false
+                        for _, t in ipairs(env.tasks) do if t.fn == by._poll_task then seen_task = true end end
+                        if ending == "cancel" then b:cancel() end
+                    end
+                end,
+                on_done = function(r) results = r end,
+            }
+            b:start()
+            env.run(function() return results ~= nil or b.stopped end)
+            local tasks = 0
+            for _, t in ipairs(env.tasks) do if t.fn == by._poll_task then tasks = tasks + 1 end end
+            local back = by:is_attached() and by.app == app and tasks == 1
+            local idle_ok = not idle:is_attached()
+            by:disconnect()
+            env.restore()
+            if seen_attached == nil then problem = ending .. ": live phase never reached"
+            elseif seen_attached or seen_task then problem = ending .. ": the attached session was not detached during the run"
+            elseif not back then problem = ending .. ": the session was not attached again (tasks " .. tasks .. ")"
+            elseif not idle_ok then problem = ending .. ": a session that was not attached got attached" end
+            if problem then break end
+        end
+        stop_mock(pid)
+        stop_mock(bpid)
+        if problem then return nil, problem end
+        return true
+    end)
+
+    -- The "live" progress (an e-ink refresh of the dialog title) is reported before the live window
+    -- starts, and nothing is counted before it.
+    check("benchmark_live_window_starts_after_progress", function()
+        local Session = require("vnc/session")
+        local pid, port = start_multi{ name = "bench_window", repaint = 0.01 }
+        local env = bench_env()
+        local t_report, t_live_at_report, results, b
+        b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off"),
+            live_seconds = 1,
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_progress = function(_, _, _, phase)
+                if phase == "live" then
+                    t_report = Session._now()
+                    t_live_at_report = b.run and b.run.t_live or false
+                end
+            end,
+            on_done = function(r) results = r end,
+        }
+        b:start()
+        env.run(function() return t_report ~= nil end)
+        env.run(function() return results ~= nil or (b.run and b.run.t_live) end)
+        local run = b.run
+        local t_live, px = run and run.t_live, run and run.px
+        env.run(function() return results ~= nil end)
+        env.restore()
+        stop_mock(pid)
+        if not t_report then return nil, "live never reported" end
+        if t_live_at_report then return nil, "the live window started before the live progress was reported" end
+        if not t_live or t_live <= t_report then return nil, "the live window must start on a later tick" end
+        if px ~= 0 then return nil, "updates counted before the live window: " .. tostring(px) end
+        if not (results and results[1] and results[1].ok) then return nil, "run did not score" end
         return true
     end)
 

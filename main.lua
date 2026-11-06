@@ -12,6 +12,7 @@ viewer is reopened.
 local _ = require("gettext")
 local T = require("ffi/util").template
 
+local BB = require("ffi/blitbuffer")
 local DataStorage = require("datastorage")
 local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
@@ -410,11 +411,12 @@ The canvas the picture benchmark draws into, so that its draw cost is the viewer
 
 With the viewer open, its current canvas. Otherwise an approximation: the whole screen in the
 viewer's default orientation (the viewer rotates to it when it opens), with the on-screen
-keyboard not subtracted. Type: the screen's blitbuffer type. View: the zoom factor, or `"fit"`
+keyboard not subtracted. Type: the screen's blitbuffer type. Dither: the viewer's flag (software
+dithering on a BB8 screen, see `ViewerApp:paintTo`). View: the zoom factor, or `"fit"`
 for both fitted zoom modes (so "Fit (with keyboard)" is measured as "Fit"), and the global
 scaling.
 
---- @treturn table `{ w, h, bb_type, view_mode, scaling }` (see @{vnc.benchmark})
+--- @treturn table `{ w, h, bb_type, dither, view_mode, scaling }` (see @{vnc.benchmark})
 ]]
 function VNC:benchmark_canvas()
     local Screen = Device.screen
@@ -433,6 +435,7 @@ function VNC:benchmark_canvas()
         w = w,
         h = h,
         bb_type = Screen.bb:getType(),
+        dither = Screen.bb:getType() == BB.TYPE_BB8 and Screen.sw_dithering or false,
         view_mode = type(zoom) == "number" and zoom or "fit",
         scaling = self.settings:get_setting("scaling") == "sharp" and "sharp" or "smooth",
     }

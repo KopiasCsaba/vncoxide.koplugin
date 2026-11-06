@@ -256,7 +256,12 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
 - **Find fastest picture settings** (in a connection's **Manage connections…** dialog) measures
   the picture settings instead of guessing: it tries 11 combinations of colour depth, Tight,
   compression level and JPEG quality on that connection, about 7 seconds each, each on its own
-  extra connection (a live session of the same connection is left alone). Keep something
+  extra connection. Open connections stay connected but are paused for the run (they stop
+  receiving screen updates, so they do not slow the measurement) and catch up when it ends. If a
+  combination cannot connect at all (refused, timed out, wrong password, no Wi-Fi), the run stops
+  at once and shows "Could not connect: <reason>" instead of a table of failures; a combination
+  that connects but then fails (say, a format the server rejects) is listed as failed and the run
+  goes on. Keep something
   changing on the PC meanwhile (a video, a scrolling page, an animation): each combination is
   scored by the changed screen pixels per second that reach the reader, decoding and drawing at
   your current zoom and scaling included. The results list the combinations fastest first, with
