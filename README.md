@@ -42,7 +42,7 @@ already ships.
 Open the file browser menu in KOReader, then **More tools** ▸ **VNC viewer**. You get the
 connection list; start with **New connection…** and give it a name, the host, the port (5900 by
 default) and the password your VNC server uses; the **Picture: …** button sets that connection's
-colour depth and Tight options (see "Lower bandwidth" below). Tap a connection to connect.
+colour depth, scaling and Tight options (see "Lower bandwidth" below). Tap a connection to connect.
 
 **Manage connections…** opens each saved connection's own actions (Connect, Edit, Delete), plus an
 **Auto connect on start** switch. Turning it on dials that connection by itself on KOReader's next
@@ -193,7 +193,8 @@ return {
                 ["color_depth"] = 24,      -- 24, 16 or 8: fewer bits = less bandwidth, fewer colours
                 ["enable_tight"] = false,  -- opt-in Tight encoding, see below
                 ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
-                ["compress_level"] = false }, -- Tight compression level 0..9 (false = server default)
+                ["compress_level"] = false, -- Tight compression level 0..9 (false = server default)
+                ["scaling"] = "smooth" },   -- "smooth" or "sharp" (faster, crisper text; applies at once)
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)
@@ -240,12 +241,17 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   encoding** under the connection editor's **Picture** button, or the profile's
   `["enable_tight"] = true`) until it has been tested against the server you use.
 - **Lower bandwidth**: each connection has its own picture settings, set with the **Picture: …**
-  button in the connection editor (its label sums them up, e.g. `Picture: 16-bit, Tight, JPEG 3`).
+  button in the connection editor (its label sums them up, e.g. `Picture: 16-bit, sharp, Tight, JPEG 3`).
   **Colour depth** (24/16/8-bit) asks the server for fewer bits per pixel; with Tight on, **JPEG
   quality** and **Compression level** (Off or 0–9; Off leaves the server's default) trade picture
-  quality and CPU for bytes. JPEG is only used at 24-bit colour. The choice is stored when the
-  connection is saved and **takes effect on the next connection** — saving the connection that is
-  live says to reconnect. New connections start with Tight off. Long-press a setting for its help.
+  quality and CPU for bytes (they are listed under **Tight encoding** and read "needs Tight" while
+  it is off). JPEG is only used at 24-bit colour. The choice is stored when the connection is saved
+  and **takes effect on the next connection** — saving the connection that is live says to
+  reconnect when one of these (or the host, port or password) changed. **Sharp scaling (faster)**
+  scales by repeating pixels instead of blending them: much faster redraws when the zoom is not
+  100% and crisper text, but uneven at non-whole zoom levels; it applies immediately, even to the
+  live connection. New connections start with Tight off and smooth scaling. The dialog explains
+  every setting; long-press one for its help.
 - **Page buttons**: the menu's **Page buttons send** chooses what a device's page-turn buttons do.
   The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
   scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also

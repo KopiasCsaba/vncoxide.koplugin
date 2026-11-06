@@ -112,6 +112,23 @@ function Session:is_connected() return self.state == "connected" end
 function Session:is_attached() return self.attached end
 function Session:get_remote() return self.remote end
 function Session:get_profile() return self.profile end
+
+--[[--
+Points the session at a (re)loaded copy of its profile. The picture settings that are read once
+per connection wait for the next one; the scaling mode reaches the remote at once.
+--- @tparam table profile
+]]
+function Session:set_profile(profile)
+    self.profile = profile
+    self:_apply_scaling()
+end
+
+--- Hands the profile's scaling mode to the remote, if there is one yet.
+function Session:_apply_scaling()
+    if self.remote then
+        self.remote:set_scaling(self.profile and self.profile.scaling == "sharp" and "sharp" or "smooth")
+    end
+end
 function Session:get_error() return self.err end
 
 -- ---------------------------------------------------------------- connect
@@ -216,6 +233,7 @@ function Session:_do_connect()
                 else
                     self_ref.remote = Remote.new(w, h)
                 end
+                self_ref:_apply_scaling()
                 self_ref:_set_state("connected")
             end,
             on_update_start = function()
@@ -244,6 +262,7 @@ function Session:_do_connect()
                 else
                     self_ref.remote = Remote.new(w, h)
                 end
+                self_ref:_apply_scaling()
                 if self_ref.app then self_ref.app:on_remote_resized(w, h) end
                 -- resynchronise with a non-incremental update of the whole new area
                 self_ref:request_full_update()

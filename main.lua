@@ -320,7 +320,7 @@ function VNC:connect_profile(name, on_failure)
         }
         self.sessions[name] = session
     else
-        session.profile = profile
+        session:set_profile(profile)
     end
 
     if session:is_connected() then
@@ -394,10 +394,13 @@ function VNC:save_profile(profile, existing_name)
         local session = self.sessions[existing_name]
         if session then
             self.sessions[existing_name] = nil
-            session.profile = self.settings:get_profile(profile.name)
             self.sessions[profile.name] = session
         end
     end
+    -- The session follows the stored profile: its scaling mode applies at once, the rest on the
+    -- next connection.
+    local session = self.sessions[profile.name]
+    if session then session:set_profile(self.settings:get_profile(profile.name)) end
     self.settings:flush()
     return true
 end

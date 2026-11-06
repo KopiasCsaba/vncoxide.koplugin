@@ -124,8 +124,12 @@ quality does nothing at 16/8-bit. normalise() resets anything else to the defaul
 of every profile without its own `enable_tight`, then drops the global (the other three never
 shipped as globals and are just dropped). A change applies on the next connection only, and the
 editor says so (long-press help, and "Reconnect to apply the new settings." after saving the live
-connection): a live SetPixelFormat would race updates already in flight in the old format, and
-the client cannot tell those apart from the new ones.
+connection, only when host, port, password or one of these four changed): a live SetPixelFormat
+would race updates already in flight in the old format, and the client cannot tell those apart
+from the new ones. The fifth Picture field, `scaling` ("smooth" by default, or "sharp"), is a
+client-side choice and applies at once: Session:set_profile hands it to Remote:set_scaling, and
+the session re-applies it whenever it creates or resizes its Remote; VNC:save_profile points the
+live session at the saved profile, and connect_profile at the reloaded one.
 
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be
