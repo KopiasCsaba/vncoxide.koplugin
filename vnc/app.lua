@@ -50,6 +50,10 @@ local ViewerApp = InputContainer:extend{
     dimen = nil,              -- set in init()
 }
 
+-- Seconds without two-finger movement after which the view counts as settled even when the
+-- gesture's release never arrived (see `_view_move`).
+ViewerApp.VIEW_SETTLE = 0.3
+
 -- ---------------------------------------------------------------- init
 
 function ViewerApp:init()
@@ -67,6 +71,9 @@ function ViewerApp:init()
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
     self._vk_screen = self:_screen_signature()
+    -- true while a two-finger pan/zoom moves the view: the visible area is reported once it ends
+    self._view_moving = false
+    self._view_settle_task = function() self:_view_settled() end
 
     self:init_menu_zones()
     self:init_gestures()
@@ -310,6 +317,7 @@ function ViewerApp:paintTo(bb, x, y)
     if not self.remote then
         self.remote = self.session:get_remote()
     end
+    if not self._view_moving then self:_sync_view_area() end
     local c = self.canvas
     if self.remote and self.remote:draw_to(bb, c.x, c.y, c.w, c.h, dither) then
         -- the canvas buffer covers its whole rect: black only around it
@@ -331,6 +339,34 @@ function ViewerApp:paintTo(bb, x, y)
         end
         logger.dbg(line)
     end
+end
+
+--[[--
+Tells the session which remote area is on screen, so that zoomed-in update requests cover only
+that (plus a margin). Called on every paint, which follows every view change; the session ignores
+an unchanged area.
+]]
+function ViewerApp:_sync_view_area()
+    local s = self.session
+    if self.remote and s and s.set_view_area then
+        s:set_view_area(self.remote:visible_remote_rect(s.REQUEST_MARGIN))
+    end
+end
+
+--- A two-finger gesture is moving the view: hold the area reports until it settles (its release,
+--- or `VIEW_SETTLE` seconds without movement, should the release never arrive).
+function ViewerApp:_view_move()
+    self._view_moving = true
+    UIManager:unschedule(self._view_settle_task)
+    UIManager:scheduleIn(ViewerApp.VIEW_SETTLE, self._view_settle_task)
+end
+
+--- The view stopped moving: report where it ended up.
+function ViewerApp:_view_settled()
+    UIManager:unschedule(self._view_settle_task)
+    if not self._view_moving then return end
+    self._view_moving = false
+    self:_sync_view_area()
 end
 
 --[[--
@@ -402,6 +438,8 @@ function ViewerApp:onCloseWidget()
     end
     UIManager:unschedule(self._watch_keyboard_tick)
     self._keyboard_watch_pending = false
+    UIManager:unschedule(self._view_settle_task)
+    self._view_moving = false
     -- Take the keyboard down first: closing it queues a refresh of just its own area
     -- (VirtualKeyboard:onCloseWidget), and that regional request would otherwise be the last word
     -- on what the panel hears about - it even suppresses UIManager:_repaint's "something was
@@ -519,11 +557,13 @@ function ViewerApp:onTwoFingerPan(_, ges)
     if not self:_input_target() then return nil end
     local rel = ges.relative or { x = 0, y = 0 }
     self.remote:pan_by(-rel.x, -rel.y)
+    self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
 end
 
 function ViewerApp:onTwoFingerPanRelease(_, ges)
+    self:_view_settled()
     -- swipe up from the bottom still needs to be able to mean "show keyboard"
     UIManager:setDirty(self, "ui")
     return true
@@ -544,6 +584,7 @@ function ViewerApp:_live_zoom(ges)
     self._last_pinch_factor = factor
     if step <= 0 then return nil end
     self.remote:zoom_at(ges.pos.x - self:canvas_geom().x, ges.pos.y - self:canvas_geom().y, step)
+    self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
 end
@@ -556,6 +597,7 @@ function ViewerApp:onPinch()
     self._zoom_start_span = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
     self:update_canvas()
+    self:_view_settled()
     self:_wholesale_change()
     return nil
 end
@@ -565,6 +607,7 @@ function ViewerApp:onSpread()
     self._zoom_start_span = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
     self:update_canvas()
+    self:_view_settled()
     self:_wholesale_change()
     return nil
 end

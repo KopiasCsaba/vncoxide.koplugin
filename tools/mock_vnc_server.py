@@ -740,6 +740,9 @@ class MockServer:
         self.repaint_pos = 0
         self.last_repaint = 0.0
         self.pending_incremental = False
+        # The rect of the pending incremental request: like libvncserver, only changes inside
+        # it are sent.
+        self.requested = (0, 0, args.width, args.height)
         self.jpeg_blob = load_jpeg_blob()
         self.advertised = set()
 
@@ -843,6 +846,7 @@ class MockServer:
                     self.send_resize(conn)
                     self.pending_incremental = False
                 elif inc:
+                    self.requested = (x, y, w, h)
                     self.pending_incremental = True
                     if not self.args.repaint:
                         self.pending_incremental = False
@@ -974,14 +978,23 @@ class MockServer:
         x = (self.repaint_pos * 16) % maxx
         y = (self.repaint_pos * 16) % maxy
         self.repaint_pos += 1
+        # Only the part inside the requested rect is sent; a change entirely outside it leaves
+        # the request pending.
+        rx, ry, rw, rh = self.requested
+        x0, y0 = max(x, rx), max(y, ry)
+        x1, y1 = min(x + box, rx + rw, self.fb.w), min(y + box, ry + rh, self.fb.h)
+        if x1 <= x0 or y1 <= y0:
+            log("REPAINT_OUTSIDE x=%d y=%d" % (x, y))
+            return
+        x, y, bw, bh = x0, y0, x1 - x0, y1 - y0
         self.pending_incremental = False
         encoders = {"hextile": hextile, "trle": trle, "zrle": zrle, "tight": tight}
         eid = {"raw": RAW, "rre": RRE, "hextile": HEXTILE, "trle": TRLE,
                "zrle": ZRLE, "tight": TIGHT, "mixed": RAW,
                "copyrect": RAW}[self.args.encoding]
-        rect = self._rect(eid, x, y, box, box, encoders)
+        rect = self._rect(eid, x, y, bw, bh, encoders)
         conn.sock.sendall(bytes([0, 0]) + struct.pack(">H", 1) + rect)
-        log("REPAINT x=%d y=%d" % (x, y))
+        log("REPAINT x=%d y=%d w=%d h=%d" % (x, y, bw, bh))
 
 
 def main():

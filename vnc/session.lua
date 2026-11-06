@@ -50,6 +50,10 @@ Session.WIFI_WAIT_TIMEOUT = 30
 -- E-ink redraws block the UI thread, so a redraw started mid-burst delays the next key press.
 Session.INPUT_QUIET = 0.3
 
+-- Margin around the visible area that zoomed-in requests also cover, as a fraction of the visible
+-- width/height on each side: a short pan then lands on pixels that are already up to date.
+Session.REQUEST_MARGIN = Remote.REQUEST_MARGIN
+
 --- Monotonic seconds; a module field so tests can substitute a clock.
 function Session._now()
     return time.to_s(time.now())
@@ -91,6 +95,11 @@ function Session.new(opts)
         on_update = opts.on_update,
         -- true holds the incremental request that follows every update, like key input does
         hold_incremental = false,
+        -- The remote area incremental requests ask for (see `set_view_area`); nil = the whole
+        -- framebuffer. `forced` is a non-incremental request for newly visible pixels that is
+        -- still owed (it waits while requests are held).
+        view_area = nil,
+        forced = nil,
     }, Session)
     -- The poll task, bound to this session: `UIManager:unschedule` matches the function, so the
     -- shared `Session._poll` would cancel every session's poll (e.g. a benchmark's own connection
@@ -235,9 +244,12 @@ function Session:_do_connect()
             { jpeg_quality = p.jpeg_quality, compress_level = p.compress_level }),
         get_plane = function() return self_ref.remote and self_ref.remote:get_plane() end,
         hold_updates = function() return self_ref:_holding() end,
+        request_area = function() return self_ref:_request_area() end,
         callbacks = {
             on_connected = function(name, w, h)
                 logger.info("vnc: connected to", name, w, h)
+                -- a fresh connection starts with the whole screen; the app narrows it again
+                self_ref.view_area, self_ref.forced = nil, nil
                 if self_ref.remote then
                     -- reconnect / fresh size: keep the object so the app's reference stays valid
                     self_ref.remote:resize(w, h)
@@ -274,6 +286,8 @@ function Session:_do_connect()
                 else
                     self_ref.remote = Remote.new(w, h)
                 end
+                -- the area was in the old desktop's coordinates (and the view is re-fitted)
+                self_ref.view_area, self_ref.forced = nil, nil
                 self_ref:_apply_scaling()
                 if self_ref.app then self_ref.app:on_remote_resized(w, h) end
                 -- resynchronise with a non-incremental update of the whole new area
@@ -482,6 +496,14 @@ function Session:_poll()
         self.attached = false
         return
     end
+    if self.forced and not self:_holding() then
+        self:_send_forced()
+        local ok, err = self:_flush_tx()
+        if not ok then
+            self:_fail(err)
+            return
+        end
+    end
     if self.proto and self.proto.update_pending and not self:_holding() then
         self.proto:release_update()
         local ok, err = self:_flush_tx()
@@ -555,7 +577,90 @@ end
 function Session:request_full_update()
     if not self.proto or not self.remote then return end
     local w, h = self.remote:get_size()
+    self.forced = nil -- covered
     self.proto:request_update(0, 0, 0, w, h)
+end
+
+--- Bounding box of the part of rect `a` not inside rect `b` (nil when `b` covers `a`).
+local function uncovered_bbox(a, b)
+    local i = Util.intersect_rect(a, b)
+    if not i then return a end
+    local box
+    if i.x > a.x then box = Util.union_rect(box, { x = a.x, y = a.y, w = i.x - a.x, h = a.h }) end
+    if i.x + i.w < a.x + a.w then
+        box = Util.union_rect(box, { x = i.x + i.w, y = a.y, w = a.x + a.w - i.x - i.w, h = a.h })
+    end
+    if i.y > a.y then box = Util.union_rect(box, { x = i.x, y = a.y, w = i.w, h = i.y - a.y }) end
+    if i.y + i.h < a.y + a.h then
+        box = Util.union_rect(box, { x = i.x, y = i.y + i.h, w = i.w, h = a.y + a.h - i.y - i.h })
+    end
+    return box
+end
+
+--- @treturn table the whole framebuffer as `{x, y, w, h}`, or nil before there is one
+function Session:_whole_area()
+    if self.proto and self.proto.width then
+        return { x = 0, y = 0, w = self.proto.width, h = self.proto.height }
+    end
+    if self.remote then
+        local w, h = self.remote:get_size()
+        return { x = 0, y = 0, w = w, h = h }
+    end
+end
+
+--- @treturn number|nil, number, number, number the area incremental requests ask for (nil: the
+---   whole framebuffer, exactly as without a view area)
+function Session:_request_area()
+    local a, whole = self.view_area, self:_whole_area()
+    if not (a and whole) then return nil end
+    local c = Util.intersect_rect(a, whole)
+    if not c then return nil end
+    return c.x, c.y, c.w, c.h
+end
+
+--[[--
+Tells the session which remote area the viewer shows (see @{vnc.framebuffer:visible_remote_rect}).
+
+From now on the incremental requests ask for that area only, so the server sends (and we decode)
+nothing that is off screen. The pixels of the new area that the previous one did not cover were
+not kept up to date, so one non-incremental request for them (the bounding box of that part) is
+sent, and they arrive even when they did not change.
+
+That request goes out at once, even though an incremental one is outstanding: a server answers an
+incremental request only once something inside it changes, so on a still screen a request queued
+behind it would never be sent. libvncserver folds every pending request into one requested region
+(`requestedRegion`) that the next update answers, so there this does not leave a second request
+behind. Only while requests are held (`_holding`) it waits; it then goes out with the
+owed incremental one as a single non-incremental request of their union.
+--- @tparam table|nil rect `{x, y, w, h}` in remote coordinates; nil means the whole framebuffer
+]]
+function Session:set_view_area(rect)
+    local whole = self:_whole_area()
+    if not whole then return end
+    local new = rect and Util.intersect_rect(rect, whole) or whole
+    if new.x == 0 and new.y == 0 and new.w == whole.w and new.h == whole.h then new = nil end
+    local old = self.view_area and Util.intersect_rect(self.view_area, whole) or whole
+    self.view_area = new
+    local missing = uncovered_bbox(new or whole, old)
+    if not missing then return end
+    self.forced = Util.union_rect(self.forced, missing)
+    if not self:_holding() then
+        self:_send_forced()
+        self:_flush_now()
+    end
+end
+
+--- Sends the owed non-incremental request for newly visible pixels (merged with an owed
+--- incremental request, which it settles).
+function Session:_send_forced()
+    local f = self.forced
+    self.forced = nil
+    if not (f and self.proto) then return end
+    if self.proto.update_pending then
+        local x, y, w, h = self:_request_area()
+        if x then f = Util.union_rect(f, { x = x, y = y, w = w, h = h }) else f = self:_whole_area() end
+    end
+    self.proto:request_update(0, f.x, f.y, f.w, f.h)
 end
 
 --- Records key input: screen update requests are held until input has been quiet for

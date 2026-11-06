@@ -2077,6 +2077,226 @@ local function main()
         return true
     end)
 
+    -- 23-26. Visible-area requests: at fit every request is the whole framebuffer (byte for
+    -- byte as before); zoomed in, the incremental requests carry the visible rect plus the
+    -- margin, and the mock only sends changes inside it; panning sends one non-incremental
+    -- request for the newly visible part, which then shows the server's pixels.
+    local function view_session(name, opts)
+        local Session = load_session()
+        local W, H = 160, 120
+        local pid, port, log = start_mock{
+            name = name, encoding = "raw", pattern = "gradient", width = W, height = H,
+            repaint = opts.repaint,
+        }
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = name },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        }
+        local env = { s = s, log = log, W = W, H = H, wire = {} }
+        function env.done(ok, err)
+            s:disconnect()
+            stop_mock(pid)
+            return ok, err
+        end
+        function env.pump_until(cond, what)
+            local deadline = os.time() + 10
+            while not cond() do
+                if s:_pump() == "error" then error("pump failed: " .. tostring(s:get_error())) end
+                if os.time() > deadline then error("timed out waiting for " .. what) end
+                socket.sleep(0.01)
+            end
+        end
+        function env.requests()
+            local out = {}
+            for _, m in ipairs(env.wire) do
+                if m:byte(1) == 3 and #m == 10 then out[#out + 1] = m end
+            end
+            return out
+        end
+        local connected, cerr
+        s:connect(function(ok, err) connected, cerr = ok, err end)
+        if not connected then env.done(); error("connect failed: " .. tostring(cerr)) end
+        local write = s.proto.io.write
+        s.proto.io.write = function(m) env.wire[#env.wire + 1] = m; return write(m) end
+        s.app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
+                  on_bell = function() end }
+        return env
+    end
+    local function req_bytes(inc, x, y, w, h)
+        return string.char(3, inc) .. string.char(math.floor(x / 256), x % 256, math.floor(y / 256), y % 256,
+            math.floor(w / 256), w % 256, math.floor(h / 256), h % 256)
+    end
+    local function first_update(env)
+        env.s:request_full_update()
+        env.s:_flush_now()
+        env.pump_until(function() return env.s.dirty ~= nil end, "the first update")
+        env.s.dirty = nil
+        for _ = 1, 5 do env.s:_pump() end
+    end
+    -- Zooms the view to the top-left quarter of the 160x120 remote (canvas 160x120, scale 2).
+    local function zoom_quarter(remote)
+        remote:set_canvas(160, 120)
+        remote:set_scale(2)
+        remote.view_x, remote.view_y = 0, 0
+        remote:set_canvas(160, 120)
+    end
+
+    check("remote_visible_rect_fit_and_zoomed", function()
+        local Remote = require("vnc/framebuffer")
+        local r = Remote.new(160, 120)
+        r:fit_view(320, 200)
+        local a = r:visible_remote_rect()
+        if not (a.x == 0 and a.y == 0 and a.w == 160 and a.h == 120) then
+            r:free(); return nil, string.format("fit: got %d,%d %dx%d", a.x, a.y, a.w, a.h)
+        end
+        zoom_quarter(r)
+        a = r:visible_remote_rect(0.25)
+        local b = r:visible_remote_rect(0)
+        r:free()
+        if not (a.x == 0 and a.y == 0 and a.w == 100 and a.h == 75) then
+            return nil, string.format("quarter + margin: got %d,%d %dx%d", a.x, a.y, a.w, a.h)
+        end
+        if not (b.x == 0 and b.y == 0 and b.w == 80 and b.h == 60) then
+            return nil, string.format("quarter without margin: got %d,%d %dx%d", b.x, b.y, b.w, b.h)
+        end
+        return true
+    end)
+
+    check("session_fit_requests_whole_framebuffer", function()
+        local env = view_session("view_fit", {})
+        local ok, err = pcall(function()
+            local s, remote = env.s, env.s:get_remote()
+            remote:fit_view(320, 200)
+            s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+            if #env.requests() ~= 0 then error("a fit view must not send anything by itself") end
+            first_update(env)
+            local reqs = env.requests()
+            if #reqs ~= 2 then error("expected the full request and one incremental, got " .. #reqs) end
+            if reqs[1] ~= req_bytes(0, 0, 0, 160, 120) then error("full request bytes changed") end
+            if reqs[2] ~= req_bytes(1, 0, 0, 160, 120) then error("incremental request is not the whole framebuffer") end
+        end)
+        return env.done(ok, err)
+    end)
+
+    check("session_zoomed_requests_visible_area", function()
+        local env = view_session("view_zoom", { repaint = 0.02 })
+        local ok, err = pcall(function()
+            local s, remote = env.s, env.s:get_remote()
+            zoom_quarter(remote)
+            s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+            if #env.requests() ~= 0 then error("zooming in needs no forced request, got " .. #env.requests()) end
+            first_update(env)
+            local n = 0
+            env.pump_until(function()
+                n = log_count(env.log, "REPAINT x=")
+                return n >= 6
+            end, "six repaints")
+            local reqs = env.requests()
+            if reqs[1] ~= req_bytes(0, 0, 0, 160, 120) then error("request_full_update must stay whole-framebuffer") end
+            for i = 2, #reqs do
+                if reqs[i] ~= req_bytes(1, 0, 0, 100, 75) then
+                    error(string.format("request %d is not the incremental visible area + margin", i))
+                end
+            end
+            -- (d) the mock honours the requested rect: every change it sent lies inside it
+            local clipped = false
+            for x, y, w, h in (read_file(env.log) or ""):gmatch("REPAINT x=(%d+) y=(%d+) w=(%d+) h=(%d+)") do
+                x, y, w, h = tonumber(x), tonumber(y), tonumber(w), tonumber(h)
+                if x + w > 100 or y + h > 75 then
+                    error(string.format("change outside the requested rect: %d,%d %dx%d", x, y, w, h))
+                end
+                if w < 40 or h < 40 then clipped = true end
+            end
+            if not clipped then error("no repaint was clipped to the requested rect") end
+        end)
+        return env.done(ok, err)
+    end)
+
+    check("session_pan_requests_newly_visible_area", function()
+        local env = view_session("view_pan", {})
+        local ok, err = pcall(function()
+            local s, remote = env.s, env.s:get_remote()
+            zoom_quarter(remote)
+            s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+            first_update(env)
+            -- stale pixels where the view is about to go: only the forced request can fix them
+            local plane = remote:get_plane()
+            plane:paintRect(60, 45, 100, 75, BB.COLOR_BLACK)
+            if not check_plane(plane, 160, 120, function(x, y)
+                if x == 159 and y == 119 then return 0, 0, 0 end
+            end) then error("the stale area was not blanked") end
+            local before = #env.requests()
+            remote.view_x, remote.view_y = 80, 60
+            remote:set_canvas(160, 120)
+            local area = remote:visible_remote_rect(s.REQUEST_MARGIN)
+            if not (area.x == 60 and area.y == 45 and area.w == 100 and area.h == 75) then
+                error(string.format("bottom-right area: got %d,%d %dx%d", area.x, area.y, area.w, area.h))
+            end
+            s:set_view_area(area)
+            s:set_view_area(area) -- unchanged: nothing more
+            local reqs = env.requests()
+            if #reqs ~= before + 1 or reqs[#reqs] ~= req_bytes(0, 60, 45, 100, 75) then
+                error("expected exactly one non-incremental request for the newly visible area")
+            end
+            env.pump_until(function() return s.dirty ~= nil end, "the forced update")
+            for _ = 1, 5 do s:_pump() end
+            local cok, cerr = check_plane(remote:get_plane(), 160, 120, function(x, y)
+                if x >= 60 and y >= 45 then return pattern_pixel("gradient", x, y, 160, 120) end
+            end)
+            if not cok then error(cerr) end
+            reqs = env.requests()
+            if reqs[#reqs] ~= req_bytes(1, 60, 45, 100, 75) then
+                error("the follow-up incremental request must carry the new area")
+            end
+        end)
+        return env.done(ok, err)
+    end)
+
+    check("session_forced_area_waits_while_held", function()
+        local env = view_session("view_hold", {})
+        local Session = load_session()
+        local real_now, clock = Session._now, 100
+        Session._now = function() return clock end
+        local ok, err = pcall(function()
+            local s, remote = env.s, env.s:get_remote()
+            zoom_quarter(remote)
+            s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+            s:note_input()
+            first_update(env)
+            if not s.proto.update_pending then error("the incremental request should be held") end
+            local before = #env.requests()
+            remote.view_x, remote.view_y = 80, 60
+            remote:set_canvas(160, 120)
+            s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+            if #env.requests() ~= before then error("nothing may be sent while input holds requests") end
+            clock = 100 + Session.INPUT_QUIET + 0.1
+            s.attached = true
+            s:_poll()
+            s.attached = false
+            local reqs = env.requests()
+            -- the owed incremental and the forced one merge into one non-incremental request
+            if #reqs ~= before + 1 or reqs[#reqs] ~= req_bytes(0, 60, 45, 100, 75) then
+                error("expected one non-incremental request of the union once quiet")
+            end
+            if s.proto.update_pending then error("the merged request settles the owed one") end
+        end)
+        Session._now = real_now
+        return env.done(ok, err)
+    end)
+
+    check("protocol_request_area_provider", function()
+        local out = {}
+        local proto = Protocol.new{ io = { write = function(s) out[#out + 1] = s end, read = function() end },
+            request_area = function() return 1, 2, 3, 4 end }
+        proto.width, proto.height, proto.update_pending = 10, 20, true
+        proto:release_update()
+        proto:free()
+        if #out ~= 1 or out[1] ~= "\3\1\0\1\0\2\0\3\0\4" then
+            return nil, "release must request the provider's area"
+        end
+        return true
+    end)
+
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
         os.exit(1)

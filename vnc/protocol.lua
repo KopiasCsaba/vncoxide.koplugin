@@ -36,6 +36,9 @@ Creates a client.
 --- @tparam[opt] table opts.callbacks on_connected|on_update_start|on_rect|on_desktop_resize|on_bell|on_cut_text
 --- @tparam[opt] function opts.hold_updates -> true while the incremental request that follows a
 ---   FramebufferUpdate should be held back (see @{Protocol:release_update})
+--- @tparam[opt] function opts.request_area -> x, y, w, h: the area the incremental request after
+---   each FramebufferUpdate (and @{Protocol:release_update}) asks for (default, or when it returns
+---   nil: the whole framebuffer)
 --- @treturn Protocol
 ]]
 function Protocol.new(opts)
@@ -51,6 +54,7 @@ function Protocol.new(opts)
         callbacks = opts.callbacks or {},
         get_plane = opts.get_plane,
         hold_updates = opts.hold_updates,
+        request_area = opts.request_area,
         update_pending = false,
         streams = Encodings.new_streams(),
         width = nil,
@@ -230,7 +234,7 @@ function Protocol:_message_loop()
             if self.hold_updates and self.hold_updates() then
                 self.update_pending = true
             else
-                self:request_update(1, 0, 0, self.width, self.height)
+                self:request_update(1, self:_request_area())
             end
         elseif t == 1 then -- SetColorMapEntries (never sent for true-colour clients)
             r:u8()
@@ -296,10 +300,19 @@ function Protocol:request_update(incremental, x, y, w, h)
     self.io.write(wr:tostring())
 end
 
+--- @treturn number, number, number, number the area incremental requests ask for
+function Protocol:_request_area()
+    if self.request_area then
+        local x, y, w, h = self.request_area()
+        if x then return x, y, w, h end
+    end
+    return 0, 0, self.width, self.height
+end
+
 --- Sends the incremental update request held back by `hold_updates`, if there is one.
 function Protocol:release_update()
     if self.update_pending then
-        self:request_update(1, 0, 0, self.width, self.height)
+        self:request_update(1, self:_request_area())
     end
 end
 

@@ -590,7 +590,7 @@ local function new_app(plane_w, plane_h)
     local ViewerApp = require("vnc/app")
     local Remote = require("vnc/framebuffer")
     local remote = Remote.new(plane_w or 400, plane_h or 300)
-    local sent = { pointer = {}, key = {}, input = 0 }
+    local sent = { pointer = {}, key = {}, input = 0, areas = {} }
     local app = ViewerApp:new{
         plugin = {
             settings = {
@@ -610,6 +610,7 @@ local function new_app(plane_w, plane_h)
             end,
             send_key = function(_, keysym, down) sent.key[#sent.key + 1] = { keysym = keysym, down = down } end,
             note_input = function() sent.input = sent.input + 1 end,
+            set_view_area = function(_, rect) sent.areas[#sent.areas + 1] = rect end,
             get_state = function() return "connected" end,
             get_error = function() return nil end,
             get_profile = function() return { name = "test" } end,
@@ -2907,6 +2908,51 @@ end)
 check("timing_trace_is_silent_when_debug_logging_is_off", function()
     local lines = capture_dbg(false, timing_scenario)
     assert_true(#lines == 0, "no vnc-timing lines expected, got: " .. table.concat(lines, "\n"))
+end)
+
+check("viewer_reports_the_visible_area", function()
+    local app, remote, sent = new_app()
+    local function last() return sent.areas[#sent.areas] end
+    local function same(a, b) return a and b and a.x == b.x and a.y == b.y and a.w == b.w and a.h == b.h end
+    local function show(a) return a and string.format("%d,%d %dx%d", a.x, a.y, a.w, a.h) or "nil" end
+    UIManager:forceRePaint()
+    assert_true(same(last(), { x = 0, y = 0, w = 400, h = 300 }),
+        "at fit the whole remote screen is the area: " .. show(last()))
+
+    app:zoom_to(4)
+    UIManager:forceRePaint()
+    assert_true(same(last(), remote:visible_remote_rect()) and last().w < 400,
+        "zoomed in, the visible rect plus margin: " .. show(last()))
+
+    -- during a two-finger pan nothing is reported; its release reports the final area
+    local n = #sent.areas
+    app:onTwoFingerPan(nil, { relative = { x = -200, y = -150 } })
+    UIManager:forceRePaint()
+    assert_true(#sent.areas == n, "no report while the pan is under way")
+    app:onTwoFingerPanRelease(nil, {})
+    UIManager:forceRePaint()
+    assert_true(#sent.areas > n and same(last(), remote:visible_remote_rect()),
+        "the release reports the panned area: " .. show(last()))
+
+    -- a pan whose release never arrives still settles after a quiet moment
+    n = #sent.areas
+    app:onTwoFingerPan(nil, { relative = { x = 100, y = 100 } })
+    UIManager:forceRePaint()
+    assert_true(#sent.areas == n, "no report while the second pan is under way")
+    local want = remote:visible_remote_rect()
+    UIManager:scheduleIn(0, function() end)
+    local deadline = os.time() + 3
+    while #sent.areas == n and os.time() <= deadline do
+        UIManager:_checkTasks()
+        require("ffi/util").usleep(20000)
+    end
+    assert_true(same(last(), want), "the settle task reports it: " .. show(last()))
+
+    app:zoom_to("fit")
+    UIManager:forceRePaint()
+    assert_true(same(last(), { x = 0, y = 0, w = 400, h = 300 }), "back at fit: " .. show(last()))
+    app:onCloseWidget()
+    remote:free()
 end)
 
 if failures > 0 then

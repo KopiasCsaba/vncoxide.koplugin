@@ -102,6 +102,22 @@ UIManager:scheduleIn poll task with a per-tick byte budget and a per-tick CPU bu
 large frame cannot block the UI. Exactly one FramebufferUpdateRequest is outstanding at any time,
 which is what bounds memory while the viewer is closed but attached.
 
+Visible-area requests. Zoomed in, the incremental requests ask only for what is on screen plus
+Session.REQUEST_MARGIN (0.25 of the visible width/height on each side), clamped to the remote
+screen: Remote:visible_remote_rect computes it, the viewer hands it to Session:set_view_area on
+every paint (held during a two-finger pan/zoom until its release, or ViewerApp.VIEW_SETTLE 0.3 s
+without movement), and Protocol asks its request_area provider for it. A server only sends changes
+inside the requested region (libvncserver intersects with requestedRegion), so less is encoded,
+sent and decoded. Whenever the whole remote screen is visible the area is the whole framebuffer and
+the requests are byte-identical to before; request_full_update (attach, DesktopSize) and the
+benchmark's own session stay whole-screen. Pixels outside the area go stale, so when the area moves
+the bounding box of its part the previous area did not cover gets one non-incremental request. It
+is sent at once even though an incremental request is outstanding: a server answers an incremental
+request only when something inside it changes, so on a still screen a request queued behind it
+would never go out, and libvncserver folds every pending request into the one requested region the
+next update answers (so no second request is left outstanding there). While requests are held for key input it waits, and then goes out instead of the
+owed incremental one, as one non-incremental request of their union.
+
 Detach/attach. Leaving the viewer detaches (unschedules the poll, stops reading, keeps the socket
 and the plane). Re-attaching sends a non-incremental request for the whole screen, which is both
 the resynchronisation and the way updates pushed while detached are absorbed. Only Disconnect

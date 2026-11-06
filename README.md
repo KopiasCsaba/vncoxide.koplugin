@@ -12,7 +12,8 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
 ## What you get
 
 - The remote framebuffer on the whole screen, scaled to fit, with zoom presets (fit screen, fit
-  with the on-screen keyboard, or a fixed 25 % … 400 %) and panning for the rest.
+  with the on-screen keyboard, or a fixed 25 % … 400 %) and panning for the rest. Zoomed in, only
+  the visible part (plus a margin) is requested from the server, so less is sent and decoded.
 - Touch control: taps, long presses and drags drive the remote pointer, and two-finger gestures
   pan, zoom and rotate the view.
 - An on-screen keyboard that types into the remote session, plus a physical keyboard with

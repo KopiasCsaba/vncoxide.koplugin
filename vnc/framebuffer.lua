@@ -25,6 +25,9 @@ Remote.MIN_SCALE = 0.05
 Remote.MAX_SCALE = 8
 -- More stale rects than this between two paints recompute the whole canvas instead.
 Remote.MAX_STALE_RECTS = 1024
+-- Default margin of @{Remote:visible_remote_rect}, as a fraction of the visible width/height on
+-- each side (`Session.REQUEST_MARGIN` is this value).
+Remote.REQUEST_MARGIN = 0.25
 
 --[[--
 Creates a plane of `width` x `height` remote pixels.
@@ -248,6 +251,25 @@ function Remote:_render_view()
         vx, vy = math.floor(vx + 0.5), math.floor(vy + 0.5)
     end
     return { x = vx, y = vy, scale = s }
+end
+
+--[[--
+The remote area the canvas currently shows, expanded by a margin and clamped to the plane: what is
+worth asking the server for. Whenever the whole plane is visible this is exactly the whole plane.
+--- @tparam[opt=Remote.REQUEST_MARGIN] number margin_frac margin on each side, as a fraction of
+---   the visible width (left/right) and height (top/bottom)
+--- @treturn table `{x, y, w, h}` in remote coordinates
+]]
+function Remote:visible_remote_rect(margin_frac)
+    margin_frac = margin_frac or Remote.REQUEST_MARGIN
+    local view = self:_render_view()
+    local span_x, span_y = self.cw / view.scale, self.ch / view.scale
+    local mx, my = span_x * margin_frac, span_y * margin_frac
+    local x0 = math.max(0, math.floor(view.x - mx))
+    local y0 = math.max(0, math.floor(view.y - my))
+    local x1 = math.min(self.w, math.ceil(view.x + span_x + mx))
+    local y1 = math.min(self.h, math.ceil(view.y + span_y + my))
+    return { x = x0, y = y0, w = math.max(0, x1 - x0), h = math.max(0, y1 - y0) }
 end
 
 --[[--
