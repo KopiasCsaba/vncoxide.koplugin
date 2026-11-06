@@ -2489,7 +2489,7 @@ end)
 check("canvas_dithered_paint_reports_its_blit_time", function()
     local bb = require("ffi/blitbuffer")
     local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BB8)
-    local Util = require("vnc.util")
+    local Util = require("vnc/util")
     local real_on = Util.timing_enabled
     Util.timing_enabled = function() return false end
     remote:draw_to(target, cx, cy, cw, ch, true)
