@@ -60,3 +60,19 @@
 - Row figures format becomes: `"%.1f Mpx/s · %d ms/tile · full %d ms · %d KB"` (U+00B7 separators, drop "small" and "/full"; the intro line already explains the columns — update its text to: "Fastest first: changed pixels per second in small pieces, time per piece, time per full screen and its size, decoding and drawing included.").
 - Test: render the results TextViewer at 1264×1680 portrait (Screen size used by ui_smoke if configurable; otherwise measure with the TextViewer's TextBoxWidget face and width) and assert no row's figures line wraps (e.g. TextBoxWidget line count == number of logical lines). If exact measuring is impractical, assert the figures string width (via `RenderText:sizeUtf8Text` with the viewer's face) is below the text area width for the worst case "10.0 Mpx/s · 999 ms/tile · full 9999 ms · 9999 KB".
 - Commit `fix(benchmark): result rows fit one line`.
+
+### Task 4: Benchmark — two passes and median scoring (user-approved)
+
+**Why:** on the user's Era (photo of the results, 1264×1680 frame): per-request overhead varied 0–90 ms between combinations with no pattern (16 tiles took 1.0–2.2 s for the same pixels one full frame delivered in 0.7–1.0 s), and the combinations that ran last scored best — order/warm-up effects and Wi-Fi round-trip jitter decide the ranking. Run everything twice (forward, then reverse order) and score with medians.
+
+**Files:** `vnc/benchmark.lua`, `vnc/dialogs.lua` (intro text, progress label), `README.md`, `NOTES.txt`; Test `tools/proto_smoke.lua`, `tools/ui_smoke.lua`.
+
+**Behaviour:**
+- `Benchmark.PASSES = 2`. Pass 1 runs the combinations in list order, pass 2 in reverse order (each combination reconnects in each pass as today). Total runs = 2 × combinations.
+- Per combination, collect every tile sample from both passes (per sample: pixels, elapsed) and every counted full-frame sample.
+- Scores: `tile_ms` = median of the tile sample times; `tile_px_per_s` = median of the per-sample (pixels / elapsed); `full_ms` = median of the counted full-frame times; `full_px_per_s` from that median; `full_bytes` = mean as today. Keep phase totals (`full`, `tiles`) summed over both passes.
+- A combination that failed in either pass: ranked with the failed rows, error text from the first failure ("failed in pass N: <reason>"). Stop-on-connect-failure stays (first pre-handshake failure ends the whole run).
+- Progress label: "<run>/<total> (pass <p>/2): <label> — <phase>".
+- Intro text: replace "a few seconds each" with "twice each, in opposite order, a few seconds per try"; keep the rest verbatim.
+- Results intro line: append " Medians over two runs."
+- [ ] Step 1: failing tests: run order is forward then reverse (assert on Session creation order / mock connection log); medians computed correctly from known samples (unit-test the scoring function with hand-made samples incl. an outlier that a mean would be skewed by); a failure in pass 2 marks the row failed with "failed in pass 2"; cancel during pass 2 stops cleanly; progress label format. Step 2: FAIL. Step 3: implement. Step 4: `all` green. Step 5: commit `feat(benchmark): two passes in opposite order, median scoring`.
