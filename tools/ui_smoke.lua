@@ -1509,6 +1509,46 @@ end)
 check("page_buttons_setting_validates", function()
     local Settings = require("vnc/settings")
     assert_true(Settings.DEFAULTS.page_buttons == "keys", "default must be keys")
+    local path = data_dir .. "/ui_smoke_page_buttons.lua"
+    for _, bad in ipairs({ "bogus", 5, true }) do
+        os.remove(path)
+        os.remove(path .. ".old")
+        local f = assert(io.open(path, "w"))
+        f:write(string.format('return { settings = { page_buttons = %s } }\n',
+            type(bad) == "string" and string.format("%q", bad) or tostring(bad)))
+        f:close()
+        local got = Settings.open(path).data.settings.page_buttons
+        assert_true(got == "keys", string.format("stored %s must load as keys, got %s", tostring(bad), tostring(got)))
+    end
+    os.remove(path)
+    local f = assert(io.open(path, "w"))
+    f:write('return { settings = { page_buttons = "wheel" } }\n')
+    f:close()
+    assert_true(Settings.open(path).data.settings.page_buttons == "wheel", "a valid wheel value must be kept")
+    os.remove(path)
+end)
+
+check("page_buttons_menu_entry", function()
+    local app = new_app()
+    local s = app.plugin.settings.data.settings
+    s.page_buttons = "keys"
+    app:open_menu()
+    local entry
+    for _, item in ipairs(app.menu.item_table) do
+        if item.text == "Page buttons send" then entry = item end
+    end
+    assert_true(entry, "the viewer menu must have a 'Page buttons send' entry")
+    assert_true(entry.help_text and entry.help_text:find("wheel", 1, true), "the entry has a help text")
+    assert_true(entry.text:find("next connection", 1, true) == nil, "it applies at once")
+    local keys, wheel = find_item(entry.sub_item_table, "Page Up/Down keys"), find_item(entry.sub_item_table, "Mouse wheel")
+    assert_true(keys.mandatory == "✓" and wheel.mandatory == nil, "keys is the shown choice")
+    local before = #stack()
+    wheel.callback()
+    assert_true(s.page_buttons == "wheel", "choosing Mouse wheel stores wheel, got " .. tostring(s.page_buttons))
+    for _, w in ipairs(stack()) do
+        assert_true(w.text ~= "Takes effect on the next connection.", "no next-connection notice")
+    end
+    assert_true(#stack() <= before, "no notice widget was added")
 end)
 
 check("keys_forward_to_the_remote", function()
