@@ -60,6 +60,21 @@ local PICTURE_TEXT = {
 }
 local PICTURE_ORDER = { "color_depth", "enable_tight", "jpeg_quality", "compress_level" }
 local PICTURE_FOOTER = _("Changes take effect on the next connection.")
+-- Only in the Help viewer, after the per-setting paragraphs.
+local PICTURE_ADVICE = {
+    {
+        name = _("Fastest on a fast network (e.g. PocketBook Era, PB700)"),
+        body = _("Colour depth 24-bit, Tight off, viewer zoom 100%. When the network is fast, fewer bytes gain little; the time goes into the e-reader's own work per pixel. 24-bit pixels are copied straight through, 16- and 8-bit ones have to be converted, and Tight's JPEG has to be decoded."),
+    },
+    {
+        name = _("Scale on the PC, not on the e-reader"),
+        body = _("letting the server send an already scaled image (the server script's -z option, e.g. -z 2; add --sharp for crisp pixel doubling) is better than any viewer zoom other than 100%: at 100% the e-reader only copies pixels, at any other zoom it has to compute every screen pixel. If you do zoom on the e-reader, turn Sharp scaling on (viewer menu)."),
+    },
+    {
+        name = _("Example"),
+        body = _("to fill the Era's 1264×1680 screen with a 632×840 area of the PC, start the server with: vnc-server.py -s 632x840 -z 2, and keep the viewer at 100%. The PC doubles the image, the e-reader just copies it. Measured on an Era: a full redraw took 17 ms at 100%, against 306 ms when the e-reader itself scaled by 2 (before partial redraws were added). The image has four times as many pixels to send, which a fast network carries easily."),
+    },
+}
 
 --- Long-press help for each picture setting (plain text).
 local PICTURE_HELP = {}
@@ -77,6 +92,10 @@ do
             .. TextBoxWidget.PTF_BOLD_END .. ": " .. entry.body
     end
     paragraphs[#paragraphs + 1] = PICTURE_FOOTER
+    for _i, entry in ipairs(PICTURE_ADVICE) do
+        paragraphs[#paragraphs + 1] = TextBoxWidget.PTF_BOLD_START .. entry.name
+            .. TextBoxWidget.PTF_BOLD_END .. ": " .. entry.body
+    end
     PICTURE_EXPLANATION = TextBoxWidget.PTF_HEADER .. table.concat(paragraphs, "\n\n")
 end
 

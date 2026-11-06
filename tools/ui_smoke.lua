@@ -2141,8 +2141,12 @@ check("editor_picture_settings_save_and_cancel", function()
     assert_true(not editor:isKeyboardVisible(), "the keyboard stays hidden while the viewer is open")
     assert_true(viewer.text:find("Its main advantage is JPEG", 1, true) and viewer.text:find("next connection", 1, true),
         "the full explanation, got " .. viewer.text)
-    assert_true(not viewer.text:find("Sharp", 1, true) and not viewer.text:find("sharp", 1, true),
-        "the explanation does not mention sharp scaling")
+    -- Sharp scaling is a viewer-menu setting: only the closing advice may point to it, not a setting paragraph.
+    local settings_part = viewer.text:sub(1, (viewer.text:find("next connection", 1, true)))
+    assert_true(not settings_part:find("Sharp", 1, true) and not settings_part:find("sharp", 1, true),
+        "no setting paragraph mentions sharp scaling")
+    assert_true(viewer.text:find("-z 2", 1, true) and viewer.text:find("other than 100%", 1, true),
+        "the advice points to the server script's -z and to zoom 100%")
     assert_true(not viewer.text:find("needs", 1, true), "no 'needs' in the explanation")
     local TextBoxWidget = require("ui/widget/textboxwidget")
     assert_true(viewer.text:sub(1, #TextBoxWidget.PTF_HEADER) == TextBoxWidget.PTF_HEADER, "viewer text is PTF text")
@@ -2152,8 +2156,10 @@ check("editor_picture_settings_save_and_cancel", function()
     assert_true(tbw and tbw._ptf_char_is_bold, "the viewer's TextBoxWidget honours PTF (bold map built)")
     local bold_n = 0
     for _ in pairs(tbw._ptf_char_is_bold) do bold_n = bold_n + 1 end
-    assert_true(bold_n == #("Colour depth") + #("Tight") + #("JPEG quality") + #("Compression level"),
-        "exactly the four names are bold, got " .. bold_n)
+    assert_true(bold_n == #("Colour depth") + #("Tight") + #("JPEG quality") + #("Compression level")
+        + #("Fastest on a fast network (e.g. PocketBook Era, PB700)") + #("Scale on the PC, not on the e-reader")
+        + #("Example"),
+        "exactly the four names and the three advice headings are bold, got " .. bold_n)
     assert_true(tbw.text:find("Colour depth: how many bits", 1, true) and not tbw.text:find("\u{FFF2}", 1, true),
         "markers are stripped from the rendered text")
     viewer:onClose()
