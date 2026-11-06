@@ -1481,6 +1481,10 @@ check("keys_forward_to_the_remote", function()
         { "Left", "+0xFF51,-0xFF51" },
         { "ContextMenu", "+0xFF67,-0xFF67" },   -- the PC "menu" key
         { "F5", "+0xFFC2,-0xFFC2" },
+        { "LPgFwd", "+0xFF56,-0xFF56" },        -- Page_Down
+        { "LPgBack", "+0xFF55,-0xFF55" },       -- Page_Up
+        { "RPgFwd", "+0xFF56,-0xFF56" },
+        { "RPgBack", "+0xFF55,-0xFF55" },
     }
     for _, case in ipairs(cases) do
         local got = press(case[1])

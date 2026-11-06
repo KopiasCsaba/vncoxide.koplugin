@@ -21,9 +21,9 @@ Keysyms.special = {
     Up        = 0xFF52,
     Right     = 0xFF53,
     Down      = 0xFF54,
-    LPgBack   = 0xFF55,
-    LPgFwd    = 0xFF55,
-    RPgBack   = 0xFF56,
+    LPgBack   = 0xFF55,   -- Page_Up
+    LPgFwd    = 0xFF56,   -- Page_Down
+    RPgBack   = 0xFF55,
     RPgFwd    = 0xFF56,
     Shift     = 0xFFE1,
     Ctrl      = 0xFFE3,
@@ -48,6 +48,8 @@ for name, sym in pairs(Keysyms.special) do
     if Keysyms.key_name[sym] == nil then Keysyms.key_name[sym] = name end
 end
 -- Explicit choices where the KOReader name is the one a device is likely to map:
+Keysyms.key_name[0xFF55] = "LPgBack"        -- Page_Up
+Keysyms.key_name[0xFF56] = "LPgFwd"         -- Page_Down
 Keysyms.key_name[0xFF0D] = "Press"          -- Return
 Keysyms.key_name[0xFF1B] = "Back"           -- Escape
 Keysyms.key_name[0xFF67] = "ContextMenu"    -- the PC "menu" key (F1 is KOReader's "Menu")

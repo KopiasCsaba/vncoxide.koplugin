@@ -200,6 +200,12 @@ end
 
 -- ---------------------------------------------------------------- pixel formats
 
+check("page_keysyms_are_page_up_and_down", function()
+    local Keysyms = require("vnc/keysyms")
+    assert_true(Keysyms.name_for_keysym(0xFF55) == "LPgBack", "Page_Up must map to LPgBack")
+    assert_true(Keysyms.name_for_keysym(0xFF56) == "LPgFwd", "Page_Down must map to LPgFwd")
+end)
+
 check("format_32bpp_matches_the_client_layout", function()
     local src = BB.new(3, 1, BB.TYPE_BBRGB24)
     put(src, 0, 0, 255, 0, 0)
