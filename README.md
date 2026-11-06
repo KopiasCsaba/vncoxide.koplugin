@@ -66,6 +66,7 @@ There is no permanent toolbar: the remote desktop owns the whole screen.
 | long press | right click |
 | one-finger drag | drag with the left button held |
 | two-finger drag | pan the view (does not move the remote pointer) |
+| two-finger flick up / down | scroll the remote wheel down / up at the last pointer position, 1 to 10 notches by flick length (a tenth of the screen height each); armed key-panel modifiers are not used or consumed |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed |
 | two-finger rotate | change the screen orientation |
 | swipe up from the bottom strip | show the on-screen keyboard |

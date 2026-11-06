@@ -236,6 +236,11 @@ and the viewer takes those releases anywhere on the screen, acting only on a pre
 that gains a second finger becomes a two-finger gesture in GestureDetector (Contact:handlePan with
 a buddy contact) and ends in two_finger_pan_release, never in pan_release; every two-finger handler
 therefore first ends such an action (ViewerApp:_end_pointer_action: button up, then the modifiers).
+A two-finger flick (two_finger_swipe, north/south only) scrolls the remote wheel at the last
+pointer position (north = wheel down, mask 16; south = mask 8; notches = clamp(round(distance /
+(screen height / 10)), 1, 10)). It is not a modifier action: armed modifiers are neither sent nor
+consumed. A drag or hold whose release was eaten by the keyboard or menu is ended by the next
+tap/pan start/hold, any send_key, or showing the on-screen keyboard (_end_stale_pointer_action).
 Gestures off the panel never reach its buttons (KeyPanel:handleEvent): a button rebuilt since the
 last paint does not know its place yet. Replaying a recent combo is an action too: it clears the
 armed modifiers rather than adding them. The release of the Back key that closed the panel is not

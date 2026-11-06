@@ -523,8 +523,19 @@ function ViewerApp:send_pointer(x, y, mask)
     self.session:send_pointer(x, y, mask)
 end
 
+--- Sends a key. A drag or long press of ours still pending (its release was eaten by the
+--- on-screen keyboard or the menu) ends first, so its button and modifiers do not stay down.
 function ViewerApp:send_key(keysym, down)
+    self:_end_stale_pointer_action()
     self.session:send_key(keysym, down)
+end
+
+--- Ends a drag or long press whose release never reached us (see `_end_pointer_action`); no-op
+--- when none is pending.
+function ViewerApp:_end_stale_pointer_action()
+    if self._drag_active or self._hold_active then
+        self:_end_pointer_action()
+    end
 end
 
 --[[--
@@ -557,6 +568,7 @@ end
 
 function ViewerApp:onTap(_, ges)
     if not self:_input_target() then return nil end
+    self:_end_stale_pointer_action()
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:_press_armed()
     -- move, press, release: what a real mouse click looks like on the wire
@@ -570,6 +582,7 @@ end
 function ViewerApp:onPan(_, ges)
     if not self:_input_target() then return nil end
     if self._drag_active == nil then
+        self:_end_stale_pointer_action() -- a long press whose release never came
         -- A pan's `relative` is the accumulated delta since the first contact, so this
         -- recovers the exact press position without depending on `start_pos`.
         local rel = ges.relative or { x = 0, y = 0 }
@@ -595,6 +608,7 @@ end
 
 function ViewerApp:onHold(_, ges)
     if not self:_input_target() then return nil end
+    self:_end_stale_pointer_action()
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     -- a long press is a right click: the armed modifiers go with it, like with a tap
     self:_press_armed()
@@ -703,10 +717,22 @@ function ViewerApp:onRotate(_, ges)
     return true
 end
 
---- A two-finger flick: nothing of its own yet, but it ends a drag like any two-finger gesture.
-function ViewerApp:onTwoFingerSwipe()
+--[[--
+A two-finger flick scrolls the remote wheel like a touch scroll: a flick up (content follows the
+fingers) scrolls the page down, a flick down scrolls it up. One notch per tenth of the screen
+height travelled, 1 to 10. East/west flicks are ignored. A flick is not a modifier action: the
+modifiers armed on the "Send keys" panel are neither sent nor consumed by it.
+]]
+function ViewerApp:onTwoFingerSwipe(_, ges)
     self:_end_pointer_action()
-    return nil
+    local direction = ges and ges.direction
+    if direction ~= "north" and direction ~= "south" then return nil end
+    if not self:_input_target() then return nil end
+    local tenth = Screen:getHeight() / 10
+    local notches = math.floor((ges.distance or 0) / tenth + 0.5)
+    notches = math.max(1, math.min(10, notches))
+    self:scroll_wheel(direction == "north" and 1 or -1, notches)
+    return true
 end
 
 function ViewerApp:onKbdShow()
@@ -787,7 +813,7 @@ end
 
 --- Scrolls the remote wheel (1 = down, -1 = up) at the last pointer position, or at the centre
 --- of the remote screen when no pointer event has been sent yet.
-function ViewerApp:scroll_wheel(direction)
+function ViewerApp:scroll_wheel(direction, notches)
     local w, h = self.remote:get_size()
     local x, y = self._pointer_x, self._pointer_y
     if not x then
@@ -797,7 +823,7 @@ function ViewerApp:scroll_wheel(direction)
     x, y = math.max(0, math.min(x, w - 1)), math.max(0, math.min(y, h - 1))
     local mask = direction > 0 and 16 or 8
     self.session:note_input("wheel")
-    for _ = 1, ViewerApp.WHEEL_NOTCHES do
+    for _ = 1, notches or ViewerApp.WHEEL_NOTCHES do
         self:send_pointer(x, y, mask)
         self:send_pointer(x, y, 0)
     end
@@ -904,6 +930,7 @@ function ViewerApp:evaluate_keyboard()
     end
     self.vk_visible = want
     if want then
+        self:_end_stale_pointer_action()
         self.vk:showKeyboard()
     else
         self.vk:hideKeyboard()

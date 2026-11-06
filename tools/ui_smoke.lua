@@ -3334,6 +3334,87 @@ check("key_panel_two_finger_gesture_ends_a_drag_and_its_modifiers", function()
     end
 end)
 
+check("stale_drag_is_ended_before_the_next_action_or_key", function()
+    -- a pan_release eaten by the keyboard or the menu leaves the button and modifiers down
+    local actions = {
+        tap = function(app) app:onTap(nil, { pos = Geom:new{ x = 40, y = 30 } }) end,
+        hold = function(app) app:onHold(nil, { pos = Geom:new{ x = 40, y = 30 } }) end,
+        key = function(app) app:send_key(0x61, true) end,
+    }
+    local expected = { tap = "p0,-0xFFE1,p0,p1,p0", hold = "p0,-0xFFE1,p4", key = "p0,-0xFFE1,+0x61" }
+    for name, act in pairs(actions) do
+        local app, remote = new_app()
+        local panel = open_key_panel(app)
+        local wire = wire_log(app)
+        touch(panel, "mod:Shift")
+        UIManager:forceRePaint()
+        wire()
+        dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+        assert_true(wire() == "+0xFFE1,p1,p1", name .. ": a Shift+drag is under way")
+        act(app) -- the pan_release never comes
+        local got = wire()
+        assert_true(got == expected[name], name .. ": expected " .. expected[name] .. ", got " .. got)
+        assert_true(app._drag_active == nil and app._action_mods == nil, name .. ": no stale drag")
+        close_viewer(app, remote)
+    end
+end)
+
+check("two_finger_flick_scrolls_the_wheel", function()
+    local app, remote, sent = new_app()
+    local c = app:canvas_geom()
+    app:onTap(nil, { pos = { x = c.x + 50, y = c.y + 40 } })
+    local rx, ry = app:_to_remote(c.x + 50, c.y + 40)
+    local function masks()
+        local out = {}
+        for _, e in ipairs(sent.pointer) do out[#out + 1] = e.mask end
+        sent.pointer = {}
+        return table.concat(out, ",")
+    end
+    local function notches(mask, n)
+        return string.rep(mask .. ",0,", n):sub(1, -2)
+    end
+    masks()
+    local half = Screen:getHeight() / 2
+    local pos = Geom:new{ x = 50, y = 50 }
+    assert_true(app:onTwoFingerSwipe(nil, { direction = "north", distance = half, pos = pos }) == true)
+    local got = masks()
+    assert_true(got == notches(16, 5), "north half screen: 5 notches down, got " .. got)
+    app:onTwoFingerSwipe(nil, { direction = "south", distance = half, pos = pos })
+    got = masks()
+    assert_true(got == notches(8, 5), "south: wheel up, got " .. got)
+    app:onTwoFingerSwipe(nil, { direction = "north", distance = 1, pos = pos })
+    assert_true(masks() == notches(16, 1), "tiny flick: at least 1 notch")
+    app:onTwoFingerSwipe(nil, { direction = "north", distance = Screen:getHeight() * 3, pos = pos })
+    assert_true(masks() == notches(16, 10), "huge flick: at most 10 notches")
+    for _, dir in ipairs({ "east", "west" }) do
+        assert_true(app:onTwoFingerSwipe(nil, { direction = dir, distance = half, pos = pos }) == nil)
+        assert_true(#sent.pointer == 0, dir .. ": nothing sent")
+    end
+    app:onTwoFingerSwipe(nil, { direction = "north", distance = half, pos = pos })
+    for _, e in ipairs(sent.pointer) do
+        assert_true(e.x == rx and e.y == ry, "the wheel goes to the last pointer position")
+    end
+    sent.pointer = {}
+    -- a slow two-finger drag still pans and sends nothing
+    app:onTwoFingerPan(nil, { relative = { x = 5, y = 5 } })
+    assert_true(#sent.pointer == 0 and #sent.key == 0, "two_finger_pan sends nothing")
+    close_viewer(app, remote)
+end)
+
+check("two_finger_flick_leaves_armed_modifiers_alone", function()
+    local app, remote = new_app()
+    local panel = open_key_panel(app)
+    local wire = wire_log(app)
+    touch(panel, "mod:Shift")
+    UIManager:forceRePaint()
+    wire()
+    app:onTwoFingerSwipe(nil, { direction = "north", distance = 100, pos = Geom:new{ x = 50, y = 50 } })
+    local got = wire()
+    assert_true(not got:find("0x", 1, true), "a flick sends no keys, got " .. got)
+    assert_true(#panel:take_armed() == 1, "Shift is still armed after a flick")
+    close_viewer(app, remote)
+end)
+
 check("key_panel_combo_order_and_modifiers_only", function()
     local app, remote, sent = new_app()
     local panel = open_key_panel(app)
