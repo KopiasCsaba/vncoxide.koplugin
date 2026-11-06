@@ -84,7 +84,9 @@ keyboard, the **Menu** key (F1 on KOReader's own keymap) toggles it too.
 visible" toggle, show/hide keyboard, the screen orientation (including rotations), "use current
 orientation as default", what the page buttons send, sending single keys (Enter/Tab/Esc/Delete),
 **Disconnect** (with a confirmation) and **Leave (keep connection)**. If the connection has just
-dropped, it leads with **Reconnect to …**.
+dropped, it leads with **Reconnect to …**. Settings toggles keep the menu open; anything that
+rotates the screen (the orientation choices, Rotate screen), changes the zoom or sends a key closes
+it ("use current orientation as default" does not rotate, so it stays).
 
 **The keyboard** is drawn over the framebuffer, and showing it leaves the zoom alone — except in
 **Fit (with keyboard)**, the mode that deliberately fits the zoom into the space the keyboard
@@ -322,8 +324,8 @@ tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; e
   you get one warning and the server runs without it.
 - Latency: the defaults are `-wait 5 -defer 0` (x11vnc answers at once). Measured against x11vnc
   0.9.16 on a 632x840 area, the old `-wait 50 -defer 100` cost about 150 ms per request against about
-  6 ms. With `-z`, x11vnc's X DAMAGE hints made every request about 170 ms slower on a real display
-  (about 8 ms without), so the script adds `-noxdamage` whenever `-z` is not 1. `--gentle` goes back
+  6 ms. With `-z`, x11vnc's X DAMAGE hints made scaling take about 170 ms per update instead of
+  about 8 ms (measured with real content on one desktop; blank content was fast either way), so the script adds `-noxdamage` whenever `-z` is not 1. `--gentle` goes back
   to `-wait 50 -defer 100` (less CPU on a slow PC, about 145 ms more per update). `--xdamage` keeps
   the damage hints with `-z`. `-noxdamage` means x11vnc scans the screen itself, which likely uses
   more CPU (not measured).

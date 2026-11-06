@@ -112,8 +112,9 @@ def build_cmd(display, area, port, auth, allow, extra, scale=None, gentle=False,
     if scale:
         cmd += ["-scale", scale]
         if noxdamage:
-            # x11vnc's X DAMAGE hints made every request ~170 ms slower with -scale on a real
-            # display (measured; ~8 ms with this flag). x11vnc then scans the screen itself.
+            # With x11vnc's X DAMAGE hints, scaling took ~170 ms per update instead of ~8 ms
+            # (measured with real content on one desktop; blank content was fast either way).
+            # x11vnc then scans the screen itself.
             cmd += ["-noxdamage"]
     cmd += ["-rfbport", str(port)] + list(auth)
     if allow:

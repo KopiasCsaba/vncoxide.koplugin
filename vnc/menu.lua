@@ -199,10 +199,13 @@ function MenuBuilder.open(app)
     -- ---- orientation
     local rotation_items = {}
     for _i, rotation in ipairs(ROTATIONS) do
-        rotation_items[#rotation_items + 1] = stays_open({
+        -- Closes the menu like Rotate screen: it only relayouts on a broadcast ScreenResize, which a
+        -- rotation does not send, so an open menu would stay laid out for the old orientation.
+        rotation_items[#rotation_items + 1] = {
             text = rotation.label,
-            callback = function() app:set_rotation_mode(rotation.mode) end,
-        }, function(item) item.mandatory = settings.orientation == rotation.mode and _("default") or nil end)
+            callback = action(function() app:set_rotation_mode(rotation.mode) end),
+            mandatory = settings.orientation == rotation.mode and _("default") or nil,
+        }
     end
     item_table[#item_table + 1] = stays_open({
         text = _("Screen orientation"),

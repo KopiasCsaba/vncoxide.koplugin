@@ -94,6 +94,9 @@ local function free_port()
     return tonumber(port)
 end
 
+-- pids of started mocks that were not stopped yet; swept after every check and at exit
+local LIVE_MOCKS = {}
+
 --[[--
 Starts the mock server; returns its pid, the port and the log path.
 ]]
@@ -121,7 +124,9 @@ local function start_mock(opts)
     local h = assert(io.popen(full, "r"))
     local pid = (h:read("*l") or ""):gsub("%s", "")
     h:close()
+    LIVE_MOCKS[pid] = true
     if not wait_for_log(log, "LISTENING", 10) then
+        os.execute("kill -9 " .. pid .. " 2>/dev/null"); LIVE_MOCKS[pid] = nil
         error(string.format("mock server did not start (pid %s, log %s): %s",
             pid, log, read_file(log .. ".stdout") or "(no output)"))
     end
@@ -131,7 +136,13 @@ end
 local function stop_mock(pid)
     if pid and pid ~= "" then
         os.execute("kill -9 " .. pid .. " 2>/dev/null")
+        LIVE_MOCKS[pid] = nil
     end
+end
+
+-- Kills every mock still registered (a case that failed before its own stop_mock).
+local function stop_all_mocks()
+    for pid in pairs(LIVE_MOCKS) do stop_mock(pid) end
 end
 
 -- ---------------------------------------------------------------- synthetic framebuffer
@@ -379,6 +390,7 @@ end
 local failures = 0
 local function check(name, fn)
     local ok, res, err = pcall(fn)
+    stop_all_mocks()
     if ok and res then
         print("ok - " .. name)
     else
@@ -2445,6 +2457,7 @@ local function main()
         return true
     end)
 
+    stop_all_mocks()
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
         os.exit(1)

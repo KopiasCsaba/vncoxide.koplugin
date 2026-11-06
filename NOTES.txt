@@ -182,7 +182,8 @@ cancelled or errors (attach requests the full update that resyncs them). A combi
 before its handshake completes (refused, timeout, auth/security, Wi-Fi) ends the whole run:
 on_done(results, connect_error), and the UI shows "Could not connect: <reason>" instead of the
 table. Failures after connecting (rejected format, mid-phase error) fail only that combination.
-It needs no changing content: every request is non-incremental (3 whole-screen ones, the first a
+The benchmark session polls every 5 ms while a request is in flight (see the vnc/benchmark.lua
+header). It needs no changing content: every request is non-incremental (3 whole-screen ones, the first a
 warm-up, then the 16 tiles of a 4x4 grid, one at a time, the held incremental request settled by
 each), so the server re-encodes and re-sends identical pixels every time and every combination
 gets the same pixel counts on a still screen. Each request is timed from sending (flushed at once)
@@ -595,6 +596,9 @@ Not verified, and where to look first if something is wrong:
   refresh whenever the whole canvas changes" is asserted by the panel model in ui_smoke.lua, while
   how a given Kindle's EPDC renders that refresh (a partial waveform mishandling a wholesale change
   is what the flicker and the ghosted strips looked like) still needs the device.
+- Nothing from the visible-area / forced-benchmark / stay-open-menu round has run on the e-reader
+  yet: visible-area requests against a real server and panel, the menu staying open, and the
+  benchmark's 5 ms poll and tile scoring. The benchmark was run headless against a real x11vnc only.
 - Suspend: while KOReader is suspended the poll task simply does not run and the single
   outstanding update request is buffered by the kernel. If a connection turns out to die across
   suspend, re-requesting a full update on resume is the fix - not implemented.

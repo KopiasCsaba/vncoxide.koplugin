@@ -846,7 +846,13 @@ class MockServer:
                     self.send_resize(conn)
                     self.pending_incremental = False
                 elif inc:
-                    self.requested = (x, y, w, h)
+                    if self.pending_incremental:
+                        # libvncserver ORs requests that arrive before an update is sent
+                        ox, oy, ow, oh = self.requested
+                        nx, ny = min(x, ox), min(y, oy)
+                        self.requested = (nx, ny, max(x + w, ox + ow) - nx, max(y + h, oy + oh) - ny)
+                    else:
+                        self.requested = (x, y, w, h)
                     self.pending_incremental = True
                     if not self.args.repaint:
                         self.pending_incremental = False
