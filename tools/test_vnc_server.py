@@ -173,6 +173,11 @@ class MainEndToEnd(unittest.TestCase):
         self.assertEqual(err, "warning: frame disabled (no libX11)\n")
         self.assertTrue(os.path.exists(self.argv_file))
 
+    def test_frame_disabled_when_area_fills_output(self):
+        rc, _, err = self.run_main("-n", "-f", "-o", "HDMI-1")
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "warning: frame disabled (shared area fills the whole output)\n")
+
     def test_list(self):
         rc, out, _ = self.run_main("--list")
         self.assertEqual(rc, 0)

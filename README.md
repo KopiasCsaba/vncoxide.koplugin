@@ -230,7 +230,7 @@ more than one profile for `autoconnect`, the first keeps the flag and the rest a
 - **Lower bandwidth**: the menu's **Colour depth** (24/16/8-bit) asks the server for fewer bits
   per pixel; with Tight on, **JPEG quality** and **Compression level** (Off or 0–9; Off leaves the
   server's default) trade picture quality and CPU for bytes. JPEG is only used at 24-bit colour.
-  All three **take effect on the next connection** — reconnect to apply a change. Long-press an
+  All four **take effect on the next connection** — reconnect to apply a change. Long-press an
   entry for its help.
 - **Page buttons**: the menu's **Page buttons send** chooses what a device's page-turn buttons do.
   The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
@@ -275,7 +275,7 @@ tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; e
 ## For developers
 
 `NOTES.txt` has the architecture, the internals, the test setup and what has and has not been
-verified. The three suites it describes live in `tools/` and are run from the KOReader root with
+verified. The three Lua suites it describes live in `tools/` and are run from the KOReader root with
 KOReader's own LuaJIT:
 
     PLUGIN=~/.config/koreader/plugins/vnc.koplugin
@@ -300,6 +300,11 @@ every encoding, both security types, and every client message logged — and
 `tools/tight_jpeg.b64` is the fixed 32×32 JPEG it serves for its Tight JPEG rectangle.
 `tools/mock_vnc_client.py` is the independent Python client used to check the server, so the server
 half is validated by something that is not this plugin's own code.
+
+A fourth suite covers the PC-side launcher `tools/vnc-server.py` (unit tests plus end-to-end runs
+against fake `x11vnc`/`xrandr` stubs). It needs only Python 3, no KOReader:
+
+    python3 tools/test_vnc_server.py
 
 Keep the scratch directories on the home filesystem: a quota-limited `/tmp` makes the suites fail
 (its default locations are under `/tmp`). The UI suite needs a **fresh** `KO_HOME` — it reuses fixed

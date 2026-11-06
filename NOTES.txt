@@ -66,8 +66,8 @@ tools/ui_smoke.lua        Headless UI tests (real plugin, dialogs and viewer wid
                           process, no server).
 tools/vnc-server.py       PC-side launcher: shares an X11 monitor/area via x11vnc, optional red
                           on-screen frame (ctypes libX11). Standard library only.
-tools/test_vnc_server.py  Unit + end-to-end tests for it (fake x11vnc/xrandr stubs); run by
-                          tmp/run-tests.sh py.
+tools/test_vnc_server.py  Unit + end-to-end tests for it (fake x11vnc/xrandr stubs); run with
+                          `python3 tools/test_vnc_server.py`.
 tools/tight_jpeg.b64      The fixed 32x32 JPEG the mock serves for its Tight JPEG rectangle.
 tools/mock_vnc_client.py  An independent Python RFB 3.8 *client* fixture (decodes every encoding
                           itself, can send input) - used to validate the server half against
@@ -79,6 +79,11 @@ tools/server_smoke.lua    Headless tests for the server: pixel formats, encoders
 
 DESIGN NOTES WORTH KNOWING
 --------------------------
+
+Page buttons. The device's page-turn buttons send back = Page_Up, forward = Page_Down (keys mode,
+default). In wheel mode they send 3 wheel notches (button 4/5 press+release) at the last pointer
+position, or the remote centre before any pointer event; the position is clamped to the current
+remote size, since a DesktopSize shrink can leave it out of range.
 
 Protocol concurrency. protocol.lua runs as a coroutine whose transport yields ("need", n) when it
 wants bytes; Session is the driver and resumes it once exactly n bytes have arrived. Everything is
@@ -463,6 +468,12 @@ Not verified, and where to look first if something is wrong:
   they read its control byte (0x0A is "uncompressed" in libvncclient, "PNG" in TurboVNC/noVNC);
   the implementation follows libvncclient, cross-checked against noVNC. Flip the
   ["enable_tight"] default only after a real server has been verified.
+- 16/8-bit decoding and the Tight quality/compression pseudo-encodings: checked only against
+  tools/mock_vnc_server.py, whose 16/8-bit Tight gradient encoder was written together with the
+  decoder. Test against a real x11vnc at 16-bit with Tight on first.
+- Page-button wheel mode: covered by the headless UI tests only.
+- tools/vnc-server.py frame drawing: checked under Xvfb only (border position, removal on close).
+  Opacity is untested because it needs a compositor.
 - Real e-ink hardware: the BB8/rotation/NetworkMgr paths exist and are exercised in their emulated
   forms only. The emulator cannot show the *effect of a refresh kind* at all - every mode falls
   through to the same refresh implementation there - so "the panel receives a full-screen, flashing

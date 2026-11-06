@@ -1496,6 +1496,21 @@ check("page_buttons_scroll_the_wheel_in_wheel_mode", function()
     end
 end)
 
+check("page_buttons_wheel_clamps_to_a_shrunk_remote", function()
+    local Key = require("device/key")
+    local app, remote, sent = new_app()
+    app.settings.page_buttons = "wheel"
+    app:send_pointer(remote.w - 1, remote.h - 1, 0)
+    remote:resize(100, 80)
+    sent.pointer = {}
+    app:onKeyPress(Key:new("LPgFwd", {}))
+    assert_true(#sent.pointer == 6, "wheel must still send 3 notches")
+    for _, e in ipairs(sent.pointer) do
+        assert_true(e.x >= 0 and e.x <= 99 and e.y >= 0 and e.y <= 79,
+            "wheel must land inside the shrunk remote, got " .. e.x .. "," .. e.y)
+    end
+end)
+
 check("page_buttons_send_keys_in_keys_mode", function()
     local Key = require("device/key")
     local app, _, sent = new_app()

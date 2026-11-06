@@ -636,11 +636,13 @@ end
 --- Scrolls the remote wheel (1 = down, -1 = up) at the last pointer position, or at the centre
 --- of the remote screen when no pointer event has been sent yet.
 function ViewerApp:scroll_wheel(direction)
+    local w, h = self.remote:get_size()
     local x, y = self._pointer_x, self._pointer_y
     if not x then
-        local w, h = self.remote:get_size()
         x, y = math.floor(w / 2), math.floor(h / 2)
     end
+    -- the remote may have shrunk since the pointer was recorded
+    x, y = math.max(0, math.min(x, w - 1)), math.max(0, math.min(y, h - 1))
     local mask = direction > 0 and 16 or 8
     for _ = 1, ViewerApp.WHEEL_NOTCHES do
         self:send_pointer(x, y, mask)

@@ -229,7 +229,7 @@ def _run(cmd, frame_rects_=None, display=":0"):
     frame = None
     try:
         try:
-            proc = subprocess.Popen(cmd)
+            proc = subprocess.Popen(cmd, start_new_session=True)  # our forwarded signal is its only SIGINT
         except OSError as e:
             die("cannot start x11vnc: %s" % e)
         for s in stop_sig:  # signal that arrived before Popen returned
@@ -285,14 +285,17 @@ def _main(args, extra):
     auth = ["-nopw"]
     if not args.n:
         if not (os.path.isfile(args.P) and os.path.getsize(args.P) > 0):
-            print("Set a VNC password (max 8 chars, VNC protocol limit):")
+            print("Set a VNC password (max 8 chars, VNC protocol limit):", flush=True)
             if subprocess.call(["x11vnc", "-storepasswd", args.P]) != 0:
                 die("could not store the VNC password in %s" % args.P)
         auth = ["-rfbauth", args.P]
     w, h, x, y = area
-    print("Sharing %s (%dx%d+%d+%d) of %s on port %d" % (out["name"], w, h, x, y, display, args.p))
+    print("Sharing %s (%dx%d+%d+%d) of %s on port %d" % (out["name"], w, h, x, y, display, args.p), flush=True)
     cmd = build_cmd(display, area, args.p, auth, args.a, extra)
-    return _run(cmd, frame_rects(area, out) if args.f else None, display)
+    rects = frame_rects(area, out) if args.f else None
+    if args.f and not rects:
+        print("warning: frame disabled (shared area fills the whole output)", file=sys.stderr)
+    return _run(cmd, rects, display)
 
 
 if __name__ == "__main__":
