@@ -42,7 +42,6 @@ local NEXT_CONNECTION = _("Takes effect on the next connection.")
 --- Long-press help for each picture setting.
 local PICTURE_HELP = {
     color_depth = NEXT_CONNECTION,
-    scaling = _("Scales by repeating pixels instead of blending them. Much faster on large changes; text looks crisper but can look uneven at non-whole zoom levels. Applies immediately."),
     enable_tight = NEXT_CONNECTION .. "\n"
         .. _("Tight can send JPEG, so lowering JPEG quality saves bandwidth on photos."),
     jpeg_quality = NEXT_CONNECTION .. "\n" .. _("Only used at 24-bit colour."),
@@ -52,11 +51,10 @@ local PICTURE_HELP = {
 --- Always shown in the picture dialog: what each setting does, and when it applies.
 local PICTURE_EXPLANATION = table.concat({
     _("Colour depth: fewer bits = less data. 16-bit looks the same on e-ink greys."),
-    _("Sharp scaling: faster redraws when the zoom is not 100%; text looks crisper."),
     _("Tight: an extra compression method; needed for the JPEG and compression settings."),
     _("JPEG quality: lower = smaller photos/video (24-bit colour only)."),
     _("Compression level: higher = less data, more work for the PC."),
-    _("Depth, Tight, JPEG and compression take effect on the next connection; sharp scaling right away."),
+    _("Depth, Tight, JPEG and compression take effect on the next connection."),
 }, "\n")
 
 -- Marks the Tight pseudo-encodings as sub-items of the Tight row.
@@ -84,17 +82,14 @@ end
 
 --[[--
 The editor's one-line summary of a profile's picture settings, e.g.
-`Picture: 16-bit, sharp, Tight, JPEG 3, compr. 9`. JPEG quality and compression level are Tight
+`Picture: 16-bit, Tight, JPEG 3, compr. 9`. JPEG quality and compression level are Tight
 pseudo-encodings, so they only show (and only matter) with Tight on.
 
---- @tparam table picture `{ color_depth, scaling, enable_tight, jpeg_quality, compress_level }`
+--- @tparam table picture `{ color_depth, enable_tight, jpeg_quality, compress_level }`
 --- @treturn string
 ]]
 function Dialogs.picture_summary(picture)
     local parts = { depth_label(picture.color_depth) }
-    if picture.scaling == "sharp" then
-        parts[#parts + 1] = _("sharp")
-    end
     if picture.enable_tight then
         parts[#parts + 1] = _("Tight")
         if type(picture.jpeg_quality) == "number" then
@@ -108,14 +103,14 @@ function Dialogs.picture_summary(picture)
 end
 
 --[[--
-The picture settings of one connection: colour depth, sharp scaling, Tight, and Tight's JPEG
+The picture settings of one connection: colour depth, Tight, and Tight's JPEG
 quality and compression level (indented under it, and marked as needing it while it is off). An
 explanation of every setting stays visible above the rows (ButtonDialog's title area).
 
 Edits `picture` in place. Picking a value reopens this dialog so its labels follow; Done, Back or
 a tap outside calls `on_done`. Nothing is stored here: the editor saves (or drops) the choice.
 
---- @tparam table picture `{ color_depth, scaling, enable_tight, jpeg_quality, compress_level }`
+--- @tparam table picture `{ color_depth, enable_tight, jpeg_quality, compress_level }`
 --- @tparam function on_done
 --- @treturn table the ButtonDialog (the caller shows it)
 ]]
@@ -186,15 +181,6 @@ function Dialogs.picture_settings(picture, on_done)
                 align = "left",
                 callback = choose(_("Colour depth"), { COLOR_DEPTHS }, "color_depth"),
                 hold_callback = show_help("color_depth"),
-            } },
-            { {
-                text = picture.scaling == "sharp" and _("Sharp scaling (faster): on")
-                    or _("Sharp scaling (faster): off"),
-                align = "left",
-                callback = toggle(function()
-                    picture.scaling = picture.scaling == "sharp" and "smooth" or "sharp"
-                end),
-                hold_callback = show_help("scaling"),
             } },
             { {
                 text = picture.enable_tight and _("Tight encoding: on") or _("Tight encoding: off"),
@@ -381,8 +367,8 @@ The connection editor. Cancel (or the Back key, which `InputDialog:onCloseDialog
 `id = "close"` button) and a successful save both call `opts.on_back`.
 
 The Picture button opens @{Dialogs.picture_settings} over the editor; the choice is held here and
-only stored by Save. Saving the connection that is live applies its scaling at once (see
-`VNC:save_profile`) and says that a reconnect applies the rest, when any of that changed.
+only stored by Save. Saving the connection that is live says that a reconnect applies the changes, when any
+per-connection field changed.
 
 --- @tparam table plugin
 --- @tparam[opt] table profile profile to edit, or nil to create one
@@ -406,7 +392,6 @@ function Dialogs.edit_profile(plugin, profile, opts)
         enable_tight = profile and profile.enable_tight or false,
         jpeg_quality = profile and profile.jpeg_quality or false,
         compress_level = profile and profile.compress_level or false,
-        scaling = profile and profile.scaling or "smooth",
     }
     local picture_button
     picture_button = {
@@ -491,7 +476,6 @@ function Dialogs.edit_profile(plugin, profile, opts)
                         enable_tight = picture.enable_tight,
                         jpeg_quality = picture.jpeg_quality,
                         compress_level = picture.compress_level,
-                        scaling = picture.scaling,
                     }
                     local needs_reconnect = false
                     for _i, key in ipairs(RECONNECT_FIELDS) do

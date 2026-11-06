@@ -1599,6 +1599,63 @@ check("page_buttons_menu_entry", function()
     assert_true(#stack() <= before, "no notice widget was added")
 end)
 
+check("scaling_setting_defaults_and_validates", function()
+    local Settings = require("vnc/settings")
+    assert_true(Settings.DEFAULTS.scaling == "smooth", "default must be smooth")
+    local path = data_dir .. "/ui_smoke_scaling.lua"
+    for _, bad in ipairs({ '"blurry"', "5", "true" }) do
+        local f = assert(io.open(path, "w"))
+        f:write(string.format('return { settings = { scaling = %s } }\n', bad))
+        f:close()
+        local got = Settings.open(path).data.settings.scaling
+        assert_true(got == "smooth", "stored " .. bad .. " must become smooth, got " .. tostring(got))
+    end
+    local f = assert(io.open(path, "w"))
+    f:write('return { settings = { scaling = "sharp" } }\n')
+    f:close()
+    assert_true(Settings.open(path).data.settings.scaling == "sharp", "a valid sharp value must be kept")
+    os.remove(path)
+end)
+
+check("sharp_scaling_menu_entry_applies_live", function()
+    local app, remote = new_app()
+    local s = app.plugin.settings.data.settings
+    s.scaling = "smooth"
+    local flushed = 0
+    app.plugin.settings.flush = function() flushed = flushed + 1 end
+    local modes, repaints = {}, 0
+    local real_set = remote.set_scaling
+    remote.set_scaling = function(self, mode) modes[#modes + 1] = mode return real_set(self, mode) end
+    local real_change = app._wholesale_change
+    app._wholesale_change = function(self) repaints = repaints + 1 return real_change(self) end
+    app:open_menu()
+    local entry
+    for _, item in ipairs(app.menu.item_table) do
+        if item.text == "Sharp scaling (faster)" then entry = item end
+    end
+    assert_true(entry, "the viewer menu must have a 'Sharp scaling (faster)' entry")
+    assert_true(entry.help_text and entry.help_text:find("repeating pixels", 1, true)
+        and entry.help_text:find("Much faster redraws when the zoom is not 100%", 1, true), "the entry has a help text")
+    assert_true(entry.mandatory ~= "✓", "smooth is the start state")
+    local before = #stack()
+    entry.callback()
+    assert_true(s.scaling == "sharp", "toggling stores sharp, got " .. tostring(s.scaling))
+    assert_true(flushed >= 1, "settings are flushed")
+    assert_true(modes[#modes] == "sharp" and remote.scaling == "sharp", "the live remote is switched to sharp")
+    assert_true(repaints == 1, "the view is repainted")
+    for _, w in ipairs(stack()) do
+        assert_true(w.text ~= "Reconnect to apply the new settings.", "no reconnect notice")
+    end
+    assert_true(#stack() <= before, "no notice widget was added")
+    app:open_menu()
+    for _, item in ipairs(app.menu.item_table) do
+        if item.text == "Sharp scaling (faster)" then entry = item end
+    end
+    assert_true(entry.mandatory == "✓", "the entry shows sharp as on")
+    entry.callback()
+    assert_true(s.scaling == "smooth" and modes[#modes] == "smooth", "toggling again goes back to smooth")
+end)
+
 check("keys_forward_to_the_remote", function()
     local Key = require("device/key")
     local app, remote, sent = new_app()
@@ -1948,10 +2005,9 @@ check("picture_settings_are_profile_fields_kept_in_shape", function()
     local old, good, bad = s:get_profile("old"), s:get_profile("good"), s:get_profile("bad")
     assert_true(old.color_depth == 24 and old.enable_tight == false and old.jpeg_quality == false
         and old.compress_level == false, "a profile without the fields loads as 24/false/false/false")
-    assert_true(old.scaling == "smooth", "a profile without scaling loads as smooth, got " .. tostring(old.scaling))
     assert_true(good.color_depth == 16 and good.enable_tight == true and good.jpeg_quality == 0
-        and good.compress_level == 9 and good.scaling == "sharp", "valid values are kept")
-    assert_true(bad.scaling == "smooth", "an unknown scaling falls back to smooth")
+        and good.compress_level == 9, "valid values are kept")
+    assert_true(good.scaling == nil and bad.scaling == nil, "a stray scaling field is dropped from profiles")
     assert_true(bad.color_depth == 24, "an unknown depth falls back to 24")
     assert_true(bad.enable_tight == false, "only the boolean true turns Tight on")
     assert_true(bad.jpeg_quality == false, "an out-of-range quality falls back to off")
@@ -1999,14 +2055,14 @@ check("save_profile_keeps_omitted_picture_fields", function()
     local p = s:get_profile("p")
     assert_true(p.color_depth == 24 and p.enable_tight == false and p.jpeg_quality == false
         and p.compress_level == false, "a new profile gets the defaults")
-    assert_true(p.scaling == "smooth", "a new profile scales smoothly")
+    assert_true(p.scaling == nil, "scaling is not a profile field")
     s:save_profile({ name = "p", host = "h", port = 5900, color_depth = 8, enable_tight = true,
-        jpeg_quality = 3, compress_level = 9, scaling = "sharp" }, "p")
+        jpeg_quality = 3, compress_level = 9 }, "p")
     s:save_profile({ name = "p", host = "h2", port = 5900 }, "p")
     p = s:get_profile("p")
     assert_true(p.host == "h2", "the edit is applied")
     assert_true(p.color_depth == 8 and p.enable_tight == true and p.jpeg_quality == 3
-        and p.compress_level == 9 and p.scaling == "sharp", "an edit without the picture fields keeps them")
+        and p.compress_level == 9, "an edit without the picture fields keeps them")
     s:save_profile({ name = "p", host = "h2", port = 5900, color_depth = 99, enable_tight = false,
         jpeg_quality = false, compress_level = false }, "p")
     p = s:get_profile("p")
@@ -2065,11 +2121,16 @@ check("editor_picture_settings_save_and_cancel", function()
     assert_true(jpeg.enabled == false and level.enabled == false, "JPEG/compression need Tight")
     assert_true(jpeg.text == SUB .. "JPEG quality: needs Tight", "the JPEG row says it needs Tight, got " .. jpeg.text)
     assert_true(level.text == SUB .. "Compression level: needs Tight", "so does compression, got " .. level.text)
-    assert_true(button_starting(pic, "Sharp scaling (faster)").text == "Sharp scaling (faster): off",
-        "sharp scaling starts off")
+    for _, row in ipairs(pic.buttons) do
+        assert_true(not row[1].text:find("Sharp", 1, true), "no sharp row in the picture dialog: " .. row[1].text)
+    end
+    assert_true(not pic.title:find("Sharp", 1, true) and not pic.title:find("sharp", 1, true),
+        "the explanation does not mention sharp scaling")
+    assert_true(pic.title:find("Depth, Tight, JPEG and compression take effect on the next connection.", 1, true),
+        "the last explanation line, got " .. pic.title)
     local order = {}
     for _, row in ipairs(pic.buttons) do order[#order + 1] = row[1].text:match("^[^:]+") end
-    assert_true(table.concat(order, "|") == "Colour depth|Sharp scaling (faster)|Tight encoding|"
+    assert_true(table.concat(order, "|") == "Colour depth|Tight encoding|"
         .. SUB .. "JPEG quality|" .. SUB .. "Compression level|Done", "row order, got " .. table.concat(order, "|"))
     assert_true(type(pic.title) == "string" and pic.title:find("Tight:", 1, true)
         and pic.title:find("next connection", 1, true), "the explanation is shown, got " .. tostring(pic.title))
@@ -2117,7 +2178,6 @@ check("editor_picture_settings_save_and_cancel", function()
     local live = live_session("good")
     find_button(editor, "Save").callback()
     plugin.sessions = {}
-    assert_true(live.remote.calls[#live.remote.calls] == "smooth", "the live remote keeps smooth scaling")
     p = store:get_profile("good")
     assert_true(p.color_depth == 8 and p.enable_tight == true and p.jpeg_quality == 3
         and p.compress_level == false, "Save stores the choice on the profile")
@@ -2176,46 +2236,19 @@ check("session_hands_the_profile_picture_settings_to_the_protocol", function()
     end
 end)
 
-check("editor_sharp_scaling_applies_live_without_reconnect", function()
+check("editor_reconnect_notice_only_for_per_connection_fields", function()
     local Dialogs = require("vnc/dialogs")
     local RECONNECT = "Reconnect to apply the new settings."
     store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, color_depth = 24,
-        enable_tight = false, jpeg_quality = false, compress_level = false, scaling = "smooth" }, "good")
+        enable_tight = false, jpeg_quality = false, compress_level = false}, "good")
     local function no_notice(why)
         for _, w in ipairs(stack()) do assert_true(w.text ~= RECONNECT, why) end
     end
-
-    -- toggle, then Cancel: nothing stored
-    local editor = Dialogs.edit_profile(plugin, store:get_profile("good"), {})
-    picture_button(editor).callback()
-    local sharp = button_starting(top(), "Sharp scaling (faster)")
-    sharp.hold_callback()
-    assert_true(top().text and top().text:find("repeating pixels", 1, true)
-        and top().text:find("Applies immediately.", 1, true), "sharp help, got " .. tostring(top().text))
-    UIManager:close(top())
-    sharp.callback()
-    assert_true(button_starting(top(), "Sharp scaling (faster)").text == "Sharp scaling (faster): on", "toggled on")
-    find_button(top(), "Done").callback()
-    assert_true(picture_button(editor).text == "Picture: 24-bit, sharp", "summary says sharp, got "
-        .. picture_button(editor).text)
-    find_button(editor, "Cancel").callback()
-    assert_true(store:get_profile("good").scaling == "smooth", "Cancel discards the toggle")
-
-    -- toggle + Save on the live profile: applied at once, no reconnect notice
-    local live = live_session("good")
-    editor = Dialogs.edit_profile(plugin, store:get_profile("good"), {})
-    picture_button(editor).callback()
-    button_starting(top(), "Sharp scaling (faster)").callback()
-    find_button(top(), "Done").callback()
-    find_button(editor, "Save").callback()
-    assert_true(store:get_profile("good").scaling == "sharp", "Save stores sharp")
-    assert_true(live.remote.calls[#live.remote.calls] == "sharp", "the live remote switches to sharp")
-    assert_true(live.profile.scaling == "sharp", "the session follows the saved profile")
-    no_notice("a scaling-only change needs no reconnect")
+    live_session("good")
+    local editor
 
     -- a depth change on the live profile still asks for a reconnect
     editor = Dialogs.edit_profile(plugin, store:get_profile("good"), {})
-    assert_true(picture_button(editor).text == "Picture: 24-bit, sharp", "the stored sharp is shown")
     picture_button(editor).callback()
     button_starting(top(), "Colour depth").callback()
     find_button(top(), "16-bit").callback()
@@ -2235,17 +2268,18 @@ check("editor_sharp_scaling_applies_live_without_reconnect", function()
     UIManager:close(top())
     plugin.sessions = {}
     store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, color_depth = 24,
-        enable_tight = false, jpeg_quality = false, compress_level = false, scaling = "smooth" }, "good")
+        enable_tight = false, jpeg_quality = false, compress_level = false}, "good")
 end)
 
-check("session_applies_the_profile_scaling_to_its_remote", function()
+check("session_applies_the_global_scaling_to_its_remote", function()
     local socket = require("socket")
     local Protocol = require("vnc/protocol")
     local Session = require("vnc/session")
     local listener = assert(socket.bind("127.0.0.1", 0))
     local _, port = listener:getsockname()
     local session = Session.new{
-        profile = { name = "t", host = "127.0.0.1", port = port, password = "", scaling = "sharp" },
+        profile = { name = "t", host = "127.0.0.1", port = port, password = "" },
+        plugin = { settings = { data = { settings = { scaling = "sharp" } } } },
     }
     local real_new, captured = Protocol.new, nil
     local STOP = {}
@@ -2256,12 +2290,13 @@ check("session_applies_the_profile_scaling_to_its_remote", function()
     listener:close()
     if not ok and err ~= STOP then error(err, 0) end
     captured.callbacks.on_connected("n", 8, 8)
-    assert_true(session.remote.scaling == "sharp", "a new remote gets the profile's scaling")
-    session:set_profile({ name = "t", host = "h", port = 1, scaling = "smooth" })
-    assert_true(session.remote.scaling == "smooth", "a profile change reaches the remote")
-    session.profile.scaling = "sharp"
+    assert_true(session.remote.scaling == "sharp", "a new remote gets the global scaling")
+    session.plugin.settings.data.settings.scaling = "smooth"
     captured.callbacks.on_connected("n", 8, 8)
-    assert_true(session.remote.scaling == "sharp", "a reused remote gets the profile's scaling")
+    assert_true(session.remote.scaling == "smooth", "a reused remote gets the global scaling")
+    session.plugin.settings.data.settings.scaling = "sharp"
+    captured.callbacks.on_desktop_resize(16, 16)
+    assert_true(session.remote.scaling == "sharp", "a resized remote gets the global scaling")
     session.remote:free()
     session.remote = nil
 end)

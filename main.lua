@@ -397,8 +397,8 @@ function VNC:save_profile(profile, existing_name)
             self.sessions[profile.name] = session
         end
     end
-    -- The session follows the stored profile: its scaling mode applies at once, the rest on the
-    -- next connection.
+    -- The session follows the stored profile; the picture settings apply on the next
+    -- connection.
     local session = self.sessions[profile.name]
     if session then session:set_profile(self.settings:get_profile(profile.name)) end
     self.settings:flush()

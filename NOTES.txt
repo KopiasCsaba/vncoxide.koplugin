@@ -128,10 +128,12 @@ shipped as globals and are just dropped). A change applies on the next connectio
 editor says so (long-press help, and "Reconnect to apply the new settings." after saving the live
 connection, only when host, port, password or one of these four changed): a live SetPixelFormat
 would race updates already in flight in the old format, and the client cannot tell those apart
-from the new ones. The fifth Picture field, `scaling` ("smooth" by default, or "sharp"), is a
-client-side choice and applies at once: Session:set_profile hands it to Remote:set_scaling, and
-the session re-applies it whenever it creates or resizes its Remote; VNC:save_profile points the
-live session at the saved profile, and connect_profile at the reloaded one.
+from the new ones. Scaling ("smooth" by default, or "sharp") is not a profile field: it is the global setting
+`settings.scaling`, switched from the viewer menu ("Sharp scaling (faster)", next to "Page buttons
+send"), which calls Remote:set_scaling on the live remote and repaints at once. The session
+re-reads the setting (Session:_apply_scaling) whenever it creates or resizes its Remote.
+VNC:save_profile still points the live session at the saved profile, and connect_profile at the
+reloaded one.
 
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be

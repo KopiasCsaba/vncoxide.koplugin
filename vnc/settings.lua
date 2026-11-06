@@ -26,8 +26,6 @@ Settings.PROFILE_FIELDS = {
     "enable_tight",                  -- opt-in Tight encoding (not in RFC 6143; see NOTES.txt)
     "jpeg_quality",                  -- Tight JPEG quality 0..9, false = server default
     "compress_level",                -- Tight zlib level 0..9, false = server default
-    -- Applied live (@{vnc.framebuffer.Remote:set_scaling}), not once per connection.
-    "scaling",                       -- "smooth" (default) or "sharp" (nearest neighbour)
 }
 
 --- The only top-level keys of the file.
@@ -42,6 +40,7 @@ Settings.DEFAULTS = {
     keyboard_always_visible = false,
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
+    scaling = "smooth",              -- viewer scaling: "smooth" (blended) or "sharp" (nearest neighbour)
 }
 
 --- Settings whose value is not just "the type of the default": each maps a raw value to a usable
@@ -50,6 +49,10 @@ local SETTING_CHECKS = {
     page_buttons = function(value)
         if value == "keys" or value == "wheel" then return value end
         return Settings.DEFAULTS.page_buttons
+    end,
+    scaling = function(value)
+        if value == "sharp" then return value end
+        return Settings.DEFAULTS.scaling
     end,
 }
 
@@ -190,7 +193,6 @@ local function clean_profile(p, tight_default)
         enable_tight = (p.enable_tight == nil and tight_default or p.enable_tight) == true,
         jpeg_quality = level_or_off(p.jpeg_quality),
         compress_level = level_or_off(p.compress_level),
-        scaling = p.scaling == "sharp" and "sharp" or "smooth",
     }
 end
 
@@ -307,7 +309,7 @@ end
 --- Adds or updates a profile, keyed by name.
 ---
 --- An omitted `autoconnect` or picture field (`color_depth`, `enable_tight`, `jpeg_quality`,
---- `compress_level`, `scaling`) keeps the value the profile had, so an editor that does not know a field
+--- `compress_level`) keeps the value the profile had, so an editor that does not know a field
 --- cannot reset it.
 --- @param p table profile (see @{Settings.PROFILE_FIELDS})
 --- @param existing_name string|nil name to replace; when nil, `p.name` must be unused
@@ -363,7 +365,6 @@ function Settings:save_profile(p, existing_name)
         enable_tight = given_or_kept("enable_tight"),
         jpeg_quality = given_or_kept("jpeg_quality"),
         compress_level = given_or_kept("compress_level"),
-        scaling = given_or_kept("scaling"),
     })
     if idx then
         profiles[idx] = cleaned

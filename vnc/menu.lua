@@ -206,6 +206,20 @@ function MenuBuilder.open(app)
         },
     }
 
+    -- ---- scaling: global, applied to the live view at once
+    item_table[#item_table + 1] = {
+        text = _("Sharp scaling (faster)"),
+        mandatory = settings.scaling == "sharp" and "✓" or "-",
+        help_text = _("Scales by repeating pixels instead of blending them. Much faster redraws when the zoom is not 100%; text looks crisper but can look uneven at non-whole zoom levels."),
+        callback = action(function()
+            settings.scaling = settings.scaling == "sharp" and "smooth" or "sharp"
+            plugin.settings:flush()
+            local live = session:get_remote()
+            if live then live:set_scaling(settings.scaling) end
+            app:_wholesale_change()
+        end),
+    }
+
     -- ---- keys the on-screen keyboard does not have
     local function send(keysym)
         return action(function()

@@ -115,18 +115,18 @@ function Session:get_profile() return self.profile end
 
 --[[--
 Points the session at a (re)loaded copy of its profile. The picture settings that are read once
-per connection wait for the next one; the scaling mode reaches the remote at once.
+per connection wait for the next one.
 --- @tparam table profile
 ]]
 function Session:set_profile(profile)
     self.profile = profile
-    self:_apply_scaling()
 end
 
---- Hands the profile's scaling mode to the remote, if there is one yet.
+--- Hands the global scaling mode (the viewer menu's "Sharp scaling") to the remote, if there is one yet.
 function Session:_apply_scaling()
     if self.remote then
-        self.remote:set_scaling(self.profile and self.profile.scaling == "sharp" and "sharp" or "smooth")
+        local settings = self.plugin and self.plugin.settings and self.plugin.settings.data.settings
+        self.remote:set_scaling(settings and settings.scaling == "sharp" and "sharp" or "smooth")
     end
 end
 function Session:get_error() return self.err end

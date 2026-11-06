@@ -42,7 +42,7 @@ already ships.
 Open the file browser menu in KOReader, then **More tools** ▸ **VNC viewer**. You get the
 connection list; start with **New connection…** and give it a name, the host, the port (5900 by
 default) and the password your VNC server uses; the **Picture: …** button sets that connection's
-colour depth, scaling and Tight options (see "Lower bandwidth" below). Tap a connection to connect.
+colour depth and Tight options (see "Lower bandwidth" below). Tap a connection to connect.
 
 **Manage connections…** opens each saved connection's own actions (Connect, Edit, Delete), plus an
 **Auto connect on start** switch. Turning it on dials that connection by itself on KOReader's next
@@ -193,14 +193,14 @@ return {
                 ["color_depth"] = 24,      -- 24, 16 or 8: fewer bits = less bandwidth, fewer colours
                 ["enable_tight"] = false,  -- opt-in Tight encoding, see below
                 ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
-                ["compress_level"] = false, -- Tight compression level 0..9 (false = server default)
-                ["scaling"] = "smooth" },   -- "smooth" or "sharp" (faster, crisper text; applies at once)
+                ["compress_level"] = false }, -- Tight compression level 0..9 (false = server default)
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)
         ["keyboard_always_visible"] = false,
         ["zoom_mode"] = "fit",             -- "fit", "fit_with_keyboard" or 0.25 .. 4
         ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
+        ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the viewer menu's switch)
     },
     ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface
         ["ip"] = "0.0.0.0",
@@ -247,11 +247,12 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   quality and CPU for bytes (they are listed under **Tight encoding** and read "needs Tight" while
   it is off). JPEG is only used at 24-bit colour. The choice is stored when the connection is saved
   and **takes effect on the next connection** — saving the connection that is live says to
-  reconnect when one of these (or the host, port or password) changed. **Sharp scaling (faster)**
-  scales by repeating pixels instead of blending them: much faster redraws when the zoom is not
-  100% and crisper text, but uneven at non-whole zoom levels; it applies immediately, even to the
-  live connection. New connections start with Tight off and smooth scaling. The dialog explains
-  every setting; long-press one for its help.
+  reconnect when one of these (or the host, port or password) changed. New connections start with
+  Tight off. The dialog explains every setting; long-press one for its help.
+- **Sharp scaling (faster)**: a switch in the viewer menu, next to **Page buttons send**. It scales
+  by repeating pixels instead of blending them: much faster redraws when the zoom is not 100% and
+  crisper text, but uneven at non-whole zoom levels. It is one global setting (not per connection)
+  and applies immediately to the live view.
 - **Page buttons**: the menu's **Page buttons send** chooses what a device's page-turn buttons do.
   The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
   scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also
@@ -293,7 +294,7 @@ tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; e
   adds nearest-neighbour scaling (no blending, crisper text). The start-up line shows the frame size
   the viewer will get, e.g. `-s 632x840 -z 2` gives 1264x1680 for a 1264x1680 screen. Set the viewer
   zoom to 100% then: the reader does no scaling and draws fastest, at the price of zoom² times the
-  pixels to transfer and decode. The viewer's per-connection "Sharp scaling" is the client-side
+  pixels to transfer and decode. The viewer menu's "Sharp scaling" is the client-side
   alternative that keeps the bandwidth low.
 - `-f` draws a thin red frame (50% opacity with a compositor) just outside the shared area, so
   you can see what the reader shows. It is removed when the server stops; if it cannot be drawn
