@@ -1731,6 +1731,48 @@ check("menu_orientation_choice_keeps_menu_open", function()
     remote:free()
 end)
 
+check("every_menu_close_path_repaints_the_viewer_after_a_toggle", function()
+    local Event = require("ui/event")
+    local paths = {
+        ["X from a submenu"] = function(app, menu)
+            menu:onMenuSelect(find_item(menu.item_table, "Page buttons send"))
+            menu.title_bar.right_button.callback()
+        end,
+        ["Back at the top level"] = function(app, menu) menu:onClose() end,
+        ["Menu key"] = function(app, menu) app:onKeyPress({ key = "Menu" }) end,
+    }
+    for name, close in pairs(paths) do
+        local app, remote = new_app()
+        app.plugin.settings.flush = function() end
+        app.settings.scaling = "smooth"
+        local menu = app:open_menu()
+        menu:onMenuSelect(find_item(menu.item_table, "Sharp scaling (faster)"))
+        UIManager:_checkTasks()
+        local modes = {}
+        local real_dirty, real_refresh = UIManager.setDirty, UIManager._refresh
+        UIManager.setDirty = function(self_, w, mode, ...)
+            modes[#modes + 1] = mode
+            return real_dirty(self_, w, mode, ...)
+        end
+        UIManager._refresh = function(self_, mode, ...)
+            modes[#modes + 1] = mode
+            return real_refresh(self_, mode, ...)
+        end
+        local ok, err = pcall(close, app, menu)
+        UIManager.setDirty, UIManager._refresh = real_dirty, real_refresh
+        assert_true(ok, tostring(err))
+        assert_true(app.menu == nil, name .. " closes the menu")
+        local flashed, seen = false, {}
+        for _, m in ipairs(modes) do
+            seen[#seen + 1] = tostring(m)
+            if m == "flashui" or m == "full" or m == "flashpartial" then flashed = true end
+        end
+        assert_true(flashed, name .. " must request a flash/full refresh, got: " .. table.concat(seen, ","))
+        app:onCloseWidget()
+        remote:free()
+    end
+end)
+
 check("keys_forward_to_the_remote", function()
     local Key = require("device/key")
     local app, remote, sent = new_app()

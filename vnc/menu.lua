@@ -56,6 +56,26 @@ local function rotation_label(mode)
     return tostring(mode)
 end
 
+-- The title bar's X must close the whole menu; Menu's own wiring (like the Back key) only
+-- steps up one submenu level.
+local VncMenu = Menu:extend{}
+function VncMenu:init()
+    Menu.init(self)
+    if self.title_bar and self.title_bar.right_button then
+        self.title_bar.right_button.callback = function() self:onCloseAllMenus() end
+    end
+end
+-- Settings toggles leave the menu open: the stock handler would run close_callback after them.
+function VncMenu:onMenuSelect(item)
+    if item.keep_open and item.sub_item_table == nil then
+        if item.select_enabled == false then return true end
+        if item.select_enabled_func and not item.select_enabled_func() then return true end
+        self:onMenuChoice(item)
+        return true
+    end
+    return Menu.onMenuSelect(self, item)
+end
+
 --- Opens the in-app menu for `app`.
 --- @tparam table app the @{vnc.app} instance
 --- @treturn table the Menu
@@ -275,24 +295,6 @@ function MenuBuilder.open(app)
         callback = action(function() app:leave() end),
     }
 
-    -- The title bar's X must close the whole menu; Menu's own wiring (like the Back key) only
-    -- steps up one submenu level.
-    local VncMenu = Menu:extend{}
-    function VncMenu:init()
-        Menu.init(self)
-        if self.title_bar and self.title_bar.right_button then
-            self.title_bar.right_button.callback = function() self:onCloseAllMenus() end
-        end
-    end
-    -- Settings toggles leave the menu open: the stock handler would run close_callback after them.
-    function VncMenu:onMenuSelect(item)
-        if item.keep_open and item.sub_item_table == nil then
-            self:onMenuChoice(item)
-            return true
-        end
-        return Menu.onMenuSelect(self, item)
-    end
-
     menu = VncMenu:new{
         title = profile and T(_("VNC — %1"), profile.name) or _("VNC viewer"),
         item_table = item_table,
@@ -304,6 +306,12 @@ function MenuBuilder.open(app)
         -- (c.f. frontend/ui/widget/booklist.lua, keyvaluepage.lua, filemanagercollection.lua).
         covers_fullscreen = true,
         close_callback = function()
+            -- Still set: the stock close paths (X, Back) get here without app:close_menu(), and
+            -- `UIManager:close` asked for no refresh. The viewer repaints in full, which also
+            -- carries whatever the open menu changed (scaling, rotation).
+            if app.menu then
+                UIManager:setDirty(app, "flashui")
+            end
             app.menu = nil
             app:_sync_keyboard_later()
         end,
