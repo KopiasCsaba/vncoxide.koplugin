@@ -68,6 +68,17 @@
 **Interfaces:**
 - Profile field `scaling = "smooth" | "sharp"`, default `"smooth"`; `clean_profile` normalises anything else to `"smooth"`; omitted on save = kept (same `given_or_kept` pattern).
 - Picture sub-dialog: toggle "Sharp scaling (faster)" with help: "Scales by repeating pixels instead of blending them. Much faster on large changes; text looks crisper but can look uneven at non-whole zoom levels. Applies immediately." Summary label includes `sharp` when on (e.g. `Picture: 16-bit, sharp`).
+- **Picture dialog UX (user request):** today it is not obvious what "Tight encoding" is, nor that JPEG quality / Compression level only matter when Tight is on. Rework the Picture sub-dialog so that:
+  1. Rows are ordered and visually grouped: Colour depth; Sharp scaling; Tight encoding; then JPEG quality and Compression level shown as indented sub-items of Tight (e.g. prefixed "   ↳ "), and when Tight is off they read e.g. "↳ JPEG quality: needs Tight" (dimmed, still long-pressable for help).
+  2. An always-visible explanation text block sits below all controls (a `TextBoxWidget` or the dialog's info text area — builder picks what KOReader's ButtonDialog/InputDialog offers; a ButtonDialog `title`/`info_text`-style area or a custom `CenterContainer`+`TextBoxWidget` is fine) with short plain-language lines, roughly:
+     - "Colour depth: fewer bits = less data. 16-bit looks the same on e-ink greys."
+     - "Sharp scaling: faster redraws when the zoom is not 100%; text looks crisper."
+     - "Tight: an extra compression method; needed for the JPEG and compression settings."
+     - "JPEG quality: lower = smaller photos/video (24-bit colour only)."
+     - "Compression level: higher = less data, more work for the PC."
+     - "Depth, Tight, JPEG and compression take effect on the next connection; sharp scaling right away."
+  3. Long-press help on each row stays.
+  Test: the dialog shows the explanation text (assert its text contains "Tight:" and "next connection"), and the sub-item labels change with the Tight toggle.
 - Applied when the session/app starts drawing for a profile and immediately when the connected profile is saved (no reconnect). The "Reconnect to apply the new settings." notice is shown only if a field that needs a reconnect changed (host, port, password, color_depth, enable_tight, jpeg_quality, compress_level) — not for a scaling-only change.
 
 - [ ] Step 1: failing tests: old profile → smooth; invalid → smooth; editor toggle + Save stores sharp; Cancel discards; saving the connected profile with only scaling changed calls `set_scaling("sharp")` on the live remote and shows no reconnect notice; changing depth still shows it. Step 2: FAIL. Step 3: implement. Step 4: `all` green. Step 5: commit `feat(connections): per-connection sharp scaling option`.
