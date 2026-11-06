@@ -405,6 +405,39 @@ function VNC:save_profile(profile, existing_name)
     return true
 end
 
+--[[--
+The canvas the picture benchmark draws into, so that its draw cost is the viewer's.
+
+With the viewer open, its current canvas. Otherwise an approximation: the whole screen in the
+viewer's default orientation (the viewer rotates to it when it opens), with the on-screen
+keyboard not subtracted. Type: the screen's blitbuffer type. View: the zoom factor, or `"fit"`
+for both fitted zoom modes (so "Fit (with keyboard)" is measured as "Fit"), and the global
+scaling.
+
+--- @treturn table `{ w, h, bb_type, view_mode, scaling }` (see @{vnc.benchmark})
+]]
+function VNC:benchmark_canvas()
+    local Screen = Device.screen
+    local w, h
+    if self.app and self.app.canvas then
+        w, h = self.app.canvas.w, self.app.canvas.h
+    else
+        w, h = Screen:getWidth(), Screen:getHeight()
+        local wanted = self.settings:get_setting("orientation")
+        if type(wanted) == "number" and wanted % 2 ~= Screen:getRotationMode() % 2 then
+            w, h = h, w
+        end
+    end
+    local zoom = self.settings:get_setting("zoom_mode")
+    return {
+        w = w,
+        h = h,
+        bb_type = Screen.bb:getType(),
+        view_mode = type(zoom) == "number" and zoom or "fit",
+        scaling = self.settings:get_setting("scaling") == "sharp" and "sharp" or "smooth",
+    }
+end
+
 function VNC:delete_profile(name)
     if self.sessions[name] then
         self:disconnect_session(name)

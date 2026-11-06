@@ -253,6 +253,16 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   reconnect when one of these (or the host, port or password) changed. New connections start with
   Tight off. The **Help** button opens a scrollable explanation of every setting, with the setting names in bold;
   long-press a row for that setting's explanation.
+- **Find fastest picture settings** (in a connection's **Manage connections…** dialog) measures
+  the picture settings instead of guessing: it tries 11 combinations of colour depth, Tight,
+  compression level and JPEG quality on that connection, about 7 seconds each, each on its own
+  extra connection (a live session of the same connection is left alone). Keep something
+  changing on the PC meanwhile (a video, a scrolling page, an animation): each combination is
+  scored by the changed screen pixels per second that reach the reader, decoding and drawing at
+  your current zoom and scaling included. The results list the combinations fastest first, with
+  the time per update, the bytes per second and the time for a full screen; a still screen is
+  "not scored". **Apply best** saves the winner's four picture settings to the connection
+  (nothing else; it takes effect on the next connection); **Cancel** or **Close** save nothing.
 - **Sharp scaling (faster)**: a switch in the viewer menu, next to **Page buttons send**. It scales
   by repeating pixels instead of blending them: much faster redraws when the zoom is not 100% and
   crisper text, but uneven at non-whole zoom levels. It is one global setting (not per connection)

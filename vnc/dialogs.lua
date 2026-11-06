@@ -326,8 +326,170 @@ function Dialogs.connection_list(plugin, opts)
     return menu
 end
 
+-- ---------------------------------------------------------------- picture benchmark
+
+--- The benchmark engine; tests replace it with a stand-in (nil means @{vnc.benchmark}).
+Dialogs.Benchmark = nil
+
+local BENCH_INTRO = _("Tries 11 picture-setting combinations on this connection, about 7 seconds each (roughly 1.5 minutes).\n\nBefore starting, make the shared area of the PC keep changing — play a video, scroll a long page or run an animation — and leave it running. Each combination is scored by how many changed screen pixels per second reach this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end.")
+local BENCH_PHASES = {
+    connect = _("connecting"),
+    full = _("full screen"),
+    live = _("live changes"),
+}
+
+local function is_scored(r) return r.ok and not r.still end
+
 --[[--
-Connect / Edit / Delete for one connection, with a Back button that returns to `opts.on_back`
+The benchmark results as text: a header, then one entry per result in the given (ranked) order,
+the label on its own line and the figures indented below it, so that a narrow screen does not
+wrap the columns. Scored rows are numbered; still and failed rows are marked "-".
+
+--- @tparam table results sorted rows from @{vnc.benchmark}
+--- @treturn string
+]]
+function Dialogs.benchmark_table(results)
+    local lines = {}
+    local scored = false
+    for _i, r in ipairs(results) do
+        if is_scored(r) then scored = true break end
+    end
+    if scored then
+        lines[1] = _("Fastest first: changed screen pixels per second reaching this screen, decoding and drawing included.")
+    else
+        lines[1] = _("No combination could be scored. Start something on the PC that keeps changing the shared area — a video, a scrolling page or an animation — and run the benchmark again.")
+    end
+    lines[2] = ""
+    local rank = 0
+    for _i, r in ipairs(results) do
+        local mark = "-."
+        if is_scored(r) then
+            rank = rank + 1
+            mark = rank .. "."
+        end
+        lines[#lines + 1] = mark .. " " .. r.combination.label
+        local figures
+        if not r.ok then
+            figures = T(_("failed: %1"), tostring(r.error))
+        elseif r.still then
+            figures = _("screen was still — not scored")
+        else
+            figures = string.format("%.1f Mpx/s  %s ms/update  %d KB/s  full %d ms",
+                r.px_per_s / 1e6,
+                r.ms_per_update and string.format("%d", math.floor(r.ms_per_update + 0.5)) or "-",
+                math.floor(r.bytes_per_s / 1024 + 0.5), math.floor(r.full_ms + 0.5))
+        end
+        lines[#lines + 1] = "   " .. figures
+    end
+    return table.concat(lines, "\n")
+end
+
+--[[--
+The results viewer: the table, "Apply best" (only when a row was scored: saves exactly that
+row's four picture fields to the profile) and "Close". Both, and the viewer's own close, end in
+`on_back`.
+
+--- @tparam table plugin
+--- @tparam string profile_name
+--- @tparam table results sorted rows from @{vnc.benchmark}
+--- @tparam function on_back
+--- @treturn table the TextViewer (the caller shows it)
+]]
+function Dialogs.benchmark_results(plugin, profile_name, results, on_back)
+    local best
+    for _i, r in ipairs(results) do
+        if is_scored(r) then best = r break end
+    end
+    local viewer
+    local row = {}
+    if best then
+        row[#row + 1] = {
+            text = _("Apply best"),
+            callback = function()
+                local stored = plugin.settings:get_profile(profile_name)
+                local ok, err = false, "no such profile"
+                if stored then
+                    local p = {}
+                    for k, v in pairs(stored) do p[k] = v end
+                    for _i, k in ipairs(PICTURE_ORDER) do p[k] = best.combination[k] end
+                    ok, err = plugin:save_profile(p, profile_name)
+                end
+                viewer:onClose()
+                UIManager:show(InfoMessage:new{
+                    text = ok and T(_("Saved: %1. Takes effect on the next connection."), best.combination.label)
+                        or T(_("Could not save: %1"), tostring(err)),
+                })
+            end,
+        }
+    end
+    row[#row + 1] = {
+        text = _("Close"),
+        callback = function() viewer:onClose() end,
+    }
+    viewer = TextViewer:new{
+        title = _("Picture benchmark"),
+        text = Dialogs.benchmark_table(results),
+        text_type = "code",
+        buttons_table = { row },
+        close_callback = on_back,
+    }
+    return viewer
+end
+
+--[[--
+"Find fastest picture settings": the intro (Start / Cancel), then a progress dialog with Cancel
+while @{vnc.benchmark} runs on the stored profile, then @{Dialogs.benchmark_results}. Every way
+out (Cancel in the intro or the progress, Close, Apply best) ends in `on_back`.
+
+--- @tparam table plugin
+--- @tparam table profile
+--- @tparam function on_back
+]]
+function Dialogs.picture_benchmark(plugin, profile, on_back)
+    local function run()
+        local Benchmark = Dialogs.Benchmark or require("vnc/benchmark")
+        local stored = plugin.settings:get_profile(profile.name) or profile
+        local copy = {}
+        for k, v in pairs(stored) do copy[k] = v end
+        local progress, bench
+        progress = ButtonDialog:new{
+            title = _("Starting…"),
+            dismissable = false,
+            buttons = { { {
+                text = _("Cancel"),
+                callback = function()
+                    bench:cancel()
+                    UIManager:close(progress)
+                    on_back()
+                end,
+            } } },
+        }
+        bench = Benchmark.new{
+            profile = copy,
+            canvas = plugin:benchmark_canvas(),
+            on_progress = function(i, n, label, phase)
+                progress:setTitle(T("%1/%2: %3 — %4", i, n, label, BENCH_PHASES[phase] or phase))
+            end,
+            on_done = function(results)
+                UIManager:close(progress)
+                UIManager:show(Dialogs.benchmark_results(plugin, copy.name, results, on_back))
+            end,
+        }
+        UIManager:show(progress)
+        bench:start()
+    end
+    UIManager:show(ConfirmBox:new{
+        text = BENCH_INTRO,
+        ok_text = _("Start"),
+        cancel_text = _("Cancel"),
+        dismissable = false,
+        ok_callback = run,
+        cancel_callback = on_back,
+    })
+end
+
+--[[--
+Connect / Edit / Find fastest picture settings / Delete for one connection, with a Back button that returns to `opts.on_back`
 (the connection list). Tapping outside, or Back, does the same.
 
 --- @tparam table plugin
@@ -377,6 +539,13 @@ function Dialogs.profile_actions(plugin, profile, opts)
                 callback = function()
                     UIManager:close(dialog)
                     Dialogs.edit_profile(plugin, profile, { on_back = reopen_actions })
+                end,
+            } },
+            { {
+                text = _("Find fastest picture settings"),
+                callback = function()
+                    UIManager:close(dialog)
+                    Dialogs.picture_benchmark(plugin, profile, reopen_actions)
                 end,
             } },
             { {

@@ -139,6 +139,21 @@ re-reads the setting (Session:_apply_scaling) whenever it creates or resizes its
 VNC:save_profile still points the live session at the saved profile, and connect_profile at the
 reloaded one.
 
+Picture benchmark. vnc/benchmark.lua measures combinations (see its header); the UI is
+Dialogs.picture_benchmark, behind "Find fastest picture settings" in the per-connection dialog:
+intro ConfirmBox (Start/Cancel) -> a non-dismissable ButtonDialog whose title shows
+"<i>/<n>: <label> — <phase>" (setTitle on every on_progress) with Cancel (bench:cancel()) ->
+Dialogs.benchmark_results, a monospace TextViewer (Dialogs.benchmark_table: label line, figures
+indented below so narrow screens do not wrap columns). Apply best copies the stored profile,
+replaces only the four picture fields with the top scored row's and calls VNC:save_profile (a full
+copy because save_profile does not keep an omitted password). Every way out returns to the
+per-connection dialog. The draw canvas is VNC:benchmark_canvas: the open viewer's canvas, else the
+screen in the viewer's default orientation without the keyboard; both fitted zoom modes are
+measured as "fit". Tests inject a fake engine through Dialogs.Benchmark. The engine reports the
+"live" phase from its next tick rather than from the session's update callback, so a cancel() from
+on_progress never disconnects a session from inside its own callback; an unexpected Lua error in a
+tick, start() or the connect callback ends that combination as failed (Benchmark:_guarded).
+
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be
 unreachable, and intercepting taps would put a dead spot on the remote desktop. See

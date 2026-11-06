@@ -1828,6 +1828,112 @@ local function main()
         return true
     end)
 
+    -- Records every session the benchmark creates.
+    local function track_sessions()
+        local Session = require("vnc/session")
+        local real_new, list = Session.new, {}
+        Session.new = function(o)
+            local s = real_new(o)
+            list[#list + 1] = s
+            return s
+        end
+        return list, function() Session.new = real_new end
+    end
+    local function all_torn_down(list)
+        for i, s in ipairs(list) do
+            if s:get_state() ~= "disconnected" or s.sock or s.remote or s:is_attached() then
+                return false, string.format("session %d left %s (sock=%s attached=%s)", i,
+                    tostring(s:get_state()), tostring(s.sock ~= nil), tostring(s:is_attached()))
+            end
+        end
+        return true
+    end
+
+    -- cancel() from inside on_progress, in each phase that is followed by more work: nothing
+    -- stays connected, attached or scheduled, and on_done never fires.
+    check("benchmark_cancel_from_on_progress", function()
+        local pid, port = start_multi{ name = "bench_reentrant", repaint = 0.01 }
+        local problem
+        for _, at in ipairs{ "connect", "full", "live" } do
+            local env = bench_env()
+            local list, untrack = track_sessions()
+            local done_called, b = false, nil
+            b = env.Benchmark.new{
+                profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+                combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+                live_seconds = 1,
+                canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+                network_mgr = NET,
+                on_progress = function(_, _, _, phase) if phase == at then b:cancel() end end,
+                on_done = function() done_called = true end,
+            }
+            b:start()
+            env.run(nil, 2000)
+            local left = #env.tasks
+            untrack()
+            env.restore()
+            local ok, why = all_torn_down(list)
+            if #list ~= 1 then problem = string.format("%s: %d sessions created", at, #list)
+            elseif not ok then problem = at .. ": " .. why
+            elseif left ~= 0 then problem = at .. ": tasks still scheduled"
+            elseif done_called then problem = at .. ": on_done called"
+            elseif b.session or b.bb then problem = at .. ": session or buffer kept" end
+            for _, s in ipairs(list) do if s:get_state() ~= "disconnected" then s:disconnect() end end
+            if problem then break end
+        end
+        stop_mock(pid)
+        if problem then return nil, problem end
+        return true
+    end)
+
+    -- An unexpected Lua error inside the run (in start()'s first combination, in the connect
+    -- callback, and in a tick)
+    -- ends that combination as failed with the message and tears it down; the run goes on.
+    check("benchmark_unexpected_error_fails_the_combination", function()
+        local pid, port = start_multi{ name = "bench_error", repaint = 0.01 }
+        local problem
+        for _, where in ipairs{ "start", "connect", "tick" } do
+            local env = bench_env()
+            local list, untrack = track_sessions()
+            local results
+            local b = env.Benchmark.new{
+                profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+                combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+                live_seconds = 1,
+                canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+                network_mgr = NET,
+                on_done = function(r) results = r end,
+            }
+            local method = ({ start = "_progress", connect = "_apply_view", tick = "_score" })[where]
+            local real, fired = env.Benchmark[method], false
+            b[method] = function(...)
+                if not fired then
+                    fired = true
+                    error("boom in " .. method)
+                end
+                return real(...)
+            end
+            local ok_start, start_err = pcall(b.start, b)
+            local finished = ok_start and env.run(function() return results ~= nil end)
+            untrack()
+            env.restore()
+            local torn, why = all_torn_down(list)
+            if not ok_start then problem = where .. ": start raised " .. tostring(start_err)
+            elseif not finished then problem = where .. ": never finished"
+            elseif #results ~= 2 then problem = where .. ": expected 2 rows, got " .. #results
+            elseif not results[1].ok or results[1].combination.label ~= "8-bit, Tight off" then
+                problem = where .. ": the other combination must still be scored"
+            elseif results[2].ok ~= false or not tostring(results[2].error):find("boom in " .. method, 1, true) then
+                problem = where .. ": failed row error " .. tostring(results[2].error)
+            elseif #list ~= 2 or not torn then problem = where .. ": " .. tostring(why or (#list .. " sessions")) end
+            for _, s in ipairs(list) do if s:get_state() ~= "disconnected" then s:disconnect() end end
+            if problem then break end
+        end
+        stop_mock(pid)
+        if problem then return nil, problem end
+        return true
+    end)
+
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
         os.exit(1)

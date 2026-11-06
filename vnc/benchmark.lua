@@ -24,7 +24,11 @@ Everything is driven from `UIManager` tasks (the session's own poll plus a bench
 clock is `Session._now`, so tests can run it on a fake clock. The handshake itself is the session's
 synchronous one.
 
-`cancel()` tears the current session down and frees the buffer; `on_done` is then never called.
+`cancel()` tears the current session down and frees the buffer; `on_done` is then never called. It
+may be called from anywhere, `on_progress` included: the run checks after every progress report.
+
+An unexpected Lua error inside the run (a tick, `start()`, the connect callback) ends the current
+combination as `ok = false` with the error message as `error`, tears it down, and the run goes on.
 
 @module vnc.benchmark
 ]]
@@ -139,7 +143,7 @@ end
 function Benchmark:start()
     local c = self.canvas
     self.bb = BB.new(c.w, c.h, c.bb_type or BB.TYPE_BB8)
-    self:_next()
+    self:_guarded(self._next)
     if not self.stopped then UIManager:scheduleIn(Benchmark.TICK, self._tick_fn) end
 end
 
@@ -147,6 +151,34 @@ end
 function Benchmark:cancel()
     if self.stopped then return end
     self:_stop()
+end
+
+--[[--
+Calls `fn(self)`; an error ends the current combination as failed (recorded once, with the
+message), tears its session down and moves on to the next one. Errors while doing that are
+handled the same way, so the loop always ends: every turn advances the combination index.
+]]
+function Benchmark:_guarded(fn)
+    local ok, err = pcall(fn, self)
+    while not ok and not self.stopped do
+        logger.warn("vnc: benchmark error:", err)
+        local combo = self.combinations[self.index]
+        if not combo then
+            -- the error came from finishing: stop without results
+            pcall(self._stop, self)
+            self.stopped = true
+            return
+        end
+        local last = self.results[#self.results]
+        if not (last and last.combination == combo) then
+            logger.info("vnc: benchmark:", combo.label, "failed:", err)
+            table.insert(self.results, { combination = combo, ok = false, error = tostring(err) })
+        end
+        ok, err = pcall(function()
+            self:_close_session()
+            self:_next()
+        end)
+    end
 end
 
 function Benchmark:_progress(phase)
@@ -182,23 +214,33 @@ function Benchmark:_next()
     }
     self.session = session
     self:_progress("connect")
+    if self.stopped then return end
+    -- The session swallows errors from this callback (and may call it later, after turning Wi-Fi
+    -- on), so an error here is recorded on the run, and the next tick ends the combination.
     session:connect(function(ok, err)
         if self.run ~= run then return end
         if not ok then
             run.err = run.err or err or "could not connect"
             return
         end
-        self:_apply_view()
-        run.phase = "full"
-        self:_progress("full")
-        session.hold_incremental = true
-        run.t_req = Session._now()
-        session:attach({
-            on_framebuffer_dirty = function() self:_draw(run) end,
-            on_remote_resized = function() self:_apply_view() end,
-            on_bell = function() end,
-        })
+        local ok2, e = pcall(self._on_connected, self, run, session)
+        if not ok2 and self.run == run then run.err = run.err or tostring(e) end
     end)
+end
+
+--- The current combination's session is connected: full-screen phase.
+function Benchmark:_on_connected(run, session)
+    self:_apply_view()
+    run.phase = "full"
+    self:_progress("full")
+    if self.stopped or self.run ~= run then return end
+    session.hold_incremental = true
+    run.t_req = Session._now()
+    session:attach({
+        on_framebuffer_dirty = function() self:_draw(run) end,
+        on_remote_resized = function() self:_apply_view() end,
+        on_bell = function() end,
+    })
 end
 
 --- Hands the viewer's scaling and view to the current session's remote.
@@ -228,7 +270,9 @@ function Benchmark:_on_update(run, tm)
             run.t_live = Session._now()
             -- the session's next poll releases the held incremental request
             self.session.hold_incremental = false
-            self:_progress("live")
+            -- reported by the next tick: on_progress may cancel, and the session must not be
+            -- disconnected from inside its own update callback
+            run.live_unreported = true
         end
     elseif run.phase == "live" then
         run.px = run.px + tm.px
@@ -247,11 +291,22 @@ function Benchmark:_draw(run)
     if run.phase == "live" then run.draw = run.draw + (os.clock() - c0) end
 end
 
---- Advances the run: failures, phase deadlines, the next combination.
+--- Advances the run (guarded, see @{Benchmark:_guarded}) and schedules the next tick.
 function Benchmark:_tick()
     if self.stopped then return end
+    self:_guarded(self._advance)
+    if not self.stopped then UIManager:scheduleIn(Benchmark.TICK, self._tick_fn) end
+end
+
+--- Failures, phase deadlines, the next combination.
+function Benchmark:_advance()
     local run = self.run
     local now = Session._now()
+    if run.live_unreported then
+        run.live_unreported = nil
+        self:_progress("live")
+        if self.stopped then return end
+    end
     if run.err then
         self:_end_combination({ combination = run.combination, ok = false, error = run.err })
     elseif run.phase == "full" and now - run.t_req > Benchmark.FULL_TIMEOUT then
@@ -260,7 +315,6 @@ function Benchmark:_tick()
     elseif run.phase == "live" and now - run.t_live >= self.live_seconds then
         self:_end_combination(self:_score(run, now - run.t_live))
     end
-    if not self.stopped then UIManager:scheduleIn(Benchmark.TICK, self._tick_fn) end
 end
 
 function Benchmark:_score(run, elapsed)

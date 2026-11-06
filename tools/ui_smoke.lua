@@ -2383,6 +2383,197 @@ check("viewer_menu_has_no_picture_entries", function()
     remote:free()
 end)
 
+-- ---------------------------------------------------------------- find fastest picture settings
+
+local BENCH_BUTTON = "Find fastest picture settings"
+local BENCH_INTRO = "Tries 11 picture-setting combinations on this connection, about 7 seconds each (roughly 1.5 minutes).\n\nBefore starting, make the shared area of the PC keep changing — play a video, scroll a long page or run an animation — and leave it running. Each combination is scored by how many changed screen pixels per second reach this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end."
+
+--- A stand-in for vnc/benchmark: records what the UI asks of it; the test drives the callbacks.
+local FakeBench = { instances = {} }
+FakeBench.__index = FakeBench
+function FakeBench.new(opts)
+    local b = setmetatable({ opts = opts, started = false, cancelled = false }, FakeBench)
+    FakeBench.instances[#FakeBench.instances + 1] = b
+    return b
+end
+function FakeBench:start() self.started = true end
+function FakeBench:cancel() self.cancelled = true end
+
+local function bench_combo(depth, tight, compr, jpeg, label)
+    return { color_depth = depth, enable_tight = tight, compress_level = compr, jpeg_quality = jpeg, label = label }
+end
+local BENCH_RESULTS = {
+    { combination = bench_combo(8, true, 2, false, "8-bit, Tight, compr. 2"), ok = true, still = false,
+      px_per_s = 3456789, ms_per_update = 123.4, bytes_per_s = 204800, full_ms = 812.6 },
+    { combination = bench_combo(24, false, false, false, "24-bit, Tight off"), ok = true, still = false,
+      px_per_s = 1000000, ms_per_update = 40, bytes_per_s = 1048576, full_ms = 95 },
+    { combination = bench_combo(16, false, false, false, "16-bit, Tight off"), ok = true, still = true,
+      px_per_s = 10, ms_per_update = nil, bytes_per_s = 0, full_ms = 300 },
+    { combination = bench_combo(24, true, 2, 4, "24-bit, Tight, compr. 2, JPEG 4"), ok = false,
+      error = "server refused the format" },
+}
+
+--- Opens the Connect/Edit/Delete dialog for `good` with the fake benchmark injected.
+local function open_bench_actions()
+    local Dialogs = require("vnc/dialogs")
+    Dialogs.Benchmark = FakeBench
+    FakeBench.instances = {}
+    plugin.sessions = {}
+    local actions = Dialogs.profile_actions(plugin, store:get_profile("good"), { on_back = function() end })
+    UIManager:show(actions)
+    return actions
+end
+local function viewer_buttons(viewer)
+    local out = {}
+    for _, row in ipairs(viewer.buttons_table or {}) do
+        for _, btn in ipairs(row) do out[btn.text] = btn end
+    end
+    return out
+end
+--- Taps the button, Start in the intro, and returns the fake benchmark and the progress dialog.
+local function start_bench()
+    find_button(top(), BENCH_BUTTON).callback()
+    answer_confirm(top(), true)
+    return FakeBench.instances[#FakeBench.instances], top()
+end
+
+check("bench_button_and_intro_text", function()
+    open_bench_actions()
+    find_button(top(), BENCH_BUTTON).callback()
+    local intro = top()
+    assert_true(intro.ok_callback and intro.cancel_callback, "an intro ConfirmBox: " .. stack_desc())
+    assert_true(intro.text == BENCH_INTRO, "intro text: " .. tostring(intro.text))
+    assert_true(intro.ok_text == "Start" and intro.cancel_text == "Cancel", "Start/Cancel buttons")
+    assert_true(count(is_actions) == 0, "the actions dialog is closed under the intro")
+    answer_confirm(intro, false)
+    expect_top(is_actions, "the actions dialog after Cancel in the intro")
+    assert_true(#FakeBench.instances == 0, "Cancel in the intro starts nothing")
+    require("vnc/dialogs").Benchmark = nil
+end)
+
+check("bench_start_shows_progress_and_cancel_returns", function()
+    local before = store:get_profile("good")
+    open_bench_actions()
+    local bench, progress = start_bench()
+    assert_true(bench and bench.started, "Start starts the benchmark")
+    local o = bench.opts
+    assert_true(o.profile.name == "good" and o.profile.host == before.host, "the stored profile is benchmarked")
+    assert_true(o.combinations == nil, "the default combinations are used")
+    assert_true(o.canvas.w > 0 and o.canvas.h > 0 and o.canvas.bb_type == Screen.bb:getType(),
+        "canvas from the screen")
+    assert_true(type(o.on_progress) == "function" and type(o.on_done) == "function", "callbacks")
+    assert_true(find_button(progress, "Cancel"), "progress has Cancel")
+    assert_true(progress.dismissable == false, "the progress dialog is not dismissed by a stray tap")
+    o.on_progress(3, 11, "16-bit, Tight off", "full")
+    assert_true(top() == progress, "progress stays on top")
+    assert_true(progress.title == "3/11: 16-bit, Tight off — full screen", "progress text: " .. tostring(progress.title))
+    o.on_progress(4, 11, "16-bit, Tight, compr. 1", "connect")
+    assert_true(progress.title == "4/11: 16-bit, Tight, compr. 1 — connecting", "progress text: " .. tostring(progress.title))
+    o.on_progress(4, 11, "16-bit, Tight, compr. 1", "live")
+    assert_true(progress.title == "4/11: 16-bit, Tight, compr. 1 — live changes", "progress text: " .. tostring(progress.title))
+    find_button(progress, "Cancel").callback()
+    assert_true(bench.cancelled, "Cancel cancels the benchmark")
+    expect_top(is_actions, "the actions dialog after Cancel")
+    for _, w in ipairs(stack()) do assert_true(w ~= progress, "progress still on the stack") end
+    local after = store:get_profile("good")
+    for _, k in ipairs{ "color_depth", "enable_tight", "jpeg_quality", "compress_level" } do
+        assert_true(after[k] == before[k], "cancel must not change " .. k)
+    end
+    require("vnc/dialogs").Benchmark = nil
+end)
+
+check("bench_canvas_follows_zoom_scaling_and_orientation", function()
+    local saved = {}
+    for _, k in ipairs{ "zoom_mode", "scaling", "orientation" } do saved[k] = store:get_setting(k) end
+    local real_app = plugin.app
+    plugin.app = nil
+    store:set_setting("zoom_mode", 2)
+    store:set_setting("scaling", "sharp")
+    store:set_setting("orientation", (Screen:getRotationMode() + 1) % 4)
+    local c = plugin:benchmark_canvas()
+    assert_true(c.view_mode == 2 and c.scaling == "sharp", "zoom factor and sharp scaling")
+    assert_true(c.w == Screen:getHeight() and c.h == Screen:getWidth(), "the viewer's orientation is used")
+    store:set_setting("zoom_mode", "fit_with_keyboard")
+    store:set_setting("scaling", "smooth")
+    store:set_setting("orientation", Screen:getRotationMode())
+    c = plugin:benchmark_canvas()
+    assert_true(c.view_mode == "fit" and c.scaling == "smooth", "fitted modes fit")
+    assert_true(c.w == Screen:getWidth() and c.h == Screen:getHeight(), "same orientation: the screen")
+    plugin.app = { canvas = { x = 0, y = 0, w = 321, h = 123 } }
+    c = plugin:benchmark_canvas()
+    assert_true(c.w == 321 and c.h == 123, "an open viewer's canvas wins")
+    plugin.app = real_app
+    for k, v in pairs(saved) do store:set_setting(k, v) end
+end)
+
+check("bench_results_table_and_apply_best", function()
+    store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, password = "pw", color_depth = 16,
+        enable_tight = false, jpeg_quality = false, compress_level = false }, "good")
+    local before = {}
+    for k, v in pairs(store:get_profile("good")) do before[k] = v end
+    open_bench_actions()
+    local bench = start_bench()
+    bench.opts.on_done(BENCH_RESULTS)
+    local viewer = top()
+    assert_true(viewer.title == "Picture benchmark", "results viewer: " .. stack_desc())
+    assert_true(viewer.monospace_font == true, "monospace table")
+    for _, w in ipairs(stack()) do assert_true(not (w.title and w.title:find("/11:", 1, true)), "progress closed") end
+    local text = viewer.text
+    local p1 = text:find("1. 8-bit, Tight, compr. 2", 1, true)
+    local p2 = text:find("2. 24-bit, Tight off", 1, true)
+    local p3 = text:find("16-bit, Tight off", 1, true)
+    local p4 = text:find("24-bit, Tight, compr. 2, JPEG 4", 1, true)
+    assert_true(p1 and p2 and p3 and p4 and p1 < p2 and p2 < p3 and p3 < p4, "rows in order:\n" .. text)
+    for _, want in ipairs{ "3.5 Mpx/s", "123 ms/update", "200 KB/s", "full 813 ms", "1.0 Mpx/s", "40 ms/update",
+                           "1024 KB/s", "full 95 ms", "screen was still — not scored",
+                           "failed: server refused the format" } do
+        assert_true(text:find(want, 1, true), "missing " .. want .. " in:\n" .. text)
+    end
+    local buttons = viewer_buttons(viewer)
+    assert_true(buttons["Apply best"] and buttons["Close"], "Apply best and Close")
+    buttons["Apply best"].callback()
+    local after = store:get_profile("good")
+    assert_true(after.color_depth == 8 and after.enable_tight == true and after.compress_level == 2
+        and after.jpeg_quality == false, "the best row's picture fields are saved")
+    for k, v in pairs(before) do
+        if k ~= "color_depth" and k ~= "enable_tight" and k ~= "compress_level" and k ~= "jpeg_quality" then
+            assert_true(after[k] == v, "Apply best changed " .. k)
+        end
+    end
+    for k in pairs(after) do assert_true(before[k] ~= nil or after[k] == nil, "Apply best added " .. k) end
+    local info = top()
+    assert_true(info.text == "Saved: 8-bit, Tight, compr. 2. Takes effect on the next connection.",
+        "saved message: " .. tostring(info.text))
+    UIManager:close(info)
+    expect_top(is_actions, "the actions dialog under the message")
+    for _, w in ipairs(stack()) do assert_true(w ~= viewer, "results viewer closed") end
+    require("vnc/dialogs").Benchmark = nil
+end)
+
+check("bench_results_close_returns_without_saving", function()
+    local before = store:get_profile("good").color_depth
+    open_bench_actions()
+    start_bench().opts.on_done(BENCH_RESULTS)
+    viewer_buttons(top())["Close"].callback()
+    expect_top(is_actions, "the actions dialog after Close")
+    assert_true(store:get_profile("good").color_depth == before, "Close saves nothing")
+    require("vnc/dialogs").Benchmark = nil
+end)
+
+check("bench_nothing_scored_has_no_apply", function()
+    open_bench_actions()
+    start_bench().opts.on_done({ BENCH_RESULTS[3], BENCH_RESULTS[4] })
+    local viewer = top()
+    assert_true(viewer.title == "Picture benchmark", "results viewer: " .. stack_desc())
+    local buttons = viewer_buttons(viewer)
+    assert_true(not buttons["Apply best"] and buttons["Close"], "no Apply best when nothing was scored")
+    assert_true(viewer.text:find("keeps changing", 1, true) and viewer.text:find("run", 1, true),
+        "explains what to do:\n" .. viewer.text)
+    assert_true(viewer.text:find("screen was still — not scored", 1, true), "rows still listed")
+    viewer_buttons(viewer)["Close"].callback()
+    require("vnc/dialogs").Benchmark = nil
+end)
+
 -- ---------------------------------------------------------------- persistent canvas buffer
 
 -- A remote plane with a deterministic pattern, a fresh reference render and a canvas compare.
