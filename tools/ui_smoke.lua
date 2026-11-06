@@ -1776,6 +1776,132 @@ check("leaving_the_viewer_through_the_plugin_restores_the_home_screen", function
     remote:free()
 end)
 
+-- ---------------------------------------------------------------- bandwidth settings
+
+check("bandwidth_settings_default_and_are_kept_in_shape", function()
+    local Settings = require("vnc/settings")
+    local writeToFile = require("util").writeToFile
+    -- a file from before these settings existed gets their defaults
+    local old = data_dir .. "/ui_smoke_settings_no_bandwidth.lua"
+    writeToFile('{ ["settings"] = { ["enable_tight"] = true } }\n', old, true, true)
+    local s = Settings.open(old)
+    assert_true(s.data.settings.color_depth == 24, "colour depth defaults to 24, got "
+        .. tostring(s.data.settings.color_depth))
+    assert_true(s.data.settings.jpeg_quality == false, "JPEG quality defaults to off, got "
+        .. tostring(s.data.settings.jpeg_quality))
+    assert_true(s.data.settings.compress_level == false, "compression level defaults to off, got "
+        .. tostring(s.data.settings.compress_level))
+
+    -- usable values survive, anything else falls back to the default
+    local good = data_dir .. "/ui_smoke_settings_bandwidth_good.lua"
+    writeToFile('{ ["settings"] = { ["color_depth"] = 8, ["jpeg_quality"] = 0, ["compress_level"] = 9 } }\n',
+        good, true, true)
+    s = Settings.open(good)
+    assert_true(s.data.settings.color_depth == 8 and s.data.settings.jpeg_quality == 0
+        and s.data.settings.compress_level == 9, "valid values are kept")
+    local bad = data_dir .. "/ui_smoke_settings_bandwidth_bad.lua"
+    writeToFile('{ ["settings"] = { ["color_depth"] = 15, ["jpeg_quality"] = 12, ["compress_level"] = 2.5 } }\n',
+        bad, true, true)
+    s = Settings.open(bad)
+    assert_true(s.data.settings.color_depth == 24, "an unknown depth falls back to 24")
+    assert_true(s.data.settings.jpeg_quality == false, "an out-of-range quality falls back to off")
+    assert_true(s.data.settings.compress_level == false, "a non-integer level falls back to off")
+end)
+
+check("session_hands_the_bandwidth_settings_to_the_protocol", function()
+    local socket = require("socket")
+    local Protocol = require("vnc/protocol")
+    local Session = require("vnc/session")
+    local listener = assert(socket.bind("127.0.0.1", 0))
+    local _, port = listener:getsockname()
+    local values = { enable_tight = true, color_depth = 8, jpeg_quality = 3, compress_level = false }
+    local session = Session.new{
+        profile = { name = "t", host = "127.0.0.1", port = port, password = "" },
+        plugin = { settings = { get_setting = function(_, key) return values[key] end } },
+    }
+    local real_new, captured = Protocol.new, nil
+    local STOP = {}
+    Protocol.new = function(opts) captured = opts error(STOP) end
+    local ok, err = pcall(function() session:_do_connect() end)
+    Protocol.new = real_new
+    if session.sock then session.sock:close() end
+    listener:close()
+    if not ok and err ~= STOP then error(err, 0) end
+    assert_true(captured ~= nil, "the session must build a protocol")
+    assert_true(captured.pixel_format and captured.pixel_format.bits_per_pixel == 8,
+        "the protocol must get the 8-bit pixel format")
+    local enc = captured.encodings
+    assert_true(enc[#enc] == -29, "the encoding list must end in JPEG quality 3 (-29), got " .. tostring(enc[#enc]))
+    for _, e in ipairs(enc) do
+        assert_true(e > -256 or e < -247, "an off compression level must not be sent")
+    end
+end)
+
+check("bandwidth_menu_entries", function()
+    local app, remote = new_app()
+    local s = app.plugin.settings.data.settings
+    s.color_depth, s.jpeg_quality, s.compress_level, s.enable_tight = 24, false, false, false
+    local NEXT = "Takes effect on the next connection."
+    local function entry(prefix)
+        for _, item in ipairs(app.menu.item_table) do
+            if item.text:sub(1, #prefix) == prefix then return item end
+        end
+        error("no menu entry starting with " .. prefix)
+    end
+
+    app:open_menu()
+    local depth, jpeg, level = entry("Colour depth"), entry("JPEG quality"), entry("Compression level")
+    for _, item in ipairs({ depth, jpeg, level }) do
+        assert_true(item.text:find("next connection", 1, true), "the entry must say when it applies: " .. item.text)
+        assert_true(item.help_text and item.help_text:find(NEXT, 1, true), "help for " .. item.text)
+    end
+    assert_true(jpeg.help_text:find("Only used at 24-bit colour.", 1, true), "JPEG help mentions 24-bit")
+    assert_true(depth.sub_item_table and #depth.sub_item_table == 3, "three colour depths")
+    assert_true(depth.mandatory == "24-bit", "the current depth is shown, got " .. tostring(depth.mandatory))
+    assert_true(jpeg.select_enabled == false and jpeg.sub_item_table == nil and jpeg.dim,
+        "JPEG quality is disabled without Tight")
+    assert_true(level.select_enabled == false and level.sub_item_table == nil and level.dim,
+        "compression level is disabled without Tight")
+    -- a long press shows the help
+    app.menu:onMenuHold(depth)
+    assert_true(top().text and top().text:find(NEXT, 1, true), "holding an entry shows its help")
+    UIManager:close(top())
+    app:close_menu()
+
+    s.enable_tight = true
+    app:open_menu()
+    jpeg, level = entry("JPEG quality"), entry("Compression level")
+    assert_true(jpeg.sub_item_table and #jpeg.sub_item_table == 11, "Off plus 0..9 qualities")
+    assert_true(level.sub_item_table and #level.sub_item_table == 11, "Off plus 0..9 levels")
+    assert_true(jpeg.mandatory == "Off", "off is shown as Off")
+    -- choosing a value while connected stores it and says when it applies
+    find_item(jpeg.sub_item_table, "3").callback()
+    assert_true(s.jpeg_quality == 3, "the quality is stored as an integer, got " .. tostring(s.jpeg_quality))
+    assert_true(top().text == NEXT, "a connected session is told it applies next time")
+    UIManager:close(top())
+    app:open_menu()
+    find_item(entry("JPEG quality").sub_item_table, "Off").callback()
+    assert_true(s.jpeg_quality == false, "Off stores false")
+    UIManager:close(top())
+    app:open_menu()
+    find_item(entry("Colour depth").sub_item_table, "8-bit").callback()
+    assert_true(s.color_depth == 8, "the depth is stored")
+    UIManager:close(top())
+    app:open_menu()
+    find_item(entry("Compression level").sub_item_table, "9").callback()
+    assert_true(s.compress_level == 9, "the level is stored")
+    UIManager:close(top())
+
+    -- without a live connection there is nothing to warn about
+    app.session.get_state = function() return "error" end
+    app:open_menu()
+    find_item(entry("Compression level").sub_item_table, "0").callback()
+    assert_true(s.compress_level == 0, "the level is stored")
+    assert_true(not (top() and top().text == NEXT), "no notice without a connected session")
+    app:onCloseWidget()
+    remote:free()
+end)
+
 if failures > 0 then
     print(string.format("%d check(s) failed", failures))
     os.exit(1)

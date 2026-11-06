@@ -12,6 +12,7 @@ buffered by the kernel until we resume.
 
 local Encodings = require("vnc/encodings")
 local Protocol = require("vnc/protocol")
+local PxFmt = require("vnc/pxfmt")
 local Remote = require("vnc/framebuffer")
 local Util = require("vnc/util")
 local logger = require("logger")
@@ -178,9 +179,15 @@ function Session:_do_connect()
     sock:setoption("tcp-nodelay", true)
     self.sock = sock
 
-    local enable_tight = false
+    -- Read once per connection: a change in the menu applies on the next connection only, since a
+    -- live SetPixelFormat would race updates already in flight in the old format.
+    local enable_tight, color_depth, jpeg_quality, compress_level = false, 24, false, false
     if self.plugin and self.plugin.settings then
-        enable_tight = self.plugin.settings:get_setting("enable_tight") and true or false
+        local settings = self.plugin.settings
+        enable_tight = settings:get_setting("enable_tight") and true or false
+        color_depth = settings:get_setting("color_depth") or 24
+        jpeg_quality = settings:get_setting("jpeg_quality") or false
+        compress_level = settings:get_setting("compress_level") or false
     end
     local self_ref = self
     self.proto = Protocol.new{
@@ -192,7 +199,9 @@ function Session:_do_connect()
         port = p.port,
         password = p.password,
         shared = true,
-        encodings = Encodings.order(enable_tight),
+        pixel_format = PxFmt.for_depth(color_depth),
+        encodings = Encodings.order(enable_tight,
+            { jpeg_quality = jpeg_quality, compress_level = compress_level }),
         get_plane = function() return self_ref.remote and self_ref.remote:get_plane() end,
         callbacks = {
             on_connected = function(name, w, h)

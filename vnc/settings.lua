@@ -32,6 +32,27 @@ Settings.DEFAULTS = {
     keyboard_always_visible = false,
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
     enable_tight = false,            -- opt-in Tight encoding (not in RFC 6143; see NOTES.txt)
+    -- Bandwidth: all three apply on the next connection only (see NOTES.txt, "Pixel format").
+    color_depth = 24,                -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
+    jpeg_quality = false,            -- Tight JPEG quality 0..9, false = server default
+    compress_level = false,          -- Tight zlib level 0..9, false = server default
+}
+
+--- Settings whose value is not just "the type of the default": each maps a raw value to a usable
+--- one, falling back to the default.
+local function level_or_off(value)
+    if type(value) == "number" and value == math.floor(value) and value >= 0 and value <= 9 then
+        return value
+    end
+    return false
+end
+local SETTING_CHECKS = {
+    color_depth = function(value)
+        if value == 24 or value == 16 or value == 8 then return value end
+        return Settings.DEFAULTS.color_depth
+    end,
+    jpeg_quality = level_or_off,
+    compress_level = level_or_off,
 }
 
 --- VNC server defaults (the `server` sub-table). See @{vnc.server}.
@@ -179,11 +200,16 @@ function Settings:normalise()
         end
     end
 
-    local function normalise_section(key, defaults)
+    local function normalise_section(key, defaults, checks)
         if type(data[key]) ~= "table" then data[key] = {} end
         local section = data[key]
         for name, default in pairs(defaults) do
-            section[name] = coerce_like(section[name], default)
+            local check = checks and checks[name]
+            if check then
+                section[name] = check(section[name])
+            else
+                section[name] = coerce_like(section[name], default)
+            end
         end
         for name in pairs(section) do
             if defaults[name] == nil then
@@ -194,7 +220,7 @@ function Settings:normalise()
         return section
     end
 
-    normalise_section("settings", Settings.DEFAULTS)
+    normalise_section("settings", Settings.DEFAULTS, SETTING_CHECKS)
     local server = normalise_section("server", Settings.SERVER_DEFAULTS)
     server.port = math.max(1, math.min(65535, math.floor(server.port)))
     if server.ip == "" then server.ip = Settings.SERVER_DEFAULTS.ip end

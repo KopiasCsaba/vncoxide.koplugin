@@ -95,6 +95,16 @@ name are dropped. One invariant is enforced there too: at most one profile may c
 `autoconnect` (see below), so the first flagged one keeps it and the rest are cleared.
 Never add migration code "just in case" before a format has actually shipped.
 
+Pixel format and bandwidth. The session reads three settings once per connection:
+`color_depth` (24, 16 or 8; vnc/pxfmt.lua:for_depth gives 32 bpp RGB, RGB565 or BGR233, all
+expanded to the RGB24 plane), and `jpeg_quality`/`compress_level` (false or 0..9), which
+Encodings.order appends as the Tight pseudo-encodings -32+q and -256+l - only when `enable_tight`
+is on, since without Tight no server reads them. Servers only send Tight JPEG at 32 bpp, so JPEG
+quality does nothing at 16/8-bit. normalise() resets anything else to the default (24 / false).
+A change applies on the next connection only, and the menu says so (entry text, long-press help,
+and a short notice when it is changed while connected): a live SetPixelFormat would race updates
+already in flight in the old format, and the client cannot tell those apart from the new ones.
+
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be
 unreachable, and intercepting taps would put a dead spot on the remote desktop. See
