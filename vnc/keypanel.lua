@@ -237,11 +237,24 @@ function KeyPanel:take_armed()
     return keysyms
 end
 
---- "Release all": disarms everything (and lets go of whatever a canvas drag still holds).
+--- Whether "Release all" has anything to do: an armed modifier, or a canvas drag or long press
+--- still holding a button or modifiers down on the remote (also one whose release never came).
+function KeyPanel:_anything_to_release()
+    return next(self.mods) ~= nil or self.app:has_pointer_action()
+end
+
+--- "Release all": disarms everything and lets go of whatever a canvas drag or long press still
+--- holds (its button, then its modifiers).
 function KeyPanel:release_all()
     self.mods = {}
-    self.app:_release_action_mods()
+    self.app:_end_pointer_action()
     self:_update()
+end
+
+--- The viewer's drag or long press began or ended: "Release all" follows (repainted only when
+--- that changes whether it has anything to do).
+function KeyPanel:pointer_action_changed()
+    if self:_anything_to_release() ~= self._release_enabled then self:_update() end
 end
 
 -- ---------------------------------------------------------------- recent combos
@@ -457,11 +470,12 @@ function KeyPanel:_bottom_row(width, row_height)
             }
         end
     end
+    self._release_enabled = self:_anything_to_release()
     entries[#entries + 1] = {
         id = "release_all",
         text = _("Release all"),
         width = 2 * unit,
-        enabled = next(self.mods) ~= nil,
+        enabled = self._release_enabled,
         callback = function() self:release_all() end,
     }
     return self:_button_row(entries, row_height)
@@ -537,25 +551,35 @@ end
 
 -- ---------------------------------------------------------------- input / lifecycle
 
---- Gestures that continue one started earlier, by the gesture that started it.
+--- Gestures that continue one started earlier, by the gesture that started it. A quick drag ends
+--- as a swipe, not a release (GestureDetector's Contact:isSwipe), and a quick two-finger drag as
+--- a two_finger_swipe.
 local CONTINUES = {
-    pan = "pan", pan_release = "pan",
-    two_finger_pan = "pan", two_finger_pan_release = "pan",
+    pan = "pan", pan_release = "pan", swipe = "pan",
+    two_finger_pan = "pan", two_finger_pan_release = "pan", two_finger_swipe = "pan",
     hold = "hold", hold_pan = "hold", hold_release = "hold",
 }
 local STARTS = { pan = true, two_finger_pan = true, hold = true }
-local ENDS = { pan_release = true, two_finger_pan_release = true, hold_release = true }
+local ENDS = {
+    pan_release = true, swipe = true,
+    two_finger_pan_release = true, two_finger_swipe = true,
+    hold_release = true,
+}
 
 --[[--
 Whether a gesture is the panel's: true (ours wherever it is now), false (the viewer's wherever it is
 now), or nil (decided by where it lands). A drag or a long press belongs to where it started: one
 that began on the canvas stays the viewer's even when the finger slides over the panel (its release
 must reach the remote, or a button and the modifiers it took would stay down), and one that began
-here stays ours.
+here stays ours. Any other gesture means none is under way any more (whatever end it had did not
+reach us): it forgets them all.
 ]]
 function KeyPanel:_gesture_owner(ev)
     local kind = CONTINUES[ev.ges]
-    if not kind then return nil end
+    if not kind then
+        self._owner = nil
+        return nil
+    end
     self._owner = self._owner or {}
     local owner = self._owner[kind]
     if owner == nil and STARTS[ev.ges] then

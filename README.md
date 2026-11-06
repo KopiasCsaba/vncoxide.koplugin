@@ -64,9 +64,9 @@ There is no permanent toolbar: the remote desktop owns the whole screen.
 | --- | --- |
 | tap | left click |
 | long press | right click |
-| one-finger drag | drag with the left button held |
+| one-finger drag | drag with the left button held; a quick drag (the finger lifts right after moving) ends the same way |
 | two-finger drag | pan the view (does not move the remote pointer) |
-| two-finger flick up / down | scroll the remote wheel down / up at the last pointer position, 1 to 10 notches by flick length (a tenth of the screen height each); armed key-panel modifiers are not used or consumed |
+| two-finger flick up / down | scroll the remote wheel down / up at the last pointer position, 1 to 10 notches by flick length (a tenth of the screen height each); armed key-panel modifiers are not used or consumed. A quick two-finger drag counts as a flick: it scrolls only if it did not move the view (fit mode, or the view is already at that edge); zoomed in, a flick that moved the view only pans |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed |
 | two-finger rotate | change the screen orientation |
 | swipe up from the bottom strip | show the on-screen keyboard |
@@ -90,18 +90,21 @@ dropped, it leads with **Reconnect to …**. Settings toggles keep the menu open
 rotates the screen (the orientation choices, Rotate screen), changes the zoom or opens the Send
 keys panel closes it ("use current orientation as default" does not rotate, so it stays).
 
-**Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable)
-above it. Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns
-black), tap again to cancel. Armed modifiers go with exactly one action and are then let go: the
-next key from the panel, or the next tap, long press or drag on the screen (Ctrl+click,
-Shift+click or Shift+drag to select, Alt+drag). The text to the right shows what goes with the
-next action; tap it to send just the modifiers (Super on its own opens most desktops' launcher). The tabs hold the special keys (Esc,
-Tab, Enter, Backspace, Delete, Insert, Home, End, Page Up/Down, Space, Menu, arrows, Print Screen,
-Pause, Caps Lock), F1-F12, letters and digits, and the symbol keys of a US keyboard (use Shift for
-the shifted ones). The bottom row repeats your last four combos exactly (armed modifiers are not added
-to them, and are cleared), and **Release all** disarms every modifier. Nothing stays pressed between actions. The panel stays open until its close button,
-Back or the Menu key; closing it, leaving the viewer or disconnecting in the middle of a drag lets
-go of the modifiers that drag holds.
+**Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable) above
+it. Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns black),
+tap again to cancel. Armed modifiers go with exactly one action and are then let go: the next key
+from the panel, or the next tap, long press or drag on the screen (Ctrl+click, Shift+click or
+Shift+drag to select, Alt+drag). The text to the right shows what goes with the next action; tap it
+to send just the modifiers (Super on its own opens most desktops' launcher). The tabs hold the
+special keys (Esc, Tab, Enter, Backspace, Delete, Insert, Home, End, Page Up/Down, Space, Menu,
+arrows, Print Screen, Pause, Caps Lock), F1-F12, letters and digits, and the symbol keys of a US
+keyboard (use Shift for the shifted ones). The bottom row repeats your last four combos exactly
+(armed modifiers are not added to them, and are cleared), and **Release all** disarms every modifier
+and lets go of whatever a drag or long press still holds on the remote (its button, then its
+modifiers), e.g. when its release never arrived; it is available whenever something is armed or
+held. Nothing stays pressed between actions. The panel stays open until its close button, Back or
+the Menu key; closing it, leaving the viewer or disconnecting in the middle of a drag lets go of the
+button and the modifiers that drag holds.
 
 **The keyboard** is drawn over the framebuffer, and showing it leaves the zoom alone — except in
 **Fit (with keyboard)**, the mode that deliberately fits the zoom into the space the keyboard

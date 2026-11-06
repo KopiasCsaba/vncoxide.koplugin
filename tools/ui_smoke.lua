@@ -2663,7 +2663,7 @@ check("bench_results_table_and_apply_best", function()
         assert_true(text:find(want, 1, true), "missing " .. want .. " in:\n" .. text)
     end
     assert_true(not text:find("failed: failed", 1, true), "the engine's \"failed in pass N\" is not prefixed again:\n" .. text)
-    assert_true(text:sub(1, text:find("\n", 1, true) - 1) == "Fastest first. Each row: changed pixels per second in small pieces · time per piece · time per full screen · size of a full screen; decoding and drawing included. Medians over two runs.",
+    assert_true(text:sub(1, text:find("\n", 1, true) - 1) == "Fastest first. Each row: screen pixels per second in small pieces · time per piece · time per full screen · size of a full screen; decoding and drawing included. Medians over two runs.",
         "results intro:\n" .. text)
     local buttons = viewer_buttons(viewer)
     assert_true(buttons["Apply best"] and buttons["Close"], "Apply best and Close")
@@ -3450,6 +3450,140 @@ check("two_finger_flick_leaves_armed_modifiers_alone", function()
     close_viewer(app, remote)
 end)
 
+check("quick_drag_ending_as_a_swipe_ends_it", function()
+    -- A contact that lifts within ges_swipe_interval of moving ends as a swipe, not a pan_release
+    -- (GestureDetector's Contact:isSwipe): a quick drag never gets its pan_release.
+    local app, remote = new_app()
+    local panel = open_key_panel(app)
+    local wire = wire_log(app)
+    touch(panel, "mod:Shift")
+    UIManager:forceRePaint()
+    wire()
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 60, y = 40 }, relative = { x = 40, y = 20 } }
+    dispatch_gesture{ ges = "swipe", direction = "east", distance = 45, pos = Geom:new{ x = 20, y = 20 } }
+    local got = wire()
+    assert_true(got == "+0xFFE1,p1,p1,p1,p0,-0xFFE1", "the swipe ends the Shift+drag, got " .. got)
+    assert_true(app._drag_active == nil and app._action_mods == nil, "no drag left")
+    close_viewer(app, remote)
+    assert_true(wire() == "", "nothing more at close")
+end)
+
+check("quick_drag_up_the_keyboard_strip_still_shows_the_keyboard", function()
+    local app, remote = new_app()
+    local wire = wire_log(app)
+    local c = app:canvas_geom()
+    local x, y = math.floor(c.x + c.w / 2), c.y + c.h - 2
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = x, y = y - 20 }, relative = { x = 0, y = -20 } }
+    dispatch_gesture{ ges = "swipe", direction = "north", distance = 20, pos = Geom:new{ x = x, y = y } }
+    local got = wire()
+    assert_true(got == "p1,p1,p0", "the swipe ends the drag, got " .. got)
+    assert_true(app.vk_visible, "and still shows the keyboard")
+    app:set_keyboard_visible(false)
+    close_viewer(app, remote)
+end)
+
+check("key_panel_quick_drag_does_not_keep_the_next_gesture", function()
+    local app, remote = new_app()
+    local panel = open_key_panel(app)
+    local wire = wire_log(app)
+    UIManager:forceRePaint()
+    local on_panel = Geom:new{ x = 20, y = panel.dimen.y + math.floor(panel.dimen.h / 2) }
+    local panel_end = Geom:new{ x = 40, y = on_panel.y }
+    -- a quick drag on the panel, then a drag on the canvas: the canvas drag is the viewer's
+    dispatch_gesture{ ges = "pan", pos = panel_end, relative = { x = 20, y = 0 } }
+    dispatch_gesture{ ges = "swipe", direction = "east", distance = 20, pos = on_panel }
+    assert_true(wire() == "", "the panel's quick drag sends nothing")
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = 40, y = 30 } }
+    local got = wire()
+    assert_true(got == "p1,p1,p0", "the next canvas drag reaches the remote, got " .. got)
+    -- the reverse: a quick canvas drag, then a drag on the panel stays the panel's
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+    dispatch_gesture{ ges = "swipe", direction = "east", distance = 22, pos = Geom:new{ x = 20, y = 20 } }
+    got = wire()
+    assert_true(got == "p1,p1,p0", "the quick canvas drag, got " .. got)
+    dispatch_gesture{ ges = "pan", pos = panel_end, relative = { x = 20, y = 0 } }
+    dispatch_gesture{ ges = "pan_release", pos = panel_end }
+    got = wire()
+    assert_true(got == "", "the next drag on the panel does not reach the remote, got " .. got)
+    close_viewer(app, remote)
+end)
+
+check("key_panel_release_all_ends_a_pending_drag_or_long_press", function()
+    for _, case in ipairs({ "Shift+drag", "drag", "long press" }) do
+        local app, remote = new_app()
+        local panel = open_key_panel(app)
+        local wire = wire_log(app)
+        if case == "Shift+drag" then touch(panel, "mod:Shift") end
+        UIManager:forceRePaint()
+        wire()
+        if case == "long press" then
+            dispatch_gesture{ ges = "hold", pos = Geom:new{ x = 20, y = 20 } }
+        else
+            dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+        end
+        wire()
+        -- its release never came (eaten by a popup, say)
+        assert_true(panel.button_by_id["release_all"].enabled == true, case .. ": something to release")
+        touch(panel, "release_all")
+        local got = wire()
+        local want = case == "Shift+drag" and "p0,-0xFFE1" or "p0"
+        assert_true(got == want, case .. ": expected " .. want .. ", got " .. got)
+        assert_true(app._drag_active == nil and app._hold_active == nil and app._action_mods == nil,
+            case .. ": nothing left pending")
+        assert_true(panel.button_by_id["release_all"].enabled == false, case .. ": nothing left to release")
+        -- an action that ends normally leaves nothing to release either
+        UIManager:forceRePaint()
+        dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+        dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = 40, y = 30 } }
+        assert_true(panel.button_by_id["release_all"].enabled == false, case .. ": a finished drag leaves nothing")
+        close_viewer(app, remote)
+    end
+end)
+
+check("two_finger_flick_scrolls_only_when_the_view_did_not_move", function()
+    local function masks(sent)
+        local out = {}
+        for _, e in ipairs(sent.pointer) do out[#out + 1] = e.mask end
+        sent.pointer = {}
+        return table.concat(out, ",")
+    end
+    local half = Screen:getHeight() / 2
+    -- GestureDetector: two_finger_pan events, then (a quick lift) two_finger_swipe, no release
+    local function flick(app)
+        local pos = Geom:new{ x = 100, y = 200 }
+        dispatch_gesture{ ges = "two_finger_pan", direction = "north", pos = pos, relative = { x = 0, y = -40 } }
+        dispatch_gesture{ ges = "two_finger_swipe", direction = "north", distance = half, pos = pos }
+    end
+    for _, case in ipairs({ "fit", "zoomed at the top edge", "zoomed, the view moves" }) do
+        local app, remote, sent = new_app()
+        if case ~= "fit" then
+            app:zoom_to(4)
+            if case == "zoomed, the view moves" then remote:pan_by(-400, -400) end
+            if case == "zoomed at the top edge" then remote:pan_by(0, 100000) end
+        end
+        app:_view_settled()
+        UIManager:forceRePaint()
+        sent.pointer, sent.areas = {}, {}
+        local vx, vy = remote.view_x, remote.view_y
+        flick(app)
+        local moved = remote.view_x ~= vx or remote.view_y ~= vy
+        local got = masks(sent)
+        if case == "zoomed, the view moves" then
+            assert_true(moved, case .. ": the view moved")
+            assert_true(got == "", case .. ": a flick that moved the view only pans, got " .. got)
+        else
+            assert_true(not moved, case .. ": the view could not move")
+            assert_true(got == string.rep("16,0,", 5):sub(1, -2), case .. ": the flick scrolls, got " .. got)
+        end
+        assert_true(app._view_moving == false, case .. ": the release path ran (the view settled)")
+        UIManager:forceRePaint()
+        if moved then assert_true(#sent.areas > 0, case .. ": the new view area is reported") end
+        close_viewer(app, remote)
+    end
+end)
+
 check("key_panel_combo_order_and_modifiers_only", function()
     local app, remote, sent = new_app()
     local panel = open_key_panel(app)
@@ -3590,14 +3724,33 @@ check("key_panel_close_paths_release_everything", function()
         dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
         got = take_keys(sent)
         assert_true(got == "+0xFFE3", name .. ": the drag pressed Ctrl, got " .. got)
+        local wire = wire_log(app)
         close(app, panel)
         UIManager:_checkTasks()
-        got = take_keys(sent)
-        assert_true(got == "-0xFFE3", name .. " during a Ctrl+drag must release Ctrl, got " .. got)
-        app:onPanRelease(nil, { pos = Geom:new{ x = 40, y = 30 } })
+        got = wire()
+        assert_true(got == "p0,-0xFFE3", name .. " during a Ctrl+drag must let go of the button, then Ctrl, got " .. got)
         close_viewer(app, remote)
-        got = take_keys(sent)
+        got = wire()
         assert_true(got == "", name .. ": nothing more after that, got " .. got)
+    end
+end)
+
+check("leaving_the_viewer_mid_drag_lets_go_of_the_button", function()
+    for _, case in ipairs({ "drag", "long press" }) do
+        local app, remote = new_app()
+        local wire = wire_log(app)
+        if case == "drag" then
+            dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+        else
+            dispatch_gesture{ ges = "hold", pos = Geom:new{ x = 20, y = 20 } }
+        end
+        wire()
+        UIManager:close(app)
+        local got = wire()
+        assert_true(got == "p0", case .. ": leaving the viewer must let go of the button, got " .. got)
+        assert_true(app._drag_active == nil and app._hold_active == nil, case .. ": nothing left pending")
+        close_viewer(app, remote)
+        assert_true(wire() == "", case .. ": nothing more after that")
     end
 end)
 

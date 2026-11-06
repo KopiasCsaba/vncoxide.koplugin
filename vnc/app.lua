@@ -124,6 +124,7 @@ end
 
 --- A swipe down in the top menu zone opens the menu; anything else falls through to the canvas.
 function ViewerApp:onMenuSwipe(ges)
+    self:_end_quick_drag(ges)
     if self.menu then return nil end
     if BD.flipDirectionIfMirroredUILayout(ges.direction) ~= "south" then return nil end
     self:open_menu()
@@ -170,6 +171,8 @@ function ViewerApp:init_gestures()
         Spread = { GestureRange:new{ ges = "spread", range = canvas_range } },
         Rotate = { GestureRange:new{ ges = "rotate", range = canvas_range } },
         TwoFingerSwipe = { GestureRange:new{ ges = "two_finger_swipe", range = canvas_range } },
+        -- a quick drag ends as a swipe wherever the finger lifts (see `onSwipe`)
+        Swipe = { GestureRange:new{ ges = "swipe", range = whole_screen } },
         KbdShow = { GestureRange:new{ ges = "swipe", direction = "north", range = bottom_strip } },
         KbdHide = { GestureRange:new{ ges = "swipe", direction = "south", range = upper_canvas } },
     }
@@ -447,7 +450,7 @@ function ViewerApp:onCloseWidget()
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
     self:_drop_key_panel()
-    self:_release_action_mods()
+    self:_end_pointer_action()
     if self._text_input_asserted then
         self._text_input_asserted = false
         Device:stopTextInput()
@@ -591,6 +594,7 @@ function ViewerApp:onPan(_, ges)
         self:_press_armed()
         self:send_pointer(rx, ry, 1)
         self._drag_active = true
+        self:_pointer_action_changed()
     end
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 1)
@@ -603,7 +607,26 @@ function ViewerApp:onPanRelease(_, ges)
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 0)
     self:_release_action_mods()
+    self:_pointer_action_changed()
     return true
+end
+
+--[[--
+A drag whose finger lifts within `ges_swipe_interval` of its last move ends as a swipe, not a
+pan_release (GestureDetector's Contact:isSwipe): let go of the button and the modifiers at the
+last pointer position. The swipe itself goes on to whatever else wants it (the keyboard and menu
+swipes, which end the drag themselves too, as they may get it first).
+]]
+function ViewerApp:onSwipe(_, ges)
+    self:_end_quick_drag(ges)
+    return nil
+end
+
+--- Ends a drag of ours on the swipe that ended its contact (see `onSwipe`); no-op otherwise.
+function ViewerApp:_end_quick_drag(ges)
+    if self._drag_active and ges and ges.ges == "swipe" then
+        self:_end_pointer_action()
+    end
 end
 
 function ViewerApp:onHold(_, ges)
@@ -614,6 +637,7 @@ function ViewerApp:onHold(_, ges)
     self:_press_armed()
     self:send_pointer(rx, ry, 4)
     self._hold_active = true
+    self:_pointer_action_changed()
     return true
 end
 
@@ -626,6 +650,7 @@ function ViewerApp:onHoldRelease(_, ges)
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 0)
     self:_release_action_mods()
+    self:_pointer_action_changed()
     return true
 end
 
@@ -644,13 +669,28 @@ function ViewerApp:_end_pointer_action()
         end
     end
     self:_release_action_mods()
+    self:_pointer_action_changed()
+end
+
+--- Whether a canvas action still holds something down on the remote: a drag's or long press's
+--- button, or the modifiers it took.
+function ViewerApp:has_pointer_action()
+    return (self._drag_active or self._hold_active or self._action_mods) and true or false
+end
+
+--- A drag or long press began or ended: the key panel's "Release all" follows.
+function ViewerApp:_pointer_action_changed()
+    if self.key_panel then self.key_panel:pointer_action_changed() end
 end
 
 function ViewerApp:onTwoFingerPan(_, ges)
     self:_end_pointer_action()
     if not self:_input_target() then return nil end
     local rel = ges.relative or { x = 0, y = 0 }
-    self.remote:pan_by(-rel.x, -rel.y)
+    if self.remote:pan_by(-rel.x, -rel.y) then
+        -- this two-finger gesture moved the view: if it ends as a flick, that flick only pans
+        self._two_finger_moved_view = true
+    end
     self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
@@ -658,6 +698,7 @@ end
 
 function ViewerApp:onTwoFingerPanRelease(_, ges)
     self:_end_pointer_action()
+    self._two_finger_moved_view = nil
     self:_view_settled()
     -- swipe up from the bottom still needs to be able to mean "show keyboard"
     UIManager:setDirty(self, "ui")
@@ -692,6 +733,7 @@ function ViewerApp:onPinch()
     self:_end_pointer_action()
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
+    self._two_finger_moved_view = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
     self:update_canvas()
     self:_view_settled()
@@ -703,6 +745,7 @@ function ViewerApp:onSpread()
     self:_end_pointer_action()
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
+    self._two_finger_moved_view = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
     self:update_canvas()
     self:_view_settled()
@@ -722,9 +765,16 @@ A two-finger flick scrolls the remote wheel like a touch scroll: a flick up (con
 fingers) scrolls the page down, a flick down scrolls it up. One notch per tenth of the screen
 height travelled, 1 to 10. East/west flicks are ignored. A flick is not a modifier action: the
 modifiers armed on the "Send keys" panel are neither sent nor consumed by it.
+
+A quick two-finger drag also ends as a flick (GestureDetector turns its two_finger_pan into a
+two_finger_swipe when the fingers lift soon after moving), so a flick ends the view pan the way
+two_finger_pan_release does, and scrolls only if that pan did not move the view: in fit mode, or
+against an edge, the flick scrolls; zoomed in, a flick that moved the view only pans.
 ]]
 function ViewerApp:onTwoFingerSwipe(_, ges)
-    self:_end_pointer_action()
+    local moved_view = self._two_finger_moved_view
+    self:onTwoFingerPanRelease(nil, ges)
+    if moved_view then return true end
     local direction = ges and ges.direction
     if direction ~= "north" and direction ~= "south" then return nil end
     if not self:_input_target() then return nil end
@@ -735,13 +785,15 @@ function ViewerApp:onTwoFingerSwipe(_, ges)
     return true
 end
 
-function ViewerApp:onKbdShow()
+function ViewerApp:onKbdShow(_, ges)
+    self:_end_quick_drag(ges)
     if self.settings.keyboard_always_visible then return nil end
     self:set_keyboard_visible(true)
     return true
 end
 
-function ViewerApp:onKbdHide()
+function ViewerApp:onKbdHide(_, ges)
+    self:_end_quick_drag(ges)
     if self.settings.keyboard_always_visible then return nil end
     self:set_keyboard_visible(false)
     return true

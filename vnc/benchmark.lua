@@ -80,7 +80,7 @@ Benchmark.PASSES = 2
 Benchmark.FULL_SAMPLES = 3
 -- Areas of the tiles phase: a square grid (16 = 4x4) over the framebuffer.
 Benchmark.TILES = 16
--- Seconds to wait for the answer to one request before the combination counts as failed.
+-- Seconds to wait for the answer to one request before the run counts as failed.
 Benchmark.REQUEST_TIMEOUT = 15
 -- Seconds between the session's poll ticks while a request is in flight (instead of
 -- `Session.POLL_INTERVAL`), so its reply is read, and timed, as soon as it arrives.
@@ -219,9 +219,9 @@ function Benchmark:cancel()
 end
 
 --[[--
-Calls `fn(self)`; an error ends the current combination as failed (recorded once, with the
-message), tears its session down and moves on to the next one. Errors while doing that are
-handled the same way, so the loop always ends: every turn advances the combination index.
+Calls `fn(self)`; an error ends the current run as failed (recorded once, with the message),
+tears its session down and moves on to the next one. Errors while doing that are handled the
+same way, so the loop always ends: every turn advances the run index.
 ]]
 function Benchmark:_guarded(fn)
     local ok, err = pcall(fn, self)
@@ -469,7 +469,7 @@ function Benchmark:_tick()
     if not self.stopped then UIManager:scheduleIn(Benchmark.TICK, self._tick_fn) end
 end
 
---- Failures, request deadlines, the tiles phase, the next combination.
+--- Failures, request deadlines, the tiles phase, the next run.
 function Benchmark:_advance()
     local run = self.run
     local now = Session._now()

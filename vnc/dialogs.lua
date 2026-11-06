@@ -355,7 +355,7 @@ function Dialogs.benchmark_table(results)
         if is_scored(r) then scored = true break end
     end
     if scored then
-        lines[1] = _("Fastest first. Each row: changed pixels per second in small pieces · time per piece · time per full screen · size of a full screen; decoding and drawing included. Medians over two runs.")
+        lines[1] = _("Fastest first. Each row: screen pixels per second in small pieces · time per piece · time per full screen · size of a full screen; decoding and drawing included. Medians over two runs.")
     else
         lines[1] = _("No combination could be scored: every one failed, for the reasons below.")
     end

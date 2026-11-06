@@ -209,11 +209,14 @@ end
 
 --[[--
 Pans by a screen-pixel delta (positive = content moves right/down).
+--- @treturn bool whether the view moved (it stops at the plane's edges)
 ]]
 function Remote:pan_by(dx, dy)
+    local x, y = self.view_x, self.view_y
     self.view_x = self.view_x - dx / self.scale
     self.view_y = self.view_y - dy / self.scale
     self:_clamp()
+    return self.view_x ~= x or self.view_y ~= y
 end
 
 --[[--
