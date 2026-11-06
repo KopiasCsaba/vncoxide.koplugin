@@ -64,6 +64,10 @@ tools/mock_vnc_server.py  Test fixture: an RFB 3.8 server in Python (all encodin
 tools/proto_smoke.lua     Headless protocol tests (drives the real protocol stack over TCP).
 tools/ui_smoke.lua        Headless UI tests (real plugin, dialogs and viewer widget, no KOReader
                           process, no server).
+tools/vnc-server.py       PC-side launcher: shares an X11 monitor/area via x11vnc, optional red
+                          on-screen frame (ctypes libX11). Standard library only.
+tools/test_vnc_server.py  Unit + end-to-end tests for it (fake x11vnc/xrandr stubs); run by
+                          tmp/run-tests.sh py.
 tools/tight_jpeg.b64      The fixed 32x32 JPEG the mock serves for its Tight JPEG rectangle.
 tools/mock_vnc_client.py  An independent Python RFB 3.8 *client* fixture (decodes every encoding
                           itself, can send input) - used to validate the server half against

@@ -250,6 +250,28 @@ It comes with **no warranty** of any kind, and the developer may not be able to 
 it. Use it at your own risk, and do not expose a VNC session to a network you do not trust. Bug
 reports and patches are welcome.
 
+## Serving a PC screen
+
+`tools/vnc-server.py` shares a monitor (or just part of it) of a running X11 session with
+`x11vnc`, so this plugin's viewer can show it. It needs no venv: it uses only the Python 3
+standard library (plus `x11vnc` and `xrandr`: `sudo apt install x11vnc x11-xserver-utils`).
+Run `tools/vnc-server.py -h` for every option.
+
+```
+tools/vnc-server.py --list                       # connected outputs and their geometry
+tools/vnc-server.py                              # primary monitor, port 5900, asks for a password once
+tools/vnc-server.py -o HDMI-1 -n                 # a named output, no password
+tools/vnc-server.py -s 632x840 -O 0,40 -f        # top-left 632x840 below a 40 px taskbar, with a red frame
+tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; extra args go to x11vnc
+```
+
+- `-s WxH` / `-O X,Y` select the area, handy to match the reader's screen size.
+- `-f` draws a thin red frame (50% opacity with a compositor) just outside the shared area, so
+  you can see what the reader shows. It is removed when the server stops; if it cannot be drawn
+  you get one warning and the server runs without it.
+- The password file is `./vnc.passwd` (change with `-P FILE`); it is created on first use.
+- X11 only; a Wayland session is refused.
+
 ## For developers
 
 `NOTES.txt` has the architecture, the internals, the test setup and what has and has not been
