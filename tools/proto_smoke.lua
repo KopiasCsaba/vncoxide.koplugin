@@ -1079,6 +1079,108 @@ local function main()
         return done(ok, err)
     end)
 
+    -- 13/14. Input priority: while keys are being pressed the incremental update request that
+    -- normally follows every FramebufferUpdate is held, so the server does not start the next
+    -- redraw behind a burst of key presses. Exactly one request goes out once input has been
+    -- quiet for INPUT_QUIET and a poll ran. Without input the request follows at once.
+    local function hold_case(name, with_input)
+        local Session = load_session()
+        local W, H = 32, 24
+        local pid, port, log = start_mock{
+            name = name, encoding = "raw", pattern = "gradient", width = W, height = H,
+        }
+        local real_now, clock = Session._now, 100
+        Session._now = function() return clock end
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = name },
+            network_mgr = {
+                isWifiOn = function() return true end,
+                turnOffWifi = function() end,
+            },
+        }
+        local function done(ok, err)
+            Session._now = real_now
+            s:disconnect()
+            stop_mock(pid)
+            return ok, err
+        end
+        local connected, cerr
+        s:connect(function(ok, err) connected, cerr = ok, err end)
+        if not connected then return done(nil, "connect failed: " .. tostring(cerr)) end
+        s.app = {
+            on_framebuffer_dirty = function() end,
+            on_remote_resized = function() end,
+            on_bell = function() end,
+        }
+        local INC = "INPUT FramebufferUpdateRequest incremental=1"
+        local function settle_count()
+            -- give the mock time to log anything that was sent
+            socket.sleep(0.2)
+            return log_count(log, INC)
+        end
+        if with_input then s:note_input() end
+        s:request_full_update()
+        s:_flush_now()
+        local deadline = os.time() + 20
+        while not s.dirty and os.time() < deadline do
+            if s:_pump() == "error" then return done(nil, "pump failed: " .. tostring(s:get_error())) end
+            socket.sleep(0.01)
+        end
+        if not s.dirty then return done(nil, "the FramebufferUpdate was not decoded") end
+        for _ = 1, 5 do s:_pump() end
+
+        if not with_input then
+            if not wait_for_log(log, INC, 5) then
+                return done(nil, "without input the incremental request must follow the update")
+            end
+            local n = settle_count()
+            if n ~= 1 then return done(nil, "expected exactly one incremental request, got " .. n) end
+            return done(true)
+        end
+
+        local n = settle_count()
+        if n ~= 0 then return done(nil, "the request must be held during input, got " .. n) end
+        s.attached = true
+        clock = 100 + Session.INPUT_QUIET / 2
+        s:_poll()
+        n = settle_count()
+        if n ~= 0 then return done(nil, "the request must stay held inside INPUT_QUIET, got " .. n) end
+        clock = 100 + Session.INPUT_QUIET + 0.01
+        s:_poll()
+        if not wait_for_log(log, INC, 5) then
+            return done(nil, "the held request must go out once input has been quiet")
+        end
+        s:_poll()
+        s:_poll()
+        n = settle_count()
+        s.attached = false
+        if n ~= 1 then return done(nil, "expected exactly one released request, got " .. n) end
+        return done(true)
+    end
+    check("session_holds_update_request_during_input", function()
+        return hold_case("hold_input", true)
+    end)
+    check("session_requests_update_at_once_without_input", function()
+        return hold_case("hold_none", false)
+    end)
+
+    -- 15. The protocol alone: release_update is a no-op without a held request.
+    check("protocol_release_update_noop", function()
+        local out = {}
+        local proto = Protocol.new{ io = { write = function(s) out[#out + 1] = s end, read = function() end } }
+        proto:release_update()
+        local n = #out
+        proto.width, proto.height, proto.update_pending = 10, 20, true
+        proto:release_update()
+        proto:release_update()
+        proto:free()
+        if n ~= 0 then return nil, "release without a held request must send nothing" end
+        if #out ~= 1 or out[1] ~= "\3\1\0\0\0\0\0\10\0\20" then
+            return nil, "release must send exactly one incremental request for the whole area"
+        end
+        return true
+    end)
+
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
         os.exit(1)

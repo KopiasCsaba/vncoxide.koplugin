@@ -236,6 +236,8 @@ more than one profile for `autoconnect`, the first keeps the flag and the rest a
   The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
   scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also
   works on a window that is not focused. It applies immediately, no reconnect needed.
+  While you press keys or page buttons, screen updates pause until 0.3 s after the last press,
+  so a fast run of presses is not slowed down by e-ink redraws.
 
 ## How this was written
 

@@ -16,6 +16,7 @@ local PxFmt = require("vnc/pxfmt")
 local Remote = require("vnc/framebuffer")
 local Util = require("vnc/util")
 local logger = require("logger")
+local time = require("ui/time")
 
 local UIManager = require("ui/uimanager")
 
@@ -54,6 +55,15 @@ Creates a session. Nothing is opened until @{Session:connect} is called.
 --- @tparam[opt] function opts.on_state `(state, err)` on every transition
 --- @tparam[opt] table opts.network_mgr override the network manager (tests)
 ]]
+-- Seconds without key input before the screen update request held during a key burst is sent.
+-- E-ink redraws block the UI thread, so a redraw started mid-burst delays the next key press.
+Session.INPUT_QUIET = 0.3
+
+--- Monotonic seconds; a module field so tests can substitute a clock.
+function Session._now()
+    return time.to_s(time.now())
+end
+
 function Session.new(opts)
     assert(type(opts) == "table" and type(opts.profile) == "table", "Session.new: opts.profile is required")
     return setmetatable({
@@ -203,6 +213,7 @@ function Session:_do_connect()
         encodings = Encodings.order(enable_tight,
             { jpeg_quality = jpeg_quality, compress_level = compress_level }),
         get_plane = function() return self_ref.remote and self_ref.remote:get_plane() end,
+        hold_updates = function() return self_ref:_input_recent() end,
         callbacks = {
             on_connected = function(name, w, h)
                 logger.info("vnc: connected to", name, w, h)
@@ -410,6 +421,14 @@ function Session:_poll()
         self.attached = false
         return
     end
+    if self.proto and self.proto.update_pending and not self:_input_recent() then
+        self.proto:release_update()
+        local ok, err = self:_flush_tx()
+        if not ok then
+            self:_fail(err)
+            return
+        end
+    end
     if self.dirty and self.dirty[1] and self.app then
         local rects = self.dirty
         self.dirty = nil
@@ -476,6 +495,17 @@ function Session:request_full_update()
     self.proto:request_update(0, 0, 0, w, h)
 end
 
+--- Records key input: screen update requests are held until input has been quiet for
+--- `INPUT_QUIET` (pointer taps and drags do not count).
+function Session:note_input()
+    self.last_input = Session._now()
+end
+
+--- @treturn boolean true while key input happened less than `INPUT_QUIET` ago
+function Session:_input_recent()
+    return self.last_input ~= nil and Session._now() - self.last_input < Session.INPUT_QUIET
+end
+
 --- @tparam number x remote x
 --- @tparam number y remote y
 --- @tparam number mask RFB pointer button mask
@@ -489,6 +519,7 @@ end
 --- @tparam boolean down
 function Session:send_key(keysym, down)
     if not self.proto then return end
+    self:note_input()
     self.proto:send_key(keysym, down)
     self:_flush_now()
 end

@@ -34,6 +34,8 @@ Creates a client.
 ---   (default: depth 24)
 --- @tparam[opt] function opts.get_plane -> the current remote plane BlitBuffer
 --- @tparam[opt] table opts.callbacks on_connected|on_rect|on_desktop_resize|on_bell|on_cut_text
+--- @tparam[opt] function opts.hold_updates -> true while the incremental request that follows a
+---   FramebufferUpdate should be held back (see @{Protocol:release_update})
 --- @treturn Protocol
 ]]
 function Protocol.new(opts)
@@ -48,6 +50,8 @@ function Protocol.new(opts)
         pixel_format = opts.pixel_format or PxFmt.for_depth(24),
         callbacks = opts.callbacks or {},
         get_plane = opts.get_plane,
+        hold_updates = opts.hold_updates,
+        update_pending = false,
         streams = Encodings.new_streams(),
         width = nil,
         height = nil,
@@ -220,8 +224,13 @@ function Protocol:_message_loop()
             end
             self:_fire("on_update_done")
             -- Exactly one outstanding request at all times; this is what bounds memory
-            -- while the app is detached (the loop is simply not resumed).
-            self:request_update(1, 0, 0, self.width, self.height)
+            -- while the app is detached (the loop is simply not resumed). While held, the
+            -- request is owed rather than sent, so the server does not start another redraw.
+            if self.hold_updates and self.hold_updates() then
+                self.update_pending = true
+            else
+                self:request_update(1, 0, 0, self.width, self.height)
+            end
         elseif t == 1 then -- SetColorMapEntries (never sent for true-colour clients)
             r:u8()
             local first, count = r:u16(), r:u16()
@@ -275,13 +284,22 @@ function Protocol:_rect(r)
     self:_fire("on_rect", x, y, w, h, enc)
 end
 
---- Sends a FramebufferUpdateRequest (type 3).
+--- Sends a FramebufferUpdateRequest (type 3). Any request settles a held one: the server now
+--- has an outstanding request again.
 function Protocol:request_update(incremental, x, y, w, h)
+    self.update_pending = false
     local wr = Util.writer()
     wr:u8(3)
     wr:u8(Util.bool_to_bit(incremental))
     wr:u16(x); wr:u16(y); wr:u16(w); wr:u16(h)
     self.io.write(wr:tostring())
+end
+
+--- Sends the incremental update request held back by `hold_updates`, if there is one.
+function Protocol:release_update()
+    if self.update_pending then
+        self:request_update(1, 0, 0, self.width, self.height)
+    end
 end
 
 --- Sends a PointerEvent (type 5). `mask` bit 0 = left, 1 = middle, 2 = right, 3/4 = wheel up/down.

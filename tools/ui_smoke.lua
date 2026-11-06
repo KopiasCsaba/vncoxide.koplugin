@@ -590,7 +590,7 @@ local function new_app(plane_w, plane_h)
     local ViewerApp = require("vnc/app")
     local Remote = require("vnc/framebuffer")
     local remote = Remote.new(plane_w or 400, plane_h or 300)
-    local sent = { pointer = {}, key = {} }
+    local sent = { pointer = {}, key = {}, input = 0 }
     local app = ViewerApp:new{
         plugin = {
             settings = {
@@ -609,6 +609,7 @@ local function new_app(plane_w, plane_h)
                 sent.pointer[#sent.pointer + 1] = { x = x, y = y, mask = mask }
             end,
             send_key = function(_, keysym, down) sent.key[#sent.key + 1] = { keysym = keysym, down = down } end,
+            note_input = function() sent.input = sent.input + 1 end,
             get_state = function() return "connected" end,
             get_error = function() return nil end,
             get_profile = function() return { name = "test" } end,
@@ -1519,6 +1520,31 @@ check("page_buttons_send_keys_in_keys_mode", function()
     app:onKeyRelease(Key:new("LPgFwd", {}))
     assert_true(#sent.pointer == 0, "keys mode must not move the wheel")
     assert_true(#sent.key == 2 and sent.key[1].keysym == 0xFF56, "keys mode must send Page_Down")
+end)
+
+check("page_buttons_count_as_input_taps_do_not", function()
+    local Key = require("device/key")
+    local app, _, sent = new_app()
+    app.settings.page_buttons = "wheel"
+    local c = app:canvas_geom()
+    app:onTap(nil, { pos = { x = c.x + 10, y = c.y + 10 } })
+    assert_true(sent.input == 0, "a tap must not hold screen updates")
+    app:onKeyPress(Key:new("LPgFwd", {}))
+    assert_true(sent.input >= 1, "a wheel page button must hold screen updates")
+
+    -- the real session: a key marks input, a pointer event does not
+    local Session = require("vnc/session")
+    local real_now = Session._now
+    Session._now = function() return 50 end
+    local s = Session.new{ profile = { name = "t", host = "127.0.0.1", port = 1, password = "" } }
+    s.proto = { send_key = function() end, send_pointer = function() end }
+    s:send_pointer(1, 2, 1)
+    local after_pointer = s.last_input
+    s:send_key(0xFF56, true)
+    local after_key = s.last_input
+    Session._now = real_now
+    assert_true(after_pointer == nil, "a pointer event must not hold screen updates")
+    assert_true(after_key == 50, "a key must record the input time, got " .. tostring(after_key))
 end)
 
 check("page_buttons_setting_validates", function()

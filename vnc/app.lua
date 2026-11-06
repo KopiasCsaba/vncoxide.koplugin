@@ -644,6 +644,7 @@ function ViewerApp:scroll_wheel(direction)
     -- the remote may have shrunk since the pointer was recorded
     x, y = math.max(0, math.min(x, w - 1)), math.max(0, math.min(y, h - 1))
     local mask = direction > 0 and 16 or 8
+    self.session:note_input()
     for _ = 1, ViewerApp.WHEEL_NOTCHES do
         self:send_pointer(x, y, mask)
         self:send_pointer(x, y, 0)
