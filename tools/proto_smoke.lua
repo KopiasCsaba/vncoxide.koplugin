@@ -176,6 +176,29 @@ local function expect_pattern(pattern, fw, fh)
     return function(x, y) return pattern_pixel(pattern, x, y, fw, fh) end
 end
 
+-- What a pattern channel looks like after the mock quantizes it to `max`
+-- (`(v * max + 127) // 255`, PixelCodec.value) and the client expands it back
+-- (`floor(q * 255 / max + 0.5)`).
+local function requantize(v, max)
+    if max == 255 then return v end
+    local q = math.floor((v * max + 127) / 255)
+    return math.floor(q * 255 / max + 0.5)
+end
+
+--- `expect`-style builder: the pattern as seen through the low-depth pixel format `fmt`.
+local function expect_quantized(fmt, base)
+    base = base or expect_pattern
+    return function(pattern, fw, fh)
+        local inner = base(pattern, fw, fh)
+        return function(x, y)
+            local r, g, b = inner(x, y)
+            if r == nil then return nil end
+            return requantize(r, fmt.red_max), requantize(g, fmt.green_max),
+                requantize(b, fmt.blue_max)
+        end
+    end
+end
+
 -- ---------------------------------------------------------------- driver
 
 --[[--
@@ -222,6 +245,7 @@ local function run_case(o)
         port = o.port,
         password = o.password,
         encodings = o.encodings,
+        pixel_format = o.pixel_format,
         shared = true,
         get_plane = function() return ctx.plane end,
         callbacks = {
@@ -380,6 +404,7 @@ local function encoding_case(name, encoding, pattern, expect, opts)
         ok, err, ctx = run_case{
             name = name, port = port,
             encodings = opts.encodings or Encodings.order(opts.enable_tight),
+            pixel_format = opts.pixel_format,
             want_updates = opts.want_updates or 1,
             on_connected = function(c, _, w, h)
                 c.plane = BB.new(w, h, BB.TYPE_BBRGB24)
@@ -636,6 +661,77 @@ local function main()
     check("encodings_mixed", function()
         return encoding_case("enc_mixed", "mixed", "gradient", expect_pattern)
     end)
+
+    -- 5b. The same encodings at the 16- and 8-bit client pixel formats. The mock skips the
+    --     Tight JPEG rect below 32 bpp (servers only send JPEG at 32 bpp), so Tight is pixel
+    --     exact here.
+    local function copyrect_expect(pat, fw, fh)
+        return function(x, y)
+            if x < 64 then return pattern_pixel(pat, x, y, fw, fh) end
+            return pattern_pixel(pat, x - 64, y, fw, fh)
+        end
+    end
+    check("pxfmt_for_depth", function()
+        local f24, unk = PxFmt.for_depth(24), PxFmt.for_depth(12)
+        for k, v in pairs(PxFmt.PIXEL_FORMAT) do
+            if f24[k] ~= v or unk[k] ~= v then
+                return nil, string.format("%s: depth 24 %s, unknown depth %s, want %s",
+                    k, tostring(f24[k]), tostring(unk[k]), tostring(v))
+            end
+        end
+        if f24.bytes ~= 4 or f24.cbytes ~= 3 then return nil, "depth 24 sizes" end
+        if f24 == PxFmt.for_depth(24) then return nil, "for_depth must return a fresh table" end
+        local f16, f8 = PxFmt.for_depth(16), PxFmt.for_depth(8)
+        if f16.bytes ~= 2 or f16.cbytes ~= 2 or f8.bytes ~= 1 or f8.cbytes ~= 1 then
+            return nil, "16/8-bit sizes"
+        end
+        -- RGB565 LE 0xF81F = pure red + pure blue; BGR233 0xC7 = red 7, green 0, blue 3.
+        local r, g, b = PxFmt.unpack(f16, "\x1F\xF8", 0, 2)
+        if r ~= 255 or g ~= 0 or b ~= 255 then return nil, string.format("565: %d,%d,%d", r, g, b) end
+        r, g, b = PxFmt.unpack(f8, "x\xC7", 1, 1)
+        if r ~= 255 or g ~= 0 or b ~= 255 then return nil, string.format("233: %d,%d,%d", r, g, b) end
+        return true
+    end)
+    for _, depth in ipairs({ 16, 8 }) do
+        local fmt = PxFmt.for_depth(depth)
+        check("pxfmt_wire_" .. depth, function()
+            local want = ({
+                [16] = "INPUT SetPixelFormat bpp=16 red_shift=11 green_shift=5 blue_shift=0",
+                [8] = "INPUT SetPixelFormat bpp=8 red_shift=0 green_shift=3 blue_shift=6",
+            })[depth]
+            return encoding_case("pxfmt_" .. depth, "raw", "gradient", expect_quantized(fmt), {
+                pixel_format = fmt,
+                verify_log = function(log)
+                    if not wait_for_log(log, want, 5) then
+                        return nil, "missing " .. want .. ":\n" .. (read_file(log) or "")
+                    end
+                    return true
+                end,
+            })
+        end)
+        local cases = {
+            { "raw", "raw", "gradient" },
+            { "copyrect", "copyrect", "gradient", copyrect_expect },
+            { "rre", "rre", "gradient" },
+            { "hextile", "hextile", "gradient" },
+            { "hextile_quads", "hextile", "quadrants" },
+            { "trle", "trle", "gradient" },
+            { "trle_pal", "trle", "quadrants" },
+            { "zrle", "zrle", "gradient" },
+            { "zrle_pal", "zrle", "quadrants" },
+            { "tight", "tight", "gradient", nil, true },
+            { "tight_quads", "tight", "quadrants", nil, true },
+            { "mixed", "mixed", "gradient", nil, true },
+        }
+        for _, c in ipairs(cases) do
+            local name = string.format("enc_%s_%d", c[1], depth)
+            check(name, function()
+                return encoding_case(name, c[2], c[3], expect_quantized(fmt, c[4]), {
+                    pixel_format = fmt, enable_tight = c[5],
+                })
+            end)
+        end
+    end
 
     -- 6. ZRLE stream continuity: many successive rectangles through one zlib stream.
     check("zrle_stream_continuity", function()

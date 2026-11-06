@@ -14,7 +14,11 @@ Every decoder takes one `ctx` table and returns `true`, or `nil` plus an error s
       plane,          -- the whole remote plane (BlitBuffer, TYPE_BBRGB24)
       vp,             -- plane:viewport(x, y, w, h); decoders write rect-local coords
       streams,        -- per-connection persistent state (zlib streams, palettes)
+      fmt,            -- client pixel format (@{vnc.pxfmt.for_depth}); default depth 24
     }
+
+At 32 bpp a PIXEL is `[R, G, B, X]` and a CPIXEL/TPIXEL `[R, G, B]`; at 16/8 bpp both are
+`fmt.bytes` wide and go through @{vnc.pxfmt.to_rgb24}.
 
 @module vnc.encodings
 ]]
@@ -27,7 +31,7 @@ local PxFmt = require("vnc/pxfmt")
 local Util = require("vnc/util")
 local ZStream = require("vnc/zstream")
 
-local band, rshift, lshift = bit.band, bit.rshift, bit.lshift
+local band, bor, rshift, lshift = bit.band, bit.bor, bit.rshift, bit.lshift
 
 local Encodings = {}
 
@@ -81,22 +85,55 @@ local function ensure_scratch(n)
     return scratch
 end
 
-local function read_pixel(r)
-    local s = r:bytes(4)
-    return s:byte(1), s:byte(2), s:byte(3)
+local DEFAULT_FMT = PxFmt.for_depth(24)
+
+--- Reads one PIXEL, returning r, g, b.
+local function read_pixel(r, fmt)
+    if fmt.bits_per_pixel == 32 then
+        local s = r:bytes(4)
+        return s:byte(1), s:byte(2), s:byte(3)
+    end
+    return PxFmt.unpack(fmt, r:bytes(fmt.bytes), 0, fmt.bytes)
+end
+
+--- Reads one CPIXEL/TPIXEL, returning r, g, b.
+local function read_cpixel(r, fmt)
+    local s = r:bytes(fmt.cbytes)
+    if fmt.bits_per_pixel == 32 then
+        return s:byte(1), s:byte(2), s:byte(3)
+    end
+    return PxFmt.unpack(fmt, s, 0, fmt.cbytes)
 end
 
 --[[--
-Writes `count` 4-byte wire pixels (`[R, G, B, X]`) as packed RGB24 into `vp` at `(x, y)`.
+Writes `count` wire PIXELs (`[R, G, B, X]` at 32 bpp) as packed RGB24 into `vp` at `(x, y)`.
 ]]
-local function write_row_32(vp, x, y, data, count)
+local function write_row(fmt, vp, x, y, data, count)
     local buf = ensure_scratch(count * 3)
     local src = ffi.cast("const uint8_t*", data)
-    for i = 0, count - 1 do
-        buf[i * 3] = src[i * 4]
-        buf[i * 3 + 1] = src[i * 4 + 1]
-        buf[i * 3 + 2] = src[i * 4 + 2]
+    if fmt.bits_per_pixel ~= 32 then
+        PxFmt.to_rgb24(fmt, src, count, buf, fmt.bytes)
+    else
+        for i = 0, count - 1 do
+            buf[i * 3] = src[i * 4]
+            buf[i * 3 + 1] = src[i * 4 + 1]
+            buf[i * 3 + 2] = src[i * 4 + 2]
+        end
     end
+    PxFmt.write_pixel_buffer(vp, x, y, buf, count)
+end
+
+--[[--
+Writes `count` packed CPIXELs/TPIXELs (`[R, G, B]` at 32 bpp) from pointer `src` into `vp` at
+`(x, y)`.
+]]
+local function write_crow(fmt, vp, x, y, src, count)
+    if fmt.bits_per_pixel == 32 then
+        PxFmt.write_pixel_buffer(vp, x, y, src, count)
+        return
+    end
+    local buf = ensure_scratch(count * 3)
+    PxFmt.to_rgb24(fmt, src, count, buf, fmt.cbytes)
     PxFmt.write_pixel_buffer(vp, x, y, buf, count)
 end
 
@@ -108,9 +145,9 @@ local function clamp_sub(w, h, x, y, sw, sh)
 end
 
 function Encodings.decode_raw(ctx)
-    local r, vp, w, h = ctx.r, ctx.vp, ctx.w, ctx.h
+    local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
     for row = 0, h - 1 do
-        write_row_32(vp, 0, row, r:bytes(w * PxFmt.BYTES_PER_PIXEL), w)
+        write_row(fmt, vp, 0, row, r:bytes(w * fmt.bytes), w)
     end
     return true
 end
@@ -139,12 +176,12 @@ function Encodings.decode_copyrect(ctx)
 end
 
 function Encodings.decode_rre(ctx)
-    local r, vp, w, h = ctx.r, ctx.vp, ctx.w, ctx.h
+    local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
     local n = r:u32()
-    local br, bg, bb = read_pixel(r)
+    local br, bg, bb = read_pixel(r, fmt)
     PxFmt.fill_rect(vp, 0, 0, w, h, br, bg, bb)
     for _ = 1, n do
-        local pr, pg, pb = read_pixel(r)
+        local pr, pg, pb = read_pixel(r, fmt)
         local sx, sy, sw, sh = r:u16(), r:u16(), r:u16(), r:u16()
         local cx, cy, cw, ch = clamp_sub(w, h, sx, sy, sw, sh)
         if cx then
@@ -155,7 +192,7 @@ function Encodings.decode_rre(ctx)
 end
 
 function Encodings.decode_hextile(ctx)
-    local r, vp, w, h = ctx.r, ctx.vp, ctx.w, ctx.h
+    local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
     local bg_r, bg_g, bg_b, bg_valid
     local fg_r, fg_g, fg_b, fg_valid
     for ty = 0, h - 1, 16 do
@@ -165,13 +202,13 @@ function Encodings.decode_hextile(ctx)
             local mask = r:u8()
             if band(mask, 1) ~= 0 then -- Raw
                 for row = 0, th - 1 do
-                    write_row_32(vp, tx, ty + row, r:bytes(tw * PxFmt.BYTES_PER_PIXEL), tw)
+                    write_row(fmt, vp, tx, ty + row, r:bytes(tw * fmt.bytes), tw)
                 end
                 -- Neither colour may be carried over a raw tile.
                 bg_valid, fg_valid = false, false
             else
                 if band(mask, 2) ~= 0 then -- BackgroundSpecified
-                    bg_r, bg_g, bg_b = read_pixel(r)
+                    bg_r, bg_g, bg_b = read_pixel(r, fmt)
                     bg_valid = true
                 elseif not bg_valid then
                     return nil, string.format("Hextile: background not specified at tile (%d,%d)", tx, ty)
@@ -180,7 +217,7 @@ function Encodings.decode_hextile(ctx)
                     if band(mask, 16) ~= 0 then
                         return nil, string.format("Hextile: ForegroundSpecified with SubrectsColoured at tile (%d,%d)", tx, ty)
                     end
-                    fg_r, fg_g, fg_b = read_pixel(r)
+                    fg_r, fg_g, fg_b = read_pixel(r, fmt)
                     fg_valid = true
                 end
                 PxFmt.fill_rect(vp, tx, ty, tw, th, bg_r, bg_g, bg_b)
@@ -190,7 +227,7 @@ function Encodings.decode_hextile(ctx)
                     for _ = 1, count do
                         local sr, sg, sb
                         if coloured then
-                            sr, sg, sb = read_pixel(r)
+                            sr, sg, sb = read_pixel(r, fmt)
                         else
                             if not fg_valid then
                                 return nil, string.format("Hextile: subrect without foreground at tile (%d,%d)", tx, ty)
@@ -269,17 +306,17 @@ Decodes one TRLE-style tile at `(dx, dy)` into `vp`.
 
 `state.palette` carries the previous tile's palette (subencodings 127/129).
 ]]
-local function decode_tile(state, vp, r, dx, dy, tw, th)
+local function decode_tile(state, fmt, vp, r, dx, dy, tw, th)
     local sub = r:u8()
     if sub == 0 then -- raw CPIXELs
         for row = 0, th - 1 do
-            local data = r:bytes(tw * PxFmt.BYTES_PER_CPIXEL)
-            PxFmt.write_pixel_buffer(vp, dx, dy + row, ffi.cast("const uint8_t*", data), tw)
+            local data = r:bytes(tw * fmt.cbytes)
+            write_crow(fmt, vp, dx, dy + row, ffi.cast("const uint8_t*", data), tw)
         end
         return true
     elseif sub == 1 then -- solid
-        local s = r:bytes(3)
-        PxFmt.fill_rect(vp, dx, dy, tw, th, s:byte(1), s:byte(2), s:byte(3))
+        local cr, cg, cb = read_cpixel(r, fmt)
+        PxFmt.fill_rect(vp, dx, dy, tw, th, cr, cg, cb)
         return true
     end
 
@@ -312,8 +349,8 @@ local function decode_tile(state, vp, r, dx, dy, tw, th)
     if read_palette then
         pal = {}
         for i = 1, palette_size do
-            local s = r:bytes(3)
-            pal[i] = { r = s:byte(1), g = s:byte(2), b = s:byte(3) }
+            local pr, pg, pb = read_cpixel(r, fmt)
+            pal[i] = { r = pr, g = pg, b = pb }
         end
         state.palette, state.palette_size = pal, palette_size
     end
@@ -328,8 +365,7 @@ local function decode_tile(state, vp, r, dx, dy, tw, th)
     while done < npix do
         local cr, cg, cb, length
         if sub == 128 then
-            local s = r:bytes(3)
-            cr, cg, cb = s:byte(1), s:byte(2), s:byte(3)
+            cr, cg, cb = read_cpixel(r, fmt)
             length = read_run_length(r)
         else
             local idx = r:u8()
@@ -356,12 +392,12 @@ local function decode_tile(state, vp, r, dx, dy, tw, th)
     return true
 end
 
-local function decode_tiles(state, vp, r, w, h, tile_size)
+local function decode_tiles(state, fmt, vp, r, w, h, tile_size)
     for ty = 0, h - 1, tile_size do
         local th = math.min(tile_size, h - ty)
         for tx = 0, w - 1, tile_size do
             local tw = math.min(tile_size, w - tx)
-            local ok, err = decode_tile(state, vp, r, tx, ty, tw, th)
+            local ok, err = decode_tile(state, fmt, vp, r, tx, ty, tw, th)
             if not ok then return nil, err end
         end
     end
@@ -374,7 +410,7 @@ function Encodings.decode_trle(ctx)
         state = {}
         ctx.streams.trle = state
     end
-    return decode_tiles(state, ctx.vp, ctx.r, ctx.w, ctx.h, 16)
+    return decode_tiles(state, ctx.fmt, ctx.vp, ctx.r, ctx.w, ctx.h, 16)
 end
 
 function Encodings.decode_zrle(ctx)
@@ -396,7 +432,7 @@ function Encodings.decode_zrle(ctx)
         state = {}
         ctx.streams.zrle_tiles = state
     end
-    return decode_tiles(state, ctx.vp, Util.mem_reader(inflated), ctx.w, ctx.h, 64)
+    return decode_tiles(state, ctx.fmt, ctx.vp, Util.mem_reader(inflated), ctx.w, ctx.h, 64)
 end
 
 --- Tight's 1..3 byte little-endian compact length.
@@ -426,14 +462,15 @@ local function tight_stream(ctx, id)
     return streams[id]
 end
 
---- Applies the Tight copy filter: packed RGB24 rows.
-local function tight_copy(vp, data, w, h)
-    if #data < w * h * 3 then
-        return nil, string.format("Tight: copy filter got %d bytes, need %d", #data, w * h * 3)
+--- Applies the Tight copy filter: packed TPIXEL rows.
+local function tight_copy(fmt, vp, data, w, h)
+    local cb = fmt.cbytes
+    if #data < w * h * cb then
+        return nil, string.format("Tight: copy filter got %d bytes, need %d", #data, w * h * cb)
     end
     local ptr = ffi.cast("const uint8_t*", data)
     for row = 0, h - 1 do
-        PxFmt.write_pixel_buffer(vp, 0, row, ptr + row * w * 3, w)
+        write_crow(fmt, vp, 0, row, ptr + row * w * cb, w)
     end
     return true
 end
@@ -469,6 +506,57 @@ local function tight_palette(vp, data, w, h, pal, num_colors)
                 PxFmt.write_pixel(vp, col, row, px[1], px[2], px[3])
             end
         end
+    end
+    return true
+end
+
+--[[--
+Applies the Tight gradient filter at 8/16 bpp (libvncclient's `FilterGradientBPP` without
+cutZeros): the prediction runs on the quantized channel values, one residual PIXEL per pixel.
+]]
+local function tight_gradient_bpp(fmt, vp, data, w, h)
+    local nb = fmt.bytes
+    if #data < w * h * nb then
+        return nil, string.format("Tight: gradient got %d bytes, need %d", #data, w * h * nb)
+    end
+    local src = ffi.cast("const uint8_t*", data)
+    local maxes = { fmt.red_max, fmt.green_max, fmt.blue_max }
+    local shifts = { fmt.red_shift, fmt.green_shift, fmt.blue_shift }
+    local prev = ffi.new("int32_t[?]", w * 3)
+    local cur = ffi.new("int32_t[?]", w * 3)
+    local out = ffi.new("uint8_t[?]", w * nb)
+    local big = fmt.big_endian ~= 0
+    for row = 0, h - 1 do
+        for col = 0, w - 1 do
+            local s = src + (row * w + col) * nb
+            local v = s[0]
+            if nb == 2 then
+                v = big and bor(lshift(s[0], 8), s[1]) or bor(lshift(s[1], 8), s[0])
+            end
+            local pv = 0
+            for c = 0, 2 do
+                local max = maxes[c + 1]
+                local est = prev[c]
+                if col > 0 then
+                    est = prev[col * 3 + c] + cur[(col - 1) * 3 + c] - prev[(col - 1) * 3 + c]
+                    if est > max then est = max elseif est < 0 then est = 0 end
+                end
+                local p = band(rshift(v, shifts[c + 1]) + est, max)
+                cur[col * 3 + c] = p
+                pv = bor(pv, lshift(p, shifts[c + 1]))
+            end
+            if nb == 2 then
+                if big then
+                    out[col * 2], out[col * 2 + 1] = rshift(pv, 8), band(pv, 0xFF)
+                else
+                    out[col * 2], out[col * 2 + 1] = band(pv, 0xFF), rshift(pv, 8)
+                end
+            else
+                out[col] = pv
+            end
+        end
+        write_crow(fmt, vp, 0, row, out, w)
+        ffi.copy(prev, cur, w * 3 * 4)
     end
     return true
 end
@@ -521,7 +609,7 @@ local function tight_jpeg(ctx, data)
 end
 
 function Encodings.decode_tight(ctx)
-    local r, vp, w, h = ctx.r, ctx.vp, ctx.w, ctx.h
+    local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
     local ctl = r:u8()
 
     -- Low nibble: per-stream zlib reset flags.
@@ -534,8 +622,8 @@ function Encodings.decode_tight(ctx)
     ctl = rshift(ctl, 4)
 
     if ctl == Encodings.TIGHT_FILL then
-        local s = r:bytes(3)
-        PxFmt.fill_rect(vp, 0, 0, w, h, s:byte(1), s:byte(2), s:byte(3))
+        local cr, cg, cb = read_cpixel(r, fmt)
+        PxFmt.fill_rect(vp, 0, 0, w, h, cr, cg, cb)
         return true
     elseif ctl == Encodings.TIGHT_JPEG then
         local len = read_compact_len(r)
@@ -553,7 +641,7 @@ function Encodings.decode_tight(ctx)
 
     local pal, num_colors, bits
     if filter == 0 then
-        bits = 24
+        bits = fmt.cbytes * 8
     elseif filter == 1 then
         num_colors = r:u8() + 1
         if num_colors < 2 then
@@ -561,8 +649,7 @@ function Encodings.decode_tight(ctx)
         end
         pal = {}
         for i = 1, num_colors do
-            local s = r:bytes(3)
-            pal[i] = { s:byte(1), s:byte(2), s:byte(3) }
+            pal[i] = { read_cpixel(r, fmt) }
         end
         bits = num_colors == 2 and 1 or 8
     elseif filter == 2 then
@@ -570,7 +657,7 @@ function Encodings.decode_tight(ctx)
             return nil, string.format("Tight: gradient rect width %d exceeds %d",
                 w, Encodings.TIGHT_GRADIENT_MAX_WIDTH)
         end
-        bits = 24
+        bits = fmt.cbytes * 8
     else
         return nil, string.format("unsupported Tight filter %d", filter)
     end
@@ -596,9 +683,11 @@ function Encodings.decode_tight(ctx)
     end
 
     if filter == 0 or uncompressed then
-        return tight_copy(vp, data, w, h)
+        return tight_copy(fmt, vp, data, w, h)
     elseif filter == 1 then
         return tight_palette(vp, data, w, h, pal, num_colors)
+    elseif fmt.bits_per_pixel ~= 32 then
+        return tight_gradient_bpp(fmt, vp, data, w, h)
     end
     return tight_gradient(vp, data, w, h)
 end
@@ -606,6 +695,7 @@ end
 --- Dispatches on `ctx.encoding`.
 --- @treturn boolean|nil, string|nil
 function Encodings.decode(ctx)
+    ctx.fmt = ctx.fmt or DEFAULT_FMT
     local enc = ctx.encoding
     if enc == Encodings.RAW then
         return Encodings.decode_raw(ctx)

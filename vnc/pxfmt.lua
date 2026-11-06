@@ -11,6 +11,10 @@ address byte, so
 and both map **directly** onto KOReader's `TYPE_BBRGB24` (`ColorRGB24 = {r, g, b}`), with no
 byte swapping anywhere.
 
+The lower-bandwidth 16-bit (RGB565) and 8-bit (BGR233) true-colour formats from
+@{PxFmt.for_depth} are expanded to RGB24 by @{PxFmt.to_rgb24}/@{PxFmt.unpack}; at those depths
+PIXEL and CPIXEL/TPIXEL are both `bpp / 8` bytes (RFC 6143 §7.7.5).
+
 @module vnc.pxfmt
 ]]
 
@@ -35,6 +39,101 @@ PxFmt.PIXEL_FORMAT = {
 PxFmt.COLOR_DEPTH = 24
 PxFmt.BYTES_PER_PIXEL = 4      -- PIXEL on the wire: [R, G, B, 0]
 PxFmt.BYTES_PER_CPIXEL = 3     -- CPIXEL (TRLE/ZRLE/Tight): [R, G, B]
+
+local bit = require("bit")
+local band, bor, rshift, lshift = bit.band, bit.bor, bit.rshift, bit.lshift
+
+--- Client pixel formats by colour depth: the 10 PIXEL_FORMAT fields plus the wire sizes of a
+--- PIXEL (`bytes`) and a CPIXEL/TPIXEL (`cbytes`).
+local FORMATS = {
+    [16] = { bits_per_pixel = 16, depth = 16, big_endian = 0, true_colour = 1,
+             red_max = 31, green_max = 63, blue_max = 31,
+             red_shift = 11, green_shift = 5, blue_shift = 0, bytes = 2, cbytes = 2 },
+    [8]  = { bits_per_pixel = 8, depth = 8, big_endian = 0, true_colour = 1,
+             red_max = 7, green_max = 7, blue_max = 3,
+             red_shift = 0, green_shift = 3, blue_shift = 6, bytes = 1, cbytes = 1 },
+}
+
+FORMATS[24] = { bytes = PxFmt.BYTES_PER_PIXEL, cbytes = PxFmt.BYTES_PER_CPIXEL }
+for k, v in pairs(PxFmt.PIXEL_FORMAT) do FORMATS[24][k] = v end
+
+--[[--
+Returns a fresh client pixel format table for colour depth `depth` (24, 16 or 8; anything else
+means 24).
+]]
+function PxFmt.for_depth(depth)
+    local fmt = {}
+    for k, v in pairs(FORMATS[depth] or FORMATS[24]) do fmt[k] = v end
+    return fmt
+end
+
+-- Channel expansion tables: lut[v] = floor(v * 255 / max + 0.5), cached per channel maximum.
+local luts = {}
+local function channel_lut(max)
+    local lut = luts[max]
+    if not lut then
+        lut = ffi.new("uint8_t[?]", max + 1)
+        for v = 0, max do lut[v] = math.floor(v * 255 / max + 0.5) end
+        luts[max] = lut
+    end
+    return lut
+end
+
+local function is_rgb_bytes(fmt)
+    return fmt.big_endian == 0 and fmt.red_shift == 0 and fmt.green_shift == 8
+        and fmt.blue_shift == 16 and fmt.red_max == 255 and fmt.green_max == 255
+        and fmt.blue_max == 255
+end
+
+--[[--
+Converts `count` wire pixels of `src_size` bytes each (`fmt.bytes` or `fmt.cbytes`) at `src`
+into packed RGB24 at `dst`.
+]]
+function PxFmt.to_rgb24(fmt, src, count, dst, src_size)
+    if src_size >= 3 and is_rgb_bytes(fmt) then
+        if src_size == 3 then
+            ffi.copy(dst, src, count * 3)
+        else
+            for i = 0, count - 1 do
+                local s, d = src + i * src_size, dst + i * 3
+                d[0], d[1], d[2] = s[0], s[1], s[2]
+            end
+        end
+        return
+    end
+    local rl, gl, bl = channel_lut(fmt.red_max), channel_lut(fmt.green_max), channel_lut(fmt.blue_max)
+    local rm, gm, bm = fmt.red_max, fmt.green_max, fmt.blue_max
+    local rs, gs, bs = fmt.red_shift, fmt.green_shift, fmt.blue_shift
+    local big = fmt.big_endian ~= 0
+    for i = 0, count - 1 do
+        local s = src + i * src_size
+        local v
+        if src_size == 1 then
+            v = s[0]
+        elseif src_size == 2 then
+            v = big and bor(lshift(s[0], 8), s[1]) or bor(lshift(s[1], 8), s[0])
+        else
+            v = 0
+            for k = 0, src_size - 1 do
+                v = bor(v, lshift(s[big and k or (src_size - 1 - k)], 8 * (src_size - 1 - k)))
+            end
+        end
+        local d = dst + i * 3
+        d[0] = rl[band(rshift(v, rs), rm)]
+        d[1] = gl[band(rshift(v, gs), gm)]
+        d[2] = bl[band(rshift(v, bs), bm)]
+    end
+end
+
+local unpack_buf = ffi.new("uint8_t[3]")
+
+--[[--
+Reads one `size`-byte wire pixel from string `s` at 0-based offset `off`, returning r, g, b.
+]]
+function PxFmt.unpack(fmt, s, off, size)
+    PxFmt.to_rgb24(fmt, ffi.cast("const uint8_t*", s) + off, 1, unpack_buf, size)
+    return unpack_buf[0], unpack_buf[1], unpack_buf[2]
+end
 
 local uint8_t = ffi.typeof("uint8_t")
 local uint8_ptr = ffi.typeof("uint8_t*")

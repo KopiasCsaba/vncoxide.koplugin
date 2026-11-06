@@ -258,12 +258,12 @@ class Framebuffer:
             return (c, c, c)
         raise ValueError("unknown pattern " + p)
 
-    def rgb24(self, x0, y0, w, h):
-        """Packed [R, G, B] rows."""
+    def tpixels(self, x0, y0, w, h):
+        """Packed Tight TPIXEL (= CPIXEL) rows; [R, G, B] in the canonical format."""
         out = bytearray()
         for y in range(y0, y0 + h):
             for x in range(x0, x0 + w):
-                out += bytes(self.pix(x, y))
+                out += self.cpixel(self.pix(x, y))
         return bytes(out)
 
     def pixel32(self, x0, y0, w, h):
@@ -549,13 +549,13 @@ class TightEncoder:
         return self._ctl(TIGHT_JPEG) + self._compact_len(len(self.jpeg_blob)) + self.jpeg_blob
 
     def no_zlib(self, x0, y0, w, h):
-        raw = self.fb.rgb24(x0, y0, w, h)
+        raw = self.fb.tpixels(x0, y0, w, h)
         return self._ctl(TIGHT_NO_ZLIB) + self._compact_len(len(raw)) + raw
 
     def copy(self, x0, y0, w, h, stream_id=0, explicit=False, small=False):
-        raw = self.fb.rgb24(x0, y0, w, h)
+        raw = self.fb.tpixels(x0, y0, w, h)
         high = stream_id | (TIGHT_EXPLICIT_FILTER if explicit else 0)
-        if small or (w * 3) * h < TIGHT_MIN_TO_COMPRESS:
+        if small or len(raw) < TIGHT_MIN_TO_COMPRESS:
             return self._ctl(high) + (bytes([0]) if explicit else b"") + raw
         reset, comp = self._compress(stream_id, raw)
         return self._ctl(high, stream_id, reset=reset) + (bytes([0]) if explicit else b"") \
@@ -565,6 +565,39 @@ class TightEncoder:
         self.reset_pending[stream_id] = True
 
     def gradient(self, x0, y0, w, h, stream_id=2):
+        data = (self._gradient24(x0, y0, w, h) if self.fb.codec.bytes_per_cpixel == 3
+                else self._gradient_bpp(x0, y0, w, h))
+        reset, comp = self._compress(stream_id, data)
+        return self._ctl(stream_id | TIGHT_EXPLICIT_FILTER, stream_id, reset=reset) + bytes([2]) \
+            + self._compact_len(len(comp)) + comp
+
+    def _gradient_bpp(self, x0, y0, w, h):
+        # Mirrors libvncclient's FilterGradientBPP (8/16 bpp, no cutZeros): the prediction runs
+        # on the quantized channel values, and each residual goes on the wire as one PIXEL.
+        codec = self.fb.codec
+        maxes = (codec.red_max, codec.green_max, codec.blue_max)
+        shifts = (codec.red_shift, codec.green_shift, codec.blue_shift)
+        data = bytearray()
+        prev = [0] * (w * 3)
+        for y in range(y0, y0 + h):
+            cur = [0] * (w * 3)
+            for x in range(w):
+                value = codec.value(self.fb.pix(x0 + x, y))
+                out = 0
+                for c in range(3):
+                    v = (value >> shifts[c]) & maxes[c]
+                    if x == 0:
+                        est = prev[c]
+                    else:
+                        est = prev[x * 3 + c] + cur[(x - 1) * 3 + c] - prev[(x - 1) * 3 + c]
+                        est = max(0, min(maxes[c], est))
+                    out |= ((v - est) & maxes[c]) << shifts[c]
+                    cur[x * 3 + c] = v
+                data += out.to_bytes(codec.bytes_per_pixel, codec.byte_order)
+            prev = cur
+        return bytes(data)
+
+    def _gradient24(self, x0, y0, w, h):
         # Mirrors libvncclient's FilterGradient24 (BPP=32, cutZeros): `prev`/`cur` hold the
         # *reconstructed* pixel values, and only the deltas go on the wire.
         data = bytearray()
@@ -582,9 +615,7 @@ class TightEncoder:
                     data.append((v - est) & 0xFF)
                     cur[x * 3 + c] = v
             prev = cur
-        reset, comp = self._compress(stream_id, bytes(data))
-        return self._ctl(stream_id | TIGHT_EXPLICIT_FILTER, stream_id, reset=reset) + bytes([2]) \
-            + self._compact_len(len(comp)) + comp
+        return bytes(data)
 
     def palette(self, x0, y0, w, h, stream_id=1):
         pixels = [self.fb.pix(x0 + x, y0 + y) for y in range(h) for x in range(w)]
@@ -904,6 +935,9 @@ class MockServer:
         # Fill, when the JPEG rect happens to be uniform.
         if len(set(self.fb.pix(x, y) for x in range(jx, jx + jw) for y in range(jy, jy + jh))) == 1:
             rects.append(struct.pack(">HHHHi", jx, jy, jw, jh, TIGHT) + tight.fill(jx, jy, jw, jh))
+        # Servers only send Tight JPEG at 32 bpp; below that the rect stays pixel exact.
+        if self.fb.codec.bpp != 32:
+            return rects
         # JPEG last, so its (lossy) content is what the client ends up showing there.
         rects.append(struct.pack(">HHHHi", jx, jy, jw, jh, TIGHT) + tight.jpeg(jx, jy, jw, jh))
         log("JPEGRECT x=%d y=%d w=%d h=%d r=%d g=%d b=%d"

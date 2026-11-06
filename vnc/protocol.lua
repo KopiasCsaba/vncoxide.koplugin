@@ -30,6 +30,8 @@ Creates a client.
 --- @tparam[opt=true] boolean opts.shared ClientInit shared-flag
 --- @tparam[opt=nil] string opts.password empty/nil disables VNC Authentication
 --- @tparam[opt] table opts.encodings encoding list for SetEncodings
+--- @tparam[opt] table opts.pixel_format client pixel format from @{vnc.pxfmt.for_depth}
+---   (default: depth 24)
 --- @tparam[opt] function opts.get_plane -> the current remote plane BlitBuffer
 --- @tparam[opt] table opts.callbacks on_connected|on_rect|on_desktop_resize|on_bell|on_cut_text
 --- @treturn Protocol
@@ -43,6 +45,7 @@ function Protocol.new(opts)
         shared = opts.shared ~= false,
         password = opts.password,
         encodings = opts.encodings or Encodings.ORDER_DEFAULT,
+        pixel_format = opts.pixel_format or PxFmt.for_depth(24),
         callbacks = opts.callbacks or {},
         get_plane = opts.get_plane,
         streams = Encodings.new_streams(),
@@ -187,7 +190,7 @@ end
 
 function Protocol:_set_pixel_format()
     local w = Util.writer()
-    local pf = PxFmt.PIXEL_FORMAT
+    local pf = self.pixel_format
     w:u8(0); w:u8(0); w:u8(0); w:u8(0) -- message-type + padding
     w:u8(pf.bits_per_pixel); w:u8(pf.depth); w:u8(pf.big_endian); w:u8(pf.true_colour)
     w:u16(pf.red_max); w:u16(pf.green_max); w:u16(pf.blue_max)
@@ -264,7 +267,7 @@ function Protocol:_rect(r)
     local ok, err = Encodings.decode({
         x = x, y = y, w = w, h = h, encoding = enc,
         r = r, plane = plane, vp = plane:viewport(x, y, w, h),
-        streams = self.streams,
+        streams = self.streams, fmt = self.pixel_format,
     })
     if not ok then
         error(string.format("%s (rect (%d,%d %dx%d))", err, x, y, w, h), 0)
