@@ -78,10 +78,32 @@ function MenuBuilder.open(app)
             fn()
         end
     end
+    -- Items that only change a setting keep the menu open: their `refresh` re-reads the state into
+    -- the item, and `refresh_all` redraws the current page in place. Tapping one skips the menu's
+    -- close_callback (see `onMenuSelect` below).
+    local item_table = {}
+    local function refresh_all()
+        local function walk(items)
+            for _i, item in ipairs(items) do
+                if item.refresh then item.refresh(item) end
+                if item.sub_item_table then walk(item.sub_item_table) end
+            end
+        end
+        walk(item_table)
+        if menu then menu:updateItems(1, true) end
+    end
+    local function stays_open(item, refresh)
+        item.keep_open = true
+        item.refresh = refresh
+        if refresh then refresh(item) end
+        if item.callback then
+            local fn = item.callback
+            item.callback = function() fn() refresh_all() end
+        end
+        return item
+    end
     -- A failed attempt must come back to a menu, not leave the user staring at the canvas.
     local function back_into_menu() app:open_menu() end
-
-    local item_table = {}
 
     -- ---- a lost / failed connection: offer a retry right at the top
     if profile and session:get_state() == "error" then
@@ -139,15 +161,14 @@ function MenuBuilder.open(app)
     }
 
     -- ---- keyboard
-    item_table[#item_table + 1] = {
+    item_table[#item_table + 1] = stays_open({
         text = _("Keyboard always visible"),
-        mandatory = settings.keyboard_always_visible and "✓" or "-",
-        callback = action(function()
+        callback = function()
             settings.keyboard_always_visible = not settings.keyboard_always_visible
             plugin.settings:flush()
             app:evaluate_keyboard()
-        end),
-    }
+        end,
+    }, function(item) item.mandatory = settings.keyboard_always_visible and "✓" or "-" end)
     item_table[#item_table + 1] = {
         -- Driven by the wish, not by the current state: while this very menu is open the
         -- keyboard is hidden, but the item must still describe what tapping it does.
@@ -158,67 +179,64 @@ function MenuBuilder.open(app)
     -- ---- orientation
     local rotation_items = {}
     for _i, rotation in ipairs(ROTATIONS) do
-        rotation_items[#rotation_items + 1] = {
+        rotation_items[#rotation_items + 1] = stays_open({
             text = rotation.label,
-            mandatory = settings.orientation == rotation.mode and _("default") or nil,
-            callback = action(function() app:set_rotation_mode(rotation.mode) end),
-        }
+            callback = function() app:set_rotation_mode(rotation.mode) end,
+        }, function(item) item.mandatory = settings.orientation == rotation.mode and _("default") or nil end)
     end
-    item_table[#item_table + 1] = {
+    item_table[#item_table + 1] = stays_open({
         text = _("Screen orientation"),
         sub_item_table = rotation_items,
-        mandatory = rotation_label(Screen:getRotationMode()),
-    }
+    }, function(item) item.mandatory = rotation_label(Screen:getRotationMode()) end)
     item_table[#item_table + 1] = {
         text = _("Rotate screen"),
         callback = action(function() app:rotate(1) end),
     }
-    item_table[#item_table + 1] = {
+    item_table[#item_table + 1] = stays_open({
         text = _("Use current orientation as default"),
-        callback = action(function()
+        callback = function()
             settings.orientation = Screen:getRotationMode()
             plugin.settings:flush()
-        end),
-    }
+        end,
+    })
 
     -- ---- page buttons: read on every key press, so this applies at once
     local function set_page_buttons(value)
-        return action(function()
+        return function()
             settings.page_buttons = value
             plugin.settings:flush()
-        end)
+        end
     end
-    item_table[#item_table + 1] = {
+    item_table[#item_table + 1] = stays_open({
         text = _("Page buttons send"),
-        mandatory = settings.page_buttons == "wheel" and _("Mouse wheel") or _("Page Up/Down keys"),
         help_text = _("Page Up/Down keys go to the focused window on the remote. The mouse wheel scrolls whatever is under the last tap, even in a window that is not focused."),
         sub_item_table = {
-            {
+            stays_open({
                 text = _("Page Up/Down keys"),
-                mandatory = settings.page_buttons ~= "wheel" and "✓" or nil,
                 callback = set_page_buttons("keys"),
-            },
-            {
+            }, function(item) item.mandatory = settings.page_buttons ~= "wheel" and "✓" or nil end),
+            stays_open({
                 text = _("Mouse wheel"),
-                mandatory = settings.page_buttons == "wheel" and "✓" or nil,
                 callback = set_page_buttons("wheel"),
-            },
+            }, function(item) item.mandatory = settings.page_buttons == "wheel" and "✓" or nil end),
         },
-    }
+    }, function(item)
+        item.mandatory = settings.page_buttons == "wheel" and _("Mouse wheel") or _("Page Up/Down keys")
+    end)
 
     -- ---- scaling: global, applied to the live view at once
-    item_table[#item_table + 1] = {
+    item_table[#item_table + 1] = stays_open({
         text = _("Sharp scaling (faster)"),
-        mandatory = settings.scaling == "sharp" and "✓" or "-",
         help_text = _("Scales by repeating pixels instead of blending them. Much faster redraws when the zoom is not 100%; text looks crisper but can look uneven at non-whole zoom levels."),
-        callback = action(function()
+        callback = function()
             settings.scaling = settings.scaling == "sharp" and "smooth" or "sharp"
             plugin.settings:flush()
             local live = session:get_remote()
             if live then live:set_scaling(settings.scaling) end
+            -- the menu is on top: this only flags the flash that closing it performs
             app:_wholesale_change()
-        end),
-    }
+        end,
+    }, function(item) item.mandatory = settings.scaling == "sharp" and "✓" or "-" end)
 
     -- ---- keys the on-screen keyboard does not have
     local function send(keysym)
@@ -257,7 +275,25 @@ function MenuBuilder.open(app)
         callback = action(function() app:leave() end),
     }
 
-    menu = Menu:new{
+    -- The title bar's X must close the whole menu; Menu's own wiring (like the Back key) only
+    -- steps up one submenu level.
+    local VncMenu = Menu:extend{}
+    function VncMenu:init()
+        Menu.init(self)
+        if self.title_bar and self.title_bar.right_button then
+            self.title_bar.right_button.callback = function() self:onCloseAllMenus() end
+        end
+    end
+    -- Settings toggles leave the menu open: the stock handler would run close_callback after them.
+    function VncMenu:onMenuSelect(item)
+        if item.keep_open and item.sub_item_table == nil then
+            self:onMenuChoice(item)
+            return true
+        end
+        return Menu.onMenuSelect(self, item)
+    end
+
+    menu = VncMenu:new{
         title = profile and T(_("VNC — %1"), profile.name) or _("VNC viewer"),
         item_table = item_table,
         is_borderless = true,

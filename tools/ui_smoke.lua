@@ -1657,6 +1657,80 @@ check("sharp_scaling_menu_entry_applies_live", function()
     assert_true(s.scaling == "smooth" and modes[#modes] == "smooth", "toggling again goes back to smooth")
 end)
 
+check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
+    local app, remote = new_app()
+    local s = app.plugin.settings.data.settings
+    s.scaling, s.page_buttons, s.keyboard_always_visible = "smooth", "keys", false
+    app.plugin.settings.flush = function() end
+    local menu = app:open_menu()
+    local function entry(text) return find_item(menu.item_table, text) end
+    local function tap(item)
+        menu:onMenuSelect(item)
+        UIManager:_checkTasks()
+    end
+    local function on_top() return top() == menu end
+
+    tap(entry("Sharp scaling (faster)"))
+    assert_true(s.scaling == "sharp", "the tap toggles the setting")
+    assert_true(app.menu == menu and on_top(), "Sharp scaling leaves the menu on top")
+    assert_true(entry("Sharp scaling (faster)").mandatory == "✓", "and the item shows the new state")
+    assert_true(app._needs_flash, "the view is flashed when the menu closes")
+
+    tap(entry("Keyboard always visible"))
+    assert_true(s.keyboard_always_visible == true and app.menu == menu and on_top(), "keyboard toggle keeps the menu")
+    assert_true(entry("Keyboard always visible").mandatory == "✓", "and shows the new state")
+
+    -- a submenu choice: stays in the submenu, checkmarks and the parent's label follow
+    tap(entry("Page buttons send"))
+    local sub = menu.item_table
+    assert_true(find_item(sub, "Mouse wheel"), "entered the submenu")
+    tap(find_item(sub, "Mouse wheel"))
+    assert_true(s.page_buttons == "wheel" and app.menu == menu and on_top(), "Page buttons choice keeps the menu")
+    assert_true(menu.item_table == sub, "and stays in the submenu")
+    assert_true(find_item(sub, "Mouse wheel").mandatory == "✓" and find_item(sub, "Page Up/Down keys").mandatory == nil,
+        "the checkmark moved")
+    menu:onClose()
+    assert_true(entry("Page buttons send").mandatory == "Mouse wheel", "the parent label follows")
+
+    -- the title bar's X closes everything, also from inside a submenu
+    tap(entry("Page buttons send"))
+    menu.title_bar.right_button.callback()
+    UIManager:_checkTasks()
+    assert_true(app.menu == nil and top() ~= menu, "the close button closes the whole menu")
+
+    -- items that need the canvas still close it
+    menu = app:open_menu()
+    tap(find_item(find_item(menu.item_table, "Zoom…").sub_item_table, "100%"))
+    assert_true(app.menu == nil, "a zoom choice closes the menu")
+    menu = app:open_menu()
+    tap(find_item(find_item(menu.item_table, "Send key").sub_item_table, "Tab"))
+    assert_true(app.menu == nil, "a sent key closes the menu")
+
+    app:onCloseWidget()
+    remote:free()
+end)
+
+check("menu_orientation_choice_keeps_menu_open", function()
+    local app, remote = new_app()
+    app.plugin.settings.flush = function() end
+    local menu = app:open_menu()
+    local start = Screen:getRotationMode()
+    local target = (start + 1) % 4
+    local labels = { [0] = "Portrait", "Landscape", "Portrait inverted", "Landscape inverted" }
+    menu:onMenuSelect(find_item(menu.item_table, "Screen orientation"))
+    menu:onMenuSelect(find_item(menu.item_table, labels[target]))
+    UIManager:_checkTasks()
+    assert_true(Screen:getRotationMode() == target, "the viewer rotated")
+    assert_true(app.menu == menu and top() == menu, "the menu is still on top")
+    menu:onClose()
+    assert_true(find_item(menu.item_table, "Screen orientation").mandatory == labels[target], "label follows")
+    menu:onMenuSelect(find_item(menu.item_table, "Use current orientation as default"))
+    assert_true(app.settings.orientation == target and app.menu == menu, "default stored, menu kept")
+    app:set_rotation_mode(start)
+    app:onCloseWidget()
+    remote:free()
+end)
+
 check("keys_forward_to_the_remote", function()
     local Key = require("device/key")
     local app, remote, sent = new_app()

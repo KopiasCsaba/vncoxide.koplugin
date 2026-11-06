@@ -383,6 +383,8 @@ new geometry's content; it is consumed by the first rectangle to arrive after th
 ]]
 function ViewerApp:_wholesale_change()
     self._needs_flash = true
+    -- A menu on top owns the screen; closing it flashes the view, which covers this change.
+    if self.menu then return end
     UIManager:setDirty(self, "full")
 end
 
