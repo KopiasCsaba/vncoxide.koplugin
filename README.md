@@ -320,6 +320,13 @@ tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; e
 - `-f` draws a thin red frame (50% opacity with a compositor) just outside the shared area, so
   you can see what the reader shows. It is removed when the server stops; if it cannot be drawn
   you get one warning and the server runs without it.
+- Latency: the defaults are `-wait 5 -defer 0` (x11vnc answers at once). Measured against x11vnc
+  0.9.16 on a 632x840 area, the old `-wait 50 -defer 100` cost about 150 ms per request against about
+  6 ms. With `-z`, x11vnc's X DAMAGE hints made every request about 170 ms slower on a real display
+  (about 8 ms without), so the script adds `-noxdamage` whenever `-z` is not 1. `--gentle` goes back
+  to `-wait 50 -defer 100` (less CPU on a slow PC, about 145 ms more per update). `--xdamage` keeps
+  the damage hints with `-z`. `-noxdamage` means x11vnc scans the screen itself, which likely uses
+  more CPU (not measured).
 - The password file is `./vnc.passwd` (change with `-P FILE`); it is created on first use.
 - X11 only; a Wayland session is refused.
 

@@ -106,16 +106,22 @@ def parse_zoom(zoom, sharp):
     return zoom + (":nb" if sharp else ""), factor
 
 
-def build_cmd(display, area, port, auth, allow, extra, scale=None):
+def build_cmd(display, area, port, auth, allow, extra, scale=None, gentle=False, noxdamage=False):
     w, h, x, y = area
     cmd = ["x11vnc", "-display", display, "-clip", "%dx%d+%d+%d" % (w, h, x, y)]
     if scale:
         cmd += ["-scale", scale]
+        if noxdamage:
+            # x11vnc's X DAMAGE hints made every request ~170 ms slower with -scale on a real
+            # display (measured; ~8 ms with this flag). x11vnc then scans the screen itself.
+            cmd += ["-noxdamage"]
     cmd += ["-rfbport", str(port)] + list(auth)
     if allow:
         cmd += ["-allow", allow]
-    # -cursor arrow: pointer drawn into the image (visible on e-ink); -wait/-defer batch updates.
-    return cmd + ["-forever", "-shared", "-cursor", "arrow", "-wait", "50", "-defer", "100",
+    # -cursor arrow: pointer drawn into the image (visible on e-ink); -wait/-defer: 5/0 answer
+    # at once (~6 ms per request, measured), --gentle batches with 50/100 (~145 ms slower).
+    wait, defer = ("50", "100") if gentle else ("5", "0")
+    return cmd + ["-forever", "-shared", "-cursor", "arrow", "-wait", wait, "-defer", defer,
                   "-noxrecord", "-ncache", "0"] + list(extra)
 
 
@@ -232,6 +238,10 @@ def make_parser():
                    help="scale the frame server-side (x11vnc -scale), e.g. 2, 1.5 or 4/3; "
                         "use 100%% zoom in the viewer then")
     p.add_argument("--sharp", action="store_true", help="with -z: nearest-neighbour scaling (no blending)")
+    p.add_argument("--xdamage", action="store_true",
+                   help="with -z: keep X DAMAGE hints (slower, see README)")
+    p.add_argument("--gentle", action="store_true",
+                   help="batch screen updates (-wait 50 -defer 100): less CPU on the PC, about 145 ms slower updates")
     p.add_argument("-p", metavar="PORT", type=int, default=5900, help="TCP port (default: 5900)")
     p.add_argument("-a", metavar="IPS", help="comma list of allowed client IPs/prefixes (default: any)")
     p.add_argument("-n", action="store_true", help="no password (otherwise uses/creates the -P file)")
@@ -319,11 +329,14 @@ def _main(args, extra):
         auth = ["-rfbauth", args.P]
     w, h, x, y = area
     note = ""
+    noxdamage = bool(scale) and not args.xdamage
     if scale:
         note = " scaled %s%s -> %dx%d" % (args.z, " sharp" if args.sharp else "", round(w * factor), round(h * factor))
+        if noxdamage:
+            note += " (no damage hints)"
     print("Sharing %s (%dx%d+%d+%d) of %s on port %d%s" % (out["name"], w, h, x, y, display, args.p, note),
           flush=True)
-    cmd = build_cmd(display, area, args.p, auth, args.a, extra, scale)
+    cmd = build_cmd(display, area, args.p, auth, args.a, extra, scale, args.gentle, noxdamage)
     rects = frame_rects(area, out) if args.f else None
     if args.f and not rects:
         print("warning: frame disabled (shared area fills the whole output)", file=sys.stderr)

@@ -68,7 +68,7 @@ local PICTURE_ADVICE = {
     },
     {
         name = _("Scale on the PC, not on the e-reader"),
-        body = _("letting the server send an already scaled image (the server script's -z option, e.g. -z 2; add --sharp for crisp pixel doubling) is better than any viewer zoom other than 100%: at 100% the e-reader only copies pixels, at any other zoom it has to compute every screen pixel. If you do zoom on the e-reader, turn Sharp scaling on (viewer menu)."),
+        body = _("letting the server send an already scaled image (the server script's -z option, e.g. -z 2; add --sharp for crisp pixel doubling) is better than any viewer zoom other than 100%: at 100% the e-reader only copies pixels, at any other zoom it has to compute every screen pixel. If you do zoom on the e-reader, turn Sharp scaling on (viewer menu). The server script turns off x11vnc's damage hints with -z, which otherwise made every update about 170 ms slower when scaling."),
     },
     {
         name = _("Example"),

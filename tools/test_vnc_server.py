@@ -91,11 +91,21 @@ class Pure(unittest.TestCase):
     def test_build_cmd(self):
         cmd = vs.build_cmd(":0", (632, 840, 2560, 40), 5900, ["-nopw"], None, [])
         self.assertEqual(cmd, ["x11vnc", "-display", ":0", "-clip", "632x840+2560+40", "-rfbport", "5900",
-                               "-nopw", "-forever", "-shared", "-cursor", "arrow", "-wait", "50",
-                               "-defer", "100", "-noxrecord", "-ncache", "0"])
+                               "-nopw", "-forever", "-shared", "-cursor", "arrow", "-wait", "5",
+                               "-defer", "0", "-noxrecord", "-ncache", "0"])
         cmd = vs.build_cmd(":1", (1, 2, 3, 4), 5901, ["-rfbauth", "p"], "1.2.3.4", ["-v"])
         self.assertEqual(cmd[7:11], ["-rfbauth", "p", "-allow", "1.2.3.4"])
         self.assertEqual(cmd[-1], "-v")
+
+    def test_build_cmd_gentle_and_xdamage(self):
+        cmd = vs.build_cmd(":0", (1, 2, 3, 4), 5900, [], None, [], gentle=True)
+        i = cmd.index("-wait")
+        self.assertEqual(cmd[i:i + 4], ["-wait", "50", "-defer", "100"])
+        cmd = vs.build_cmd(":0", (1, 2, 3, 4), 5900, [], None, ["-noxdamage"], scale="2", noxdamage=True)
+        i = cmd.index("-scale")
+        self.assertEqual(cmd[i:i + 3], ["-scale", "2", "-noxdamage"])
+        self.assertEqual(cmd.count("-noxdamage"), 2)
+        self.assertEqual(cmd[-1], "-noxdamage")
 
     def test_build_cmd_scale(self):
         cmd = vs.build_cmd(":0", (632, 840, 0, 0), 5900, ["-nopw"], None, [], scale="2:nb")
@@ -171,17 +181,36 @@ class MainEndToEnd(unittest.TestCase):
         self.assertEqual(out, "Sharing HDMI-1 (632x840+2560+40) of :7 on port 5901\n")
         self.assertEqual(self.argv(), ["-display", ":7", "-clip", "632x840+2560+40", "-rfbport", "5901",
                                        "-nopw", "-allow", "10.0.0.2", "-forever", "-shared", "-cursor",
-                                       "arrow", "-wait", "50", "-defer", "100", "-noxrecord", "-ncache", "0", "-v"])
+                                       "arrow", "-wait", "5", "-defer", "0", "-noxrecord", "-ncache", "0", "-v"])
 
     def test_zoom(self):
         rc, out, err = self.run_main("-n", "-s", "632x840", "-z", "2", "--sharp")
         self.assertEqual((rc, err), (0, ""))
-        self.assertIn("scaled 2 sharp -> 1264x1680\n", out)
+        self.assertIn("scaled 2 sharp -> 1264x1680 (no damage hints)\n", out)
         a = self.argv()
         self.assertEqual(a[a.index("-clip"):a.index("-clip") + 4], ["-clip", "632x840+0+0", "-scale", "2:nb"])
         rc, out, _ = self.run_main("-n", "-s", "632x840", "-z", "4/3")
-        self.assertIn("scaled 4/3 -> 843x1120\n", out)
+        self.assertIn("scaled 4/3 -> 843x1120 (no damage hints)\n", out)
         self.assertEqual(self.argv()[self.argv().index("-scale") + 1], "4/3")
+
+    def test_gentle(self):
+        self.run_main("-n", "--gentle")
+        a = self.argv()
+        self.assertEqual(a[a.index("-wait"):a.index("-wait") + 4], ["-wait", "50", "-defer", "100"])
+
+    def test_zoom_noxdamage(self):
+        rc, out, err = self.run_main("-n", "-s", "632x840", "-z", "2")
+        self.assertEqual((rc, err), (0, ""))
+        a = self.argv()
+        self.assertEqual(a[a.index("-scale"):a.index("-scale") + 3], ["-scale", "2", "-noxdamage"])
+        self.assertIn("scaled 2 -> 1264x1680 (no damage hints)\n", out)
+        rc, out, _ = self.run_main("-n", "-s", "632x840", "-z", "2", "--xdamage")
+        self.assertNotIn("-noxdamage", self.argv())
+        self.assertNotIn("damage", out)
+        self.run_main("-n", "-z", "1")
+        self.assertNotIn("-noxdamage", self.argv())
+        self.run_main("-n", "-z", "2", "--", "-xdamage")
+        self.assertEqual(self.argv()[-1], "-xdamage")
 
     def test_zoom_errors(self):
         for args, msg in ((("-z", "0"), "-z must look like"), (("-z", "abc"), "-z must look like"),
