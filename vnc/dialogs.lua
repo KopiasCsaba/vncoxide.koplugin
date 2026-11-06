@@ -331,7 +331,7 @@ end
 --- The benchmark engine; tests replace it with a stand-in (nil means @{vnc.benchmark}).
 Dialogs.Benchmark = nil
 
-local BENCH_INTRO = _("Tries 11 picture-setting combinations on this connection, a few seconds each.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end.")
+local BENCH_INTRO = _("Tries 11 picture-setting combinations on this connection, twice each, in opposite order, a few seconds per try.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end.")
 local BENCH_PHASES = {
     connect = _("connecting"),
     full = _("full screen"),
@@ -355,7 +355,7 @@ function Dialogs.benchmark_table(results)
         if is_scored(r) then scored = true break end
     end
     if scored then
-        lines[1] = _("Fastest first: changed pixels per second in small pieces, time per piece, time per full screen and its size, decoding and drawing included.")
+        lines[1] = _("Fastest first: changed pixels per second in small pieces, time per piece, time per full screen and its size, decoding and drawing included. Medians over two runs.")
     else
         lines[1] = _("No combination could be scored: every one failed, for the reasons below.")
     end
@@ -467,8 +467,9 @@ function Dialogs.picture_benchmark(plugin, profile, on_back)
             profile = copy,
             canvas = plugin:benchmark_canvas(),
             sessions = plugin.sessions,
-            on_progress = function(i, n, label, phase)
-                progress:setTitle(T("%1/%2: %3 — %4", i, n, label, BENCH_PHASES[phase] or phase))
+            on_progress = function(i, n, label, phase, pass, passes)
+                progress:setTitle(T("%1/%2 (pass %3/%4): %5 — %6", i, n, pass, passes, label,
+                    BENCH_PHASES[phase] or phase))
             end,
             on_done = function(results, connect_error)
                 UIManager:close(progress)

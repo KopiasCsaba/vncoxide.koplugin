@@ -165,7 +165,7 @@ reloaded one.
 Picture benchmark. vnc/benchmark.lua measures combinations (see its header); the UI is
 Dialogs.picture_benchmark, behind "Find fastest picture settings" in the per-connection dialog:
 intro ConfirmBox (Start/Cancel) -> a non-dismissable ButtonDialog whose title shows
-"<i>/<n>: <label> — <phase>" (setTitle on every on_progress) with Cancel (bench:cancel()) ->
+"<run>/<total> (pass <p>/2): <label> — <phase>" (setTitle on every on_progress) with Cancel (bench:cancel()) ->
 Dialogs.benchmark_results, a monospace TextViewer (Dialogs.benchmark_table: label line, figures
 indented below so narrow screens do not wrap columns). Apply best copies the stored profile,
 replaces only the four picture fields with the top scored row's and calls VNC:save_profile (a full
@@ -183,7 +183,14 @@ skew the scores, and re-attaches exactly those, with their app, when the run fin
 cancelled or errors (attach requests the full update that resyncs them). A combination that fails
 before its handshake completes (refused, timeout, auth/security, Wi-Fi) ends the whole run:
 on_done(results, connect_error), and the UI shows "Could not connect: <reason>" instead of the
-table. Failures after connecting (rejected format, mid-phase error) fail only that combination.
+table. Failures after connecting (rejected format, mid-phase error) fail only that run.
+Two passes (Benchmark.PASSES): the list in order, then reversed, each run reconnecting; on the
+Era (1264x1680) per-request overhead varied 0-90 ms between combinations with no pattern and the
+last ones scored best, so one pass let order and Wi-Fi jitter decide the ranking. Each
+combination's samples from both passes are pooled and scored by medians (Benchmark._score, pure,
+unit-tested); a failure in either pass makes the row failed, "failed in pass N: <reason>" from the
+first failure. Result rows ("%.1f Mpx/s · %d ms/tile · full %d ms · %d KB") fit one line of the
+monospace TextViewer at 1264x1680 (ui_smoke measures the worst case).
 The benchmark session polls every 5 ms while a request is in flight (see the vnc/benchmark.lua
 header). It needs no changing content: every request is non-incremental (3 whole-screen ones, the first a
 warm-up, then the 16 tiles of a 4x4 grid, one at a time, the held incremental request settled by

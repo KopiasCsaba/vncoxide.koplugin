@@ -273,8 +273,9 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   long-press a row for that setting's explanation.
 - **Find fastest picture settings** (in a connection's **Manage connections…** dialog) measures
   the picture settings instead of guessing: it tries 11 combinations of colour depth, Tight,
-  compression level and JPEG quality on that connection, a few seconds each, each on its own
-  extra connection. Open connections stay connected but are paused for the run (they stop
+  compression level and JPEG quality on that connection, twice each, in opposite order (the
+  second pass runs the list backwards, so no combination gains from running last), a few
+  seconds per try, each try on its own extra connection. Open connections stay connected but are paused for the run (they stop
   receiving screen updates, so they do not slow the measurement) and catch up when it ends. If a
   combination cannot connect at all (refused, timed out, wrong password, no Wi-Fi), the run stops
   at once and shows "Could not connect: <reason>" instead of a table of failures; a combination
@@ -284,7 +285,9 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   then in 16 pieces (a 4×4 grid), each forced to be sent again even though nothing changed, and
   decodes and draws every piece at your current zoom and scaling. It is ranked by the pixels per
   second of the small pieces, the closest to everyday updates; the results also show the time per
-  piece, the time for a full screen and the kilobytes a full screen took. **Apply best** saves
+  piece, the time for a full screen and the kilobytes a full screen took. Every figure but the
+  kilobytes is a median over both tries, so one slow Wi-Fi round trip does not decide the
+  ranking; a combination that fails in either try is listed as failed ("failed in pass N: ..."). **Apply best** saves
   the winner's four picture settings to the connection (nothing else; it takes effect on the next
   connection); **Cancel** or **Close** save nothing.
 - **Sharp scaling (faster)**: a switch in the viewer menu, next to **Page buttons send**. It scales

@@ -1766,21 +1766,21 @@ local function main()
                     and r.full_bytes and r.full_bytes > 0) then
                 return nil, "missing figures for " .. l
             end
-            -- the warm-up full frame is not counted: 2 of the 3
-            if r.full.n ~= 2 or r.full.px ~= 2 * 200 * 150 then
+            -- two passes; the warm-up full frame of each is not counted: 2 of the 3, twice
+            if r.full.n ~= 4 or r.full.px ~= 4 * 200 * 150 then
                 return nil, string.format("%s: full phase %d frames, %d px", l, r.full.n, r.full.px)
             end
-            if r.tiles.n ~= 16 or r.tiles.px ~= 200 * 150 then
+            if r.tiles.n ~= 32 or r.tiles.px ~= 2 * 200 * 150 then
                 return nil, string.format("%s: tiles phase %d tiles, %d px", l, r.tiles.n, r.tiles.px)
             end
             if not (r.full.draw_ms > 0 and r.tiles.draw_ms > 0) then return nil, l .. ": draw time not counted" end
             if not (r.full.bytes > 0 and r.tiles.bytes > 0 and r.full.decode_ms >= 0 and r.tiles.decode_ms >= 0) then
                 return nil, l .. ": bytes / decode time missing"
             end
-            if math.abs(r.tile_px_per_s - r.tiles.px / r.tiles.elapsed) > 1e-6
-                    or math.abs(r.tile_ms - r.tiles.elapsed * 1000 / 16) > 1e-6
-                    or math.abs(r.full_ms - r.full.elapsed * 1000 / 2) > 1e-6 then
-                return nil, l .. ": scores do not follow from the phase figures"
+            -- medians (benchmark_scoring_medians) lie within the samples' range
+            if not (r.tile_ms > 0 and r.full_ms > 0 and r.tile_ms <= r.tiles.elapsed * 1000
+                    and r.full_ms <= r.full.elapsed * 1000) then
+                return nil, l .. ": scores do not follow from the samples"
             end
         end
         for i = 2, #results do
@@ -1796,7 +1796,7 @@ local function main()
         end
         -- the requests, per connection
         local conns = requests_per_connection(log)
-        if #conns ~= 3 then return nil, "expected 3 connections, got " .. #conns end
+        if #conns ~= 6 then return nil, "expected 6 connections (3 combinations, 2 passes), got " .. #conns end
         local want = { "0 0,0 200x150", "0 0,0 200x150", "0 0,0 200x150" }
         local xs, ys = { 0, 50, 100, 150, 200 }, { 0, 37, 75, 112, 150 }
         for r = 1, 4 do
@@ -1817,9 +1817,9 @@ local function main()
             if d.bb ~= bb1 then return nil, "the off-screen buffer must be allocated once per run" end
             if d.dither ~= true then return nil, "the canvas dither flag must be passed to draw_to" end
         end
-        if #draws < 3 * (3 + 16) then return nil, "every received update must be drawn, got " .. #draws end
+        if #draws < 6 * (3 + 16) then return nil, "every received update must be drawn, got " .. #draws end
         local p = table.concat(progress, ",")
-        if not p:find("1/3 full", 1, true) or not p:find("3/3 tiles", 1, true) or p:find("live", 1, true) then
+        if not p:find("1/6 full", 1, true) or not p:find("6/6 tiles", 1, true) or p:find("live", 1, true) then
             return nil, "progress " .. p
         end
         return true
@@ -1850,13 +1850,14 @@ local function main()
         end
         if not (r1.full_ms and r1.full_ms >= 0 and r1.tile_px_per_s > 0) then return nil, "figures missing" end
         -- the Tight mock answers every tile with the whole screen: only the requested area counts
-        if r1.tiles.px ~= 200 * 150 or r1.full.px ~= 2 * 200 * 150 then
+        if r1.tiles.px ~= 2 * 200 * 150 or r1.full.px ~= 4 * 200 * 150 then
             return nil, string.format("pixels not capped at the requested areas: tiles %d, full %d", r1.tiles.px, r1.full.px)
         end
         if r2.ok ~= false or type(r2.error) ~= "string" or r2.error == "" then
             return nil, "the refused combination must fail with a reason"
         end
-        if log_count(log, "AUTH ok") ~= 2 then return nil, "expected 2 connections" end
+        if log_count(log, "AUTH ok") ~= 4 then return nil, "expected 4 connections (2 passes)" end
+        if r2.error:sub(1, 18) ~= "failed in pass 1: " then return nil, "row error " .. r2.error end
         if run_err ~= nil then return nil, "a failure after connecting must not end the run: " .. tostring(run_err) end
         return true
     end)
@@ -1882,7 +1883,7 @@ local function main()
         if #results ~= 2 then return nil, "expected 2 results, got " .. #results end
         -- the mock resizes on every connection's 5th request
         for _, r in ipairs(results) do
-            if r.ok ~= false or r.error ~= "screen size changed" then
+            if r.ok ~= false or r.error ~= "failed in pass 1: screen size changed" then
                 return nil, r.combination.label .. ": ok=" .. tostring(r.ok) .. " error=" .. tostring(r.error)
             end
         end
@@ -1942,7 +1943,7 @@ local function main()
             elseif type(err) ~= "string" or err == "" then problem = c.what .. ": on_done got no error"
             elseif calls ~= 1 then problem = c.what .. ": on_done called " .. calls .. " times"
             elseif #list ~= 1 then problem = c.what .. ": " .. #list .. " sessions created, the run must stop"
-            elseif #results ~= 1 or results[1].ok or results[1].error ~= err then
+            elseif #results ~= 1 or results[1].ok or results[1].error ~= "failed in pass 1: " .. err then
                 problem = c.what .. ": expected the one failed row carrying the error"
             elseif #env.tasks ~= 0 then problem = c.what .. ": tasks still scheduled" end
             for _, s2 in ipairs(list) do if s2:get_state() ~= "disconnected" then s2:disconnect() end end
@@ -2053,7 +2054,7 @@ local function main()
                 network_mgr = NET,
                 on_done = function(r) results = r end,
             }
-            local method = ({ start = "_progress", connect = "_apply_view", tick = "_score" })[where]
+            local method = ({ start = "_progress", connect = "_apply_view", tick = "_collect" })[where]
             local real, fired = env.Benchmark[method], false
             b[method] = function(...)
                 if not fired then
@@ -2074,7 +2075,7 @@ local function main()
                 problem = where .. ": the other combination must still be scored"
             elseif results[2].ok ~= false or not tostring(results[2].error):find("boom in " .. method, 1, true) then
                 problem = where .. ": failed row error " .. tostring(results[2].error)
-            elseif #list ~= 2 or not torn then problem = where .. ": " .. tostring(why or (#list .. " sessions")) end
+            elseif #list ~= 4 or not torn then problem = where .. ": " .. tostring(why or (#list .. " sessions")) end
             for _, s in ipairs(list) do if s:get_state() ~= "disconnected" then s:disconnect() end end
             if problem then break end
         end
@@ -2179,7 +2180,8 @@ local function main()
             canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
             network_mgr = NET,
             on_progress = function(_, _, _, phase)
-                if phase == "tiles" then
+                -- the first run's (every run reports its own)
+                if phase == "tiles" and not t_report then
                     t_report = Session._now()
                     reqs_at_report = reqs
                 end
@@ -2202,6 +2204,152 @@ local function main()
         if not unchanged then return nil, "a tile was requested in the tick that reported the progress" end
         if not t_tiles or t_tiles <= t_report then return nil, "the first tile must be requested on a later tick" end
         if not (results and results[1] and results[1].ok) then return nil, "run did not score" end
+        return true
+    end)
+
+    -- Scores are medians over every sample of both passes, so one slow outlier (a Wi-Fi hiccup)
+    -- does not move them the way a mean would; the full frame's bytes stay a mean.
+    check("benchmark_scoring_medians", function()
+        local Benchmark = require("vnc/benchmark")
+        if Benchmark.PASSES ~= 2 then return nil, "PASSES " .. tostring(Benchmark.PASSES) end
+        local function smp(px, elapsed, bytes)
+            return { px = px, elapsed = elapsed, bytes = bytes or 10, decode = 0.001, draw = 0.002 }
+        end
+        local combo = Benchmark.COMBINATIONS[1]
+        -- tiles: elapsed median 0.011 (the mean, 0.1086, is skewed by the 0.5 s outlier);
+        -- px/s per sample 10000, 8333, 9091, 200, 20000: median 9091 = 100 / 0.011
+        local tiles = { smp(100, 0.010), smp(100, 0.012), smp(100, 0.011), smp(100, 0.500), smp(200, 0.010) }
+        -- full frames (counted ones): an even count, median (0.110 + 0.120) / 2
+        local full = { smp(30000, 0.100, 1000), smp(30000, 0.120, 3000), smp(30000, 0.110, 2000),
+                       smp(30000, 2.000, 2000) }
+        local r = Benchmark._score(combo, full, tiles)
+        local function near(a, b) return math.abs(a - b) < 1e-6 * math.max(1, math.abs(b)) end
+        if not (r.ok == true and r.combination == combo) then return nil, "row not ok" end
+        if not near(r.tile_ms, 11) then return nil, "tile_ms " .. r.tile_ms end
+        if not near(r.tile_px_per_s, 100 / 0.011) then return nil, "tile_px_per_s " .. r.tile_px_per_s end
+        if not near(r.full_ms, 115) then return nil, "full_ms " .. r.full_ms end
+        if not near(r.full_px_per_s, 30000 / 0.115) then return nil, "full_px_per_s " .. r.full_px_per_s end
+        if not near(r.full_bytes, 2000) then return nil, "full_bytes (mean) " .. r.full_bytes end
+        if not (r.full.n == 4 and r.full.px == 120000 and r.full.bytes == 8000 and near(r.full.elapsed, 2.33)) then
+            return nil, "full totals"
+        end
+        if not (r.tiles.n == 5 and r.tiles.px == 600 and near(r.tiles.elapsed, 0.543) and near(r.tiles.draw_ms, 10)
+                and near(r.tiles.decode_ms, 5)) then
+            return nil, "tiles totals"
+        end
+        return true
+    end)
+
+    -- Two passes: every combination in list order, then in reverse order, each on its own
+    -- connection; the progress carries the run, the total and the pass.
+    check("benchmark_two_passes_opposite_order", function()
+        local pid, port = start_multi{ name = "bench_passes" }
+        local env = bench_env()
+        local list, untrack = track_sessions()
+        local results, progress = nil, {}
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_progress = function(i, n, label, phase, pass, passes)
+                if phase == "connect" then
+                    progress[#progress + 1] = string.format("%s/%s %s/%s %s", i, n, tostring(pass), tostring(passes), label)
+                end
+            end,
+            on_done = function(r) results = r end,
+        }
+        b:start()
+        local finished = env.run(function() return results ~= nil end)
+        untrack()
+        env.restore()
+        stop_mock(pid)
+        if not finished then return nil, "benchmark never finished" end
+        local depths = {}
+        for i, s2 in ipairs(list) do depths[i] = s2.profile.color_depth end
+        depths = table.concat(depths, ",")
+        if depths ~= "24,8,8,24" then return nil, "session order " .. depths end
+        local p = table.concat(progress, ";")
+        local want = "1/4 1/2 24-bit, Tight off;2/4 1/2 8-bit, Tight off;3/4 2/2 8-bit, Tight off;4/4 2/2 24-bit, Tight off"
+        if p ~= want then return nil, "progress " .. p end
+        if #results ~= 2 then return nil, "expected one row per combination, got " .. #results end
+        for _, r in ipairs(results) do
+            if not r.ok or r.tiles.n ~= 32 or r.full.n ~= 4 then
+                return nil, r.combination.label .. ": not scored over both passes"
+            end
+        end
+        local torn, why = all_torn_down(list)
+        if not torn then return nil, why end
+        return true
+    end)
+
+    -- A combination that fails only in pass 2 is a failed row ("failed in pass 2: ..."), ranked
+    -- after the scored one; the run goes on and on_done gets no connect error.
+    check("benchmark_failure_in_pass_2", function()
+        local pid, port = start_multi{ name = "bench_pass2" }
+        local env = bench_env()
+        local list, untrack = track_sessions()
+        local results, run_err, arm = nil, nil, false
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_progress = function(_, _, label, phase, pass)
+                if phase == "connect" then arm = (pass == 2 and label == "24-bit, Tight off") end
+            end,
+            on_done = function(r, e) results, run_err = r, e end,
+        }
+        local real = env.Benchmark._apply_view
+        b._apply_view = function(...)
+            if arm then arm = false; error("boom in pass 2") end
+            return real(...)
+        end
+        b:start()
+        local finished = env.run(function() return results ~= nil end)
+        untrack()
+        env.restore()
+        stop_mock(pid)
+        if not finished then return nil, "benchmark never finished" end
+        if run_err ~= nil then return nil, "connect error " .. tostring(run_err) end
+        if #results ~= 2 or #list ~= 4 then return nil, string.format("%d rows, %d sessions", #results, #list) end
+        local r1, r2 = results[1], results[2]
+        if not (r1.ok and r1.combination.label == "8-bit, Tight off") then return nil, "first row must be the scored one" end
+        if r2.ok ~= false or r2.combination.label ~= "24-bit, Tight off"
+                or not tostring(r2.error):find("^failed in pass 2: .*boom in pass 2") then
+            return nil, "failed row: " .. tostring(r2.error)
+        end
+        local torn, why = all_torn_down(list)
+        if not torn then return nil, why end
+        return true
+    end)
+
+    -- cancel() during pass 2 stops cleanly: nothing connected, attached or scheduled, no on_done.
+    check("benchmark_cancel_during_pass_2", function()
+        local pid, port = start_multi{ name = "bench_cancel2" }
+        local env = bench_env()
+        local list, untrack = track_sessions()
+        local done_called, b = false, nil
+        b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_progress = function(_, _, _, phase, pass) if pass == 2 and phase == "tiles" then b:cancel() end end,
+            on_done = function() done_called = true end,
+        }
+        b:start()
+        env.run(nil, 4000)
+        local left = #env.tasks
+        untrack()
+        env.restore()
+        stop_mock(pid)
+        local torn, why = all_torn_down(list)
+        if #list ~= 3 then return nil, #list .. " sessions created (want 3: cancelled in pass 2's first run)" end
+        if not torn then return nil, why end
+        if left ~= 0 then return nil, "tasks still scheduled" end
+        if done_called then return nil, "on_done called" end
+        if b.session or b.bb then return nil, "session or buffer kept" end
         return true
     end)
 

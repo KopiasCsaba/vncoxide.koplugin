@@ -2506,7 +2506,7 @@ end)
 -- ---------------------------------------------------------------- find fastest picture settings
 
 local BENCH_BUTTON = "Find fastest picture settings"
-local BENCH_INTRO = "Tries 11 picture-setting combinations on this connection, a few seconds each.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end."
+local BENCH_INTRO = "Tries 11 picture-setting combinations on this connection, twice each, in opposite order, a few seconds per try.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end."
 
 --- A stand-in for vnc/benchmark: records what the UI asks of it; the test drives the callbacks.
 local FakeBench = { instances = {} }
@@ -2585,13 +2585,13 @@ check("bench_start_shows_progress_and_cancel_returns", function()
     assert_true(o.sessions == plugin.sessions, "the plugin's sessions are handed over, to be detached for the run")
     assert_true(find_button(progress, "Cancel"), "progress has Cancel")
     assert_true(progress.dismissable == false, "the progress dialog is not dismissed by a stray tap")
-    o.on_progress(3, 11, "16-bit, Tight off", "full")
+    o.on_progress(3, 22, "16-bit, Tight off", "full", 1, 2)
     assert_true(top() == progress, "progress stays on top")
-    assert_true(progress.title == "3/11: 16-bit, Tight off — full screen", "progress text: " .. tostring(progress.title))
-    o.on_progress(4, 11, "16-bit, Tight, compr. 1", "connect")
-    assert_true(progress.title == "4/11: 16-bit, Tight, compr. 1 — connecting", "progress text: " .. tostring(progress.title))
-    o.on_progress(4, 11, "16-bit, Tight, compr. 1", "tiles")
-    assert_true(progress.title == "4/11: 16-bit, Tight, compr. 1 — small pieces", "progress text: " .. tostring(progress.title))
+    assert_true(progress.title == "3/22 (pass 1/2): 16-bit, Tight off — full screen", "progress text: " .. tostring(progress.title))
+    o.on_progress(4, 22, "16-bit, Tight, compr. 1", "connect", 1, 2)
+    assert_true(progress.title == "4/22 (pass 1/2): 16-bit, Tight, compr. 1 — connecting", "progress text: " .. tostring(progress.title))
+    o.on_progress(15, 22, "16-bit, Tight, compr. 1", "tiles", 2, 2)
+    assert_true(progress.title == "15/22 (pass 2/2): 16-bit, Tight, compr. 1 — small pieces", "progress text: " .. tostring(progress.title))
     find_button(progress, "Cancel").callback()
     assert_true(bench.cancelled, "Cancel cancels the benchmark")
     expect_top(is_actions, "the actions dialog after Cancel")
@@ -2650,8 +2650,9 @@ check("bench_results_table_and_apply_best", function()
     local viewer = top()
     assert_true(viewer.title == "Picture benchmark", "results viewer: " .. stack_desc())
     assert_true(viewer.monospace_font == true, "monospace table")
-    for _, w in ipairs(stack()) do assert_true(not (w.title and w.title:find("/11:", 1, true)), "progress closed") end
+    for _, w in ipairs(stack()) do assert_true(not (w.title and w.title:find("(pass ", 1, true)), "progress closed") end
     local text = viewer.text
+    assert_true(text:find("decoding and drawing included. Medians over two runs.\n", 1, true), "results intro:\n" .. text)
     local p1 = text:find("1. 8-bit, Tight, compr. 2", 1, true)
     local p2 = text:find("2. 24-bit, Tight off", 1, true)
     local p3 = text:find("16-bit, Tight off", 1, true)
