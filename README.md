@@ -198,6 +198,7 @@ return {
         ["color_depth"] = 24,              -- 24, 16 or 8: fewer bits = less bandwidth, fewer colours
         ["jpeg_quality"] = false,          -- Tight JPEG quality 0..9 (false = server default)
         ["compress_level"] = false,        -- Tight compression level 0..9 (false = server default)
+        ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
     },
     ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface
         ["ip"] = "0.0.0.0",
@@ -231,6 +232,10 @@ more than one profile for `autoconnect`, the first keeps the flag and the rest a
   server's default) trade picture quality and CPU for bytes. JPEG is only used at 24-bit colour.
   All three **take effect on the next connection** — reconnect to apply a change. Long-press an
   entry for its help.
+- **Page buttons**: the menu's **Page buttons send** chooses what a device's page-turn buttons do.
+  The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
+  scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also
+  works on a window that is not focused. It applies immediately, no reconnect needed.
 
 ## How this was written
 

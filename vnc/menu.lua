@@ -261,6 +261,31 @@ function MenuBuilder.open(app)
     item_table[#item_table + 1] = level_entry(_("Compression level (next connection)"), "compress_level",
         NEXT_CONNECTION)
 
+    -- ---- page buttons: read on every key press, so this applies at once
+    local function set_page_buttons(value)
+        return action(function()
+            settings.page_buttons = value
+            plugin.settings:flush()
+        end)
+    end
+    item_table[#item_table + 1] = {
+        text = _("Page buttons send"),
+        mandatory = settings.page_buttons == "wheel" and _("Mouse wheel") or _("Page Up/Down keys"),
+        help_text = _("Page Up/Down keys go to the focused window on the remote. The mouse wheel scrolls whatever is under the last tap, even in a window that is not focused."),
+        sub_item_table = {
+            {
+                text = _("Page Up/Down keys"),
+                mandatory = settings.page_buttons ~= "wheel" and "✓" or nil,
+                callback = set_page_buttons("keys"),
+            },
+            {
+                text = _("Mouse wheel"),
+                mandatory = settings.page_buttons == "wheel" and "✓" or nil,
+                callback = set_page_buttons("wheel"),
+            },
+        },
+    }
+
     -- ---- keys the on-screen keyboard does not have
     local function send(keysym)
         return action(function()

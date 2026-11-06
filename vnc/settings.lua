@@ -36,6 +36,7 @@ Settings.DEFAULTS = {
     color_depth = 24,                -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
     jpeg_quality = false,            -- Tight JPEG quality 0..9, false = server default
     compress_level = false,          -- Tight zlib level 0..9, false = server default
+    page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
 }
 
 --- Settings whose value is not just "the type of the default": each maps a raw value to a usable
@@ -53,6 +54,10 @@ local SETTING_CHECKS = {
     end,
     jpeg_quality = level_or_off,
     compress_level = level_or_off,
+    page_buttons = function(value)
+        if value == "keys" or value == "wheel" then return value end
+        return Settings.DEFAULTS.page_buttons
+    end,
 }
 
 --- VNC server defaults (the `server` sub-table). See @{vnc.server}.

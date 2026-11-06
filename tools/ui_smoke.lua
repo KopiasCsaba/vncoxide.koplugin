@@ -1457,6 +1457,60 @@ check("text_input_reaches_the_remote", function()
     if not ok then error(err) end
 end)
 
+check("page_buttons_scroll_the_wheel_in_wheel_mode", function()
+    local Key = require("device/key")
+    local app, remote, sent = new_app()
+    app.settings.page_buttons = "wheel"
+    local function masks()
+        local out = {}
+        for _, e in ipairs(sent.pointer) do out[#out + 1] = e.mask end
+        return table.concat(out, ",")
+    end
+
+    -- (a) no tap yet: the remote centre, wheel down, and no key events
+    local cx, cy = math.floor(remote.w / 2), math.floor(remote.h / 2)
+    app:onKeyPress(Key:new("LPgFwd", {}))
+    assert_true(masks() == "16,0,16,0,16,0", "forward must scroll 3 notches down, got " .. masks())
+    for _, e in ipairs(sent.pointer) do
+        assert_true(e.x == cx and e.y == cy, "no tap yet: the wheel must go to the remote centre")
+    end
+    assert_true(#sent.key == 0, "wheel mode must not send keys")
+
+    -- (c) auto-repeat scrolls again; release sends nothing but is consumed
+    sent.pointer = {}
+    app:onKeyRepeat(Key:new("LPgFwd", {}))
+    assert_true(#sent.pointer == 6, "a repeat must scroll another 3 notches")
+    sent.pointer = {}
+    assert_true(app:onKeyRelease(Key:new("LPgFwd", {})) == true, "release must be consumed")
+    assert_true(#sent.pointer == 0 and #sent.key == 0, "release must send nothing")
+
+    -- (b) after a tap the wheel goes under the last pointer position
+    local c = app:canvas_geom()
+    app:onTap(nil, { pos = { x = c.x + 50, y = c.y + 40 } })
+    local rx, ry = app:_to_remote(c.x + 50, c.y + 40)
+    sent.pointer = {}
+    app:onKeyPress(Key:new("RPgBack", {}))
+    assert_true(masks() == "8,0,8,0,8,0", "back must scroll up, got " .. masks())
+    for _, e in ipairs(sent.pointer) do
+        assert_true(e.x == rx and e.y == ry, "the wheel must go to the last tapped position")
+    end
+end)
+
+check("page_buttons_send_keys_in_keys_mode", function()
+    local Key = require("device/key")
+    local app, _, sent = new_app()
+    app.settings.page_buttons = "keys"
+    app:onKeyPress(Key:new("LPgFwd", {}))
+    app:onKeyRelease(Key:new("LPgFwd", {}))
+    assert_true(#sent.pointer == 0, "keys mode must not move the wheel")
+    assert_true(#sent.key == 2 and sent.key[1].keysym == 0xFF56, "keys mode must send Page_Down")
+end)
+
+check("page_buttons_setting_validates", function()
+    local Settings = require("vnc/settings")
+    assert_true(Settings.DEFAULTS.page_buttons == "keys", "default must be keys")
+end)
+
 check("keys_forward_to_the_remote", function()
     local Key = require("device/key")
     local app, remote, sent = new_app()

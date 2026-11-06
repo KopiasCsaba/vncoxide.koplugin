@@ -436,7 +436,11 @@ function ViewerApp:_to_remote(px, py)
     return self.remote:screen_to_remote(px - c.x, py - c.y)
 end
 
+--- Wheel notches sent per page-button press (wheel mode).
+ViewerApp.WHEEL_NOTCHES = 3
+
 function ViewerApp:send_pointer(x, y, mask)
+    self._pointer_x, self._pointer_y = x, y
     self.session:send_pointer(x, y, mask)
 end
 
@@ -616,6 +620,34 @@ function ViewerApp:_back_leaves(key)
     return key.key == "Back" and not Device:hasKeyboard()
 end
 
+local PAGE_DIRECTION = { LPgFwd = 1, RPgFwd = 1, LPgBack = -1, RPgBack = -1 }
+
+--- 1 for a page-forward key, -1 for page-back, nil for any other key.
+function ViewerApp:_page_direction(key)
+    return PAGE_DIRECTION[key.key]
+end
+
+--- The page key's direction when page buttons are set to scroll the wheel, else nil.
+function ViewerApp:_wheel_direction(key)
+    if self.settings.page_buttons ~= "wheel" then return nil end
+    return self:_page_direction(key)
+end
+
+--- Scrolls the remote wheel (1 = down, -1 = up) at the last pointer position, or at the centre
+--- of the remote screen when no pointer event has been sent yet.
+function ViewerApp:scroll_wheel(direction)
+    local x, y = self._pointer_x, self._pointer_y
+    if not x then
+        local w, h = self.remote:get_size()
+        x, y = math.floor(w / 2), math.floor(h / 2)
+    end
+    local mask = direction > 0 and 16 or 8
+    for _ = 1, ViewerApp.WHEEL_NOTCHES do
+        self:send_pointer(x, y, mask)
+        self:send_pointer(x, y, 0)
+    end
+end
+
 function ViewerApp:onKeyPress(key)
     self:_ensure_text_input()
     if self:_is_menu_key(key) then
@@ -624,6 +656,11 @@ function ViewerApp:onKeyPress(key)
     end
     if self:_back_leaves(key) then
         self:on_back()
+        return true
+    end
+    local wheel = self:_wheel_direction(key)
+    if wheel then
+        self:scroll_wheel(wheel)
         return true
     end
     local keysym = Keysyms.special[key.key]
@@ -637,6 +674,7 @@ end
 
 function ViewerApp:onKeyRelease(key)
     if self:_is_menu_key(key) or self:_back_leaves(key) then return true end
+    if self:_wheel_direction(key) then return true end
     local keysym = Keysyms.special[key.key]
     if keysym then
         self:send_key(keysym, false)
@@ -648,6 +686,11 @@ end
 --- Auto-repeat is just another key press as far as the remote is concerned.
 function ViewerApp:onKeyRepeat(key)
     if self:_is_menu_key(key) or self:_back_leaves(key) then return true end
+    local wheel = self:_wheel_direction(key)
+    if wheel then
+        self:scroll_wheel(wheel)
+        return true
+    end
     local keysym = Keysyms.special[key.key]
     if keysym then
         self:send_key(keysym, true)
