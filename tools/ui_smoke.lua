@@ -2657,8 +2657,8 @@ check("bench_results_table_and_apply_best", function()
     local p3 = text:find("16-bit, Tight off", 1, true)
     local p4 = text:find("24-bit, Tight, compr. 2, JPEG 4", 1, true)
     assert_true(p1 and p2 and p3 and p4 and p1 < p2 and p2 < p3 and p3 < p4, "rows in order:\n" .. text)
-    for _, want in ipairs{ "3.5 Mpx/s small  12 ms/tile  full 813 ms  200 KB/full",
-                           "1.0 Mpx/s small  40 ms/tile  full 95 ms  1024 KB/full",
+    for _, want in ipairs{ "3.5 Mpx/s · 12 ms/tile · full 813 ms · 200 KB",
+                           "1.0 Mpx/s · 40 ms/tile · full 95 ms · 1024 KB",
                            "failed: no update within 15 s", "failed: server refused the format" } do
         assert_true(text:find(want, 1, true), "missing " .. want .. " in:\n" .. text)
     end
@@ -2681,6 +2681,38 @@ check("bench_results_table_and_apply_best", function()
     expect_top(is_actions, "the actions dialog under the message")
     for _, w in ipairs(stack()) do assert_true(w ~= viewer, "results viewer closed") end
     require("vnc/dialogs").Benchmark = nil
+end)
+
+check("bench_results_rows_fit_one_line_on_era_portrait", function()
+    -- the PocketBook Era's 1264x1680 portrait frame (KOReader scales fonts by the screen size)
+    local saved_bb = Screen.bb
+    local era = require("ffi/blitbuffer").new(1264, 1680, saved_bb:getType())
+    Screen.bb = era
+    local ok, err = pcall(function()
+        local Dialogs = require("vnc/dialogs")
+        local worst = { combination = bench_combo(24, true, 2, 4, "24-bit, Tight, compr. 2, JPEG 4"), ok = true,
+            tile_px_per_s = 10e6, full_px_per_s = 1e6, tile_ms = 999, full_ms = 9999, full_bytes = 9999 * 1024 }
+        local results = { worst, BENCH_RESULTS[1], BENCH_RESULTS[2] }
+        local text = Dialogs.benchmark_table(results)
+        assert_true(text:find("10.0 Mpx/s · 999 ms/tile · full 9999 ms · 9999 KB", 1, true), "worst case row:\n" .. text)
+        local viewer = Dialogs.benchmark_results(plugin, "good", results, function() end)
+        local box = viewer.box_widget
+        assert_true(box and box.face and box.width > 0, "the viewer's text box")
+        local RenderText = require("ui/rendertext")
+        local n = 0
+        for line in (text .. "\n"):gmatch("(.-)\n") do
+            if line:find("Mpx/s", 1, true) then
+                n = n + 1
+                local w = RenderText:sizeUtf8Text(0, box.width, box.face, line).x
+                assert_true(w < box.width, string.format("%q is %d px wide, the text area %d px", line, w, box.width))
+            end
+        end
+        assert_true(n == 3, "figures lines measured: " .. n)
+        viewer:free()
+    end)
+    Screen.bb = saved_bb
+    era:free()
+    assert_true(ok, err)
 end)
 
 check("bench_results_close_returns_without_saving", function()

@@ -355,7 +355,7 @@ function Dialogs.benchmark_table(results)
         if is_scored(r) then scored = true break end
     end
     if scored then
-        lines[1] = _("Fastest first: screen pixels per second reaching this screen in small pieces (and the time per piece and per full screen), decoding and drawing included.")
+        lines[1] = _("Fastest first: changed pixels per second in small pieces, time per piece, time per full screen and its size, decoding and drawing included.")
     else
         lines[1] = _("No combination could be scored: every one failed, for the reasons below.")
     end
@@ -372,7 +372,7 @@ function Dialogs.benchmark_table(results)
         if not r.ok then
             figures = T(_("failed: %1"), tostring(r.error))
         else
-            figures = string.format("%.1f Mpx/s small  %d ms/tile  full %d ms  %d KB/full",
+            figures = string.format("%.1f Mpx/s · %d ms/tile · full %d ms · %d KB",
                 r.tile_px_per_s / 1e6, math.floor(r.tile_ms + 0.5), math.floor(r.full_ms + 0.5),
                 math.floor(r.full_bytes / 1024 + 0.5))
         end
