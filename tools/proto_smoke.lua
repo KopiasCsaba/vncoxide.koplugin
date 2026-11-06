@@ -1567,6 +1567,267 @@ local function main()
         return done(true)
     end)
 
+    -- 18-22. The picture-settings benchmark (vnc/benchmark.lua) against the real mock, on a fake
+    -- clock: a stand-in UIManager runs scheduled tasks in time order and advances the clock to
+    -- each task's due time, sleeping a little real time per task so the mock can answer.
+    local function bench_env()
+        local Session = load_session()
+        local UIManager = require("ui/uimanager")
+        local Benchmark = require("vnc/benchmark")
+        local real_now, real_si, real_un = Session._now, UIManager.scheduleIn, UIManager.unschedule
+        local clock, tasks = 100, {}
+        Session._now = function() return clock end
+        UIManager.scheduleIn = function(_, delay, fn, ...)
+            tasks[#tasks + 1] = { t = clock + delay, fn = fn, args = { ... }, n = select("#", ...) }
+        end
+        UIManager.unschedule = function(_, fn)
+            for i = #tasks, 1, -1 do
+                if tasks[i].fn == fn then table.remove(tasks, i) end
+            end
+        end
+        local env = { Benchmark = Benchmark, tasks = tasks }
+        -- Runs tasks until `stop()` or no task is left (or a step cap); true when stop() held.
+        function env.run(stop, max_steps)
+            for _ = 1, max_steps or 20000 do
+                if stop and stop() then return true end
+                if #tasks == 0 then return stop == nil end
+                local best = 1
+                for i = 2, #tasks do
+                    if tasks[i].t < tasks[best].t then best = i end
+                end
+                local task = table.remove(tasks, best)
+                clock = math.max(clock, task.t)
+                task.fn(unpack(task.args, 1, task.n))
+                socket.sleep(0.002)
+            end
+            return false
+        end
+        function env.restore()
+            Session._now, UIManager.scheduleIn, UIManager.unschedule = real_now, real_si, real_un
+        end
+        return env
+    end
+    local NET = { isWifiOn = function() return true end, turnOffWifi = function() end }
+    local function combos(Benchmark, ...)
+        local list = {}
+        for _, label in ipairs{ ... } do
+            for _, c in ipairs(Benchmark.COMBINATIONS) do
+                if c.label == label then list[#list + 1] = c end
+            end
+        end
+        return list
+    end
+    -- Starts a mock that serves several connections in a row (the benchmark reconnects).
+    local function start_multi(o)
+        local port = free_port()
+        local log = string.format("%s/%s.log", TMP, o.name)
+        os.remove(log)
+        local cmd = string.format("python3 %s --port %d --encoding %s --pattern gradient --width 200 --height 150 --log %s%s",
+            MOCK, port, o.encoding or "raw", log, o.repaint and (" --repaint " .. o.repaint) or "")
+        local h = assert(io.popen(cmd .. " > " .. log .. ".stdout 2>&1 & echo $!", "r"))
+        local pid = (h:read("*l") or ""):gsub("%s", "")
+        h:close()
+        if not wait_for_log(log, "LISTENING", 10) then error("mock did not start: " .. log) end
+        return pid, port, log
+    end
+
+    check("benchmark_combination_list", function()
+        local Benchmark = require("vnc/benchmark")
+        local C = Benchmark.COMBINATIONS
+        if #C ~= 11 then return nil, "expected 11 combinations, got " .. #C end
+        local want = {
+            "24-bit, Tight off", "24-bit, Tight, compr. 1", "24-bit, Tight, compr. 2",
+            "16-bit, Tight off", "16-bit, Tight, compr. 1", "16-bit, Tight, compr. 2",
+            "8-bit, Tight off", "8-bit, Tight, compr. 1", "8-bit, Tight, compr. 2",
+            "24-bit, Tight, compr. 2, JPEG 8", "24-bit, Tight, compr. 2, JPEG 4",
+        }
+        for i, l in ipairs(want) do
+            if C[i].label ~= l then return nil, string.format("#%d: %q, want %q", i, tostring(C[i].label), l) end
+        end
+        local j4 = C[11]
+        if not (j4.color_depth == 24 and j4.enable_tight == true and j4.compress_level == 2 and j4.jpeg_quality == 4) then
+            return nil, "JPEG 4 combination fields wrong"
+        end
+        local off = C[4]
+        if not (off.color_depth == 16 and off.enable_tight == false and off.jpeg_quality == false
+                and off.compress_level == false) then
+            return nil, "Tight-off combination fields wrong"
+        end
+        if Benchmark.LIVE_SECONDS ~= 5 or Benchmark.STILL_MIN_PX_PER_S ~= 0.01 then
+            return nil, "LIVE_SECONDS / STILL_MIN_PX_PER_S"
+        end
+        return true
+    end)
+
+    check("benchmark_sort_order", function()
+        local Benchmark = require("vnc/benchmark")
+        local rows = {
+            { ok = false, error = "x", tag = "fail" },
+            { ok = true, still = true, px_per_s = 99999, tag = "still" },
+            { ok = true, still = false, px_per_s = 10, tag = "slow" },
+            { ok = true, still = false, px_per_s = 50, tag = "fast" },
+        }
+        local s = Benchmark._sort(rows)
+        local got = {}
+        for i, r in ipairs(s) do got[i] = r.tag end
+        got = table.concat(got, ",")
+        if got ~= "fast,slow,still,fail" then return nil, "order " .. got end
+        return true
+    end)
+
+    -- Changing screen: both combinations scored, sorted, drawn into a 2x canvas with sharp scaling;
+    -- the draw time is counted.
+    check("benchmark_scores_live_changes", function()
+        local env = bench_env()
+        local Remote = require("vnc/framebuffer")
+        local pid, port = start_multi{ name = "bench_live", repaint = 0.01 }
+        local real_draw, draws = Remote.draw_to, {}
+        Remote.draw_to = function(self, bb, ...)
+            draws[#draws + 1] = { scaling = self.scaling, scale = self:get_scale(), w = bb:getWidth(),
+                                  h = bb:getHeight(), bb = bb }
+            return real_draw(self, bb, ...)
+        end
+        local results, progress = nil, {}
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+            live_seconds = 1,
+            canvas = { w = 400, h = 300, bb_type = BB.TYPE_BB8, view_mode = "fit", scaling = "sharp" },
+            network_mgr = NET,
+            on_progress = function(i, n, label, phase) progress[#progress + 1] = i .. "/" .. n .. " " .. phase end,
+            on_done = function(r) results = r end,
+        }
+        b:start()
+        local finished = env.run(function() return results ~= nil end)
+        Remote.draw_to = real_draw
+        env.restore()
+        stop_mock(pid)
+        if not finished then return nil, "benchmark never finished" end
+        if #results ~= 2 then return nil, "expected 2 results, got " .. #results end
+        for _, r in ipairs(results) do
+            if not r.ok then return nil, "failed: " .. tostring(r.error) end
+            if r.still then return nil, r.combination.label .. " marked still, px/s " .. r.px_per_s end
+            if not (r.px_per_s > 0 and r.bytes_per_s > 0 and r.ms_per_update and r.full_ms) then
+                return nil, "missing figures for " .. r.combination.label
+            end
+            if not (r.draw_ms and r.draw_ms > 0) then return nil, "draw time not counted" end
+        end
+        if results[1].px_per_s < results[2].px_per_s then return nil, "not sorted by px_per_s" end
+        if #draws == 0 then return nil, "never drawn" end
+        local bb1 = draws[1].bb
+        for _, d in ipairs(draws) do
+            if d.scaling ~= "sharp" or d.scale ~= 2 or d.w ~= 400 or d.h ~= 300 then
+                return nil, string.format("draw %s scale %s %dx%d", d.scaling, d.scale, d.w, d.h)
+            end
+            if d.bb ~= bb1 then return nil, "the off-screen buffer must be allocated once per run" end
+        end
+        local p = table.concat(progress, ",")
+        if not p:find("1/2 full", 1, true) or not p:find("2/2 live", 1, true) then return nil, "progress " .. p end
+        return true
+    end)
+
+    -- Still screen (no repaint) -> still, ranked before a failed one; a combination the server
+    -- refuses (Tight off against a Tight-only mock) fails and the run continues.
+    check("benchmark_still_and_failed", function()
+        local env = bench_env()
+        local pid, port, log = start_multi{ name = "bench_still", encoding = "tight" }
+        local results
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "24-bit, Tight, compr. 2"),
+            live_seconds = 1,
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8, view_mode = 1, scaling = "smooth" },
+            network_mgr = NET,
+            on_done = function(r) results = r end,
+        }
+        b:start()
+        local finished = env.run(function() return results ~= nil end)
+        env.restore()
+        stop_mock(pid)
+        if not finished then return nil, "benchmark never finished" end
+        if #results ~= 2 then return nil, "expected 2 results" end
+        local r1, r2 = results[1], results[2]
+        if not (r1.ok and r1.still and r1.combination.label == "24-bit, Tight, compr. 2") then
+            return nil, string.format("first row: ok=%s still=%s err=%s", tostring(r1.ok), tostring(r1.still), tostring(r1.error))
+        end
+        if not (r1.full_ms and r1.full_ms >= 0) then return nil, "full-screen time missing" end
+        if r2.ok ~= false or type(r2.error) ~= "string" or r2.error == "" then
+            return nil, "the refused combination must fail with a reason"
+        end
+        if log_count(log, "AUTH ok") ~= 2 then return nil, "expected 2 connections" end
+        return true
+    end)
+
+    check("benchmark_connect_refused", function()
+        local env = bench_env()
+        local results
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = free_port(), password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+            live_seconds = 1,
+            canvas = { w = 100, h = 100, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_done = function(r) results = r end,
+        }
+        b:start()
+        local finished = env.run(function() return results ~= nil end)
+        env.restore()
+        if not finished then return nil, "never finished" end
+        for _, r in ipairs(results) do
+            if r.ok or not tostring(r.error):find("could not connect", 1, true) then
+                return nil, "expected a connect failure, got " .. tostring(r.error)
+            end
+        end
+        return #results == 2, "expected 2 rows"
+    end)
+
+    -- Cancel mid-live: the session is torn down, nothing of the benchmark stays scheduled, on_done
+    -- never fires, and an attached bystander session (the viewer's) keeps its poll task.
+    check("benchmark_cancel_mid_live", function()
+        local env = bench_env()
+        local Session = require("vnc/session")
+        local pid, port = start_multi{ name = "bench_cancel", repaint = 0.01 }
+        local bpid, bport = start_mock{ name = "bench_bystander", encoding = "raw", pattern = "gradient" }
+        local by = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "by" },
+                                network_mgr = NET }
+        by:connect(function() end)
+        by:attach({ on_framebuffer_dirty = function() end, on_remote_resized = function() end,
+                    on_bell = function() end })
+        local done_called, live = false, false
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_progress = function(_, _, _, phase) if phase == "live" then live = true end end,
+            on_done = function() done_called = true end,
+        }
+        b:start()
+        local reached = env.run(function() return live end)
+        local s = b.session
+        if reached then env.run(nil, 10) end
+        b:cancel()
+        env.run(nil, 200)
+        local others = 0
+        for _, t in ipairs(env.tasks) do
+            if t.fn ~= by._poll_task then others = others + 1 end
+        end
+        local by_alive = by:is_attached() and #env.tasks - others == 1
+        by:disconnect()
+        env.restore()
+        stop_mock(pid)
+        stop_mock(bpid)
+        if not reached then return nil, "live phase never reached" end
+        if not by_alive then return nil, "the bystander session lost its poll task" end
+        if not s or s:get_state() ~= "disconnected" or s.sock or s.remote then
+            return nil, "session not torn down"
+        end
+        if b.session then return nil, "benchmark still holds a session" end
+        if others ~= 0 then return nil, "benchmark tasks still scheduled after cancel" end
+        if done_called then return nil, "on_done must not be called on cancel" end
+        return true
+    end)
+
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
         os.exit(1)

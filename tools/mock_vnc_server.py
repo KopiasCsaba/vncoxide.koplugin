@@ -537,7 +537,9 @@ class TightEncoder:
 
     def _ctl(self, sub, stream_id=0, reset=False):
         """One Tight control byte: high nibble = subencoding, low nibble = zlib reset flags."""
-        b = ((sub & 0x0F) << 4) | (stream_id & 0x03)
+        # The stream id travels in `sub`; the low nibble is only the per-stream reset flags (putting
+        # the id there too reset another stream mid-connection, e.g. stream 1 on a second update).
+        b = (sub & 0x0F) << 4
         if reset:
             b |= 1 << (stream_id & 0x03)
         return bytes([b])

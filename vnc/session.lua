@@ -63,10 +63,13 @@ Creates a session. Nothing is opened until @{Session:connect} is called.
 --- @tparam[opt] table opts.plugin the plugin instance
 --- @tparam[opt] function opts.on_state `(state, err)` on every transition
 --- @tparam[opt] table opts.network_mgr override the network manager (tests)
+--- @tparam[opt] function opts.on_update `(tm)` after every decoded FramebufferUpdate, with
+---   `tm = { px, bytes, cpu, rects, t0 }`: the summed rect area (remote pixels), the bytes read,
+---   the decode CPU seconds, the rect count and the `Session._now()` it started at
 ]]
 function Session.new(opts)
     assert(type(opts) == "table" and type(opts.profile) == "table", "Session.new: opts.profile is required")
-    return setmetatable({
+    local self = setmetatable({
         profile = opts.profile,
         plugin = opts.plugin,
         on_state = opts.on_state,
@@ -85,7 +88,15 @@ function Session.new(opts)
         wifi_was_on = nil, -- nil until we know
         _connect_cb = nil,
         _network_mgr = opts.network_mgr,
+        on_update = opts.on_update,
+        -- true holds the incremental request that follows every update, like key input does
+        hold_incremental = false,
     }, Session)
+    -- The poll task, bound to this session: `UIManager:unschedule` matches the function, so the
+    -- shared `Session._poll` would cancel every session's poll (e.g. a benchmark's own connection
+    -- tearing down would stop the viewer's).
+    self._poll_task = function() self:_poll() end
+    return self
 end
 
 --- @tparam string state
@@ -223,7 +234,7 @@ function Session:_do_connect()
         encodings = Encodings.order(p.enable_tight == true,
             { jpeg_quality = p.jpeg_quality, compress_level = p.compress_level }),
         get_plane = function() return self_ref.remote and self_ref.remote:get_plane() end,
-        hold_updates = function() return self_ref:_input_recent() end,
+        hold_updates = function() return self_ref:_holding() end,
         callbacks = {
             on_connected = function(name, w, h)
                 logger.info("vnc: connected to", name, w, h)
@@ -237,15 +248,16 @@ function Session:_do_connect()
                 self_ref:_set_state("connected")
             end,
             on_update_start = function()
-                if Util.timing_enabled() then
-                    self_ref.tm = { t0 = Session._now(), cpu = 0, bytes = 1, rects = 0 }
+                if Util.timing_enabled() or self_ref.on_update then
+                    self_ref.tm = { t0 = Session._now(), cpu = 0, bytes = 1, rects = 0, px = 0 }
                 end
             end,
             on_update_done = function()
                 if self_ref.tm then self_ref.tm.finished = true end
             end,
             on_rect = function(x, y, w, h)
-                if self_ref.tm then self_ref.tm.rects = self_ref.tm.rects + 1 end
+                local tm = self_ref.tm
+                if tm then tm.rects, tm.px = tm.rects + 1, tm.px + w * h end
                 -- One tick of rectangles is handed to the app as a set of *disjoint* rectangles:
                 -- merging only the ones that touch keeps a couple of small changes far apart from
                 -- turning into one huge (but mostly unchanged) refresh region.
@@ -342,8 +354,14 @@ function Session:_resume(data)
         tm.cpu = tm.cpu + (os.clock() - (c0 or os.clock()))
         if tm.finished then
             self.tm = nil
-            logger.dbg(string.format("vnc-timing: update rects=%d bytes=%d decode_ms=%.1f wall_ms=%.1f",
-                tm.rects, tm.bytes, tm.cpu * 1000, (Session._now() - tm.t0) * 1000))
+            if Util.timing_enabled() then
+                logger.dbg(string.format("vnc-timing: update rects=%d bytes=%d decode_ms=%.1f wall_ms=%.1f",
+                    tm.rects, tm.bytes, tm.cpu * 1000, (Session._now() - tm.t0) * 1000))
+            end
+            if self.on_update then
+                local ok, e = pcall(self.on_update, tm)
+                if not ok then logger.warn("vnc: on_update handler failed:", e) end
+            end
         end
     end
     if a == "need" then
@@ -431,7 +449,7 @@ function Session:attach(app)
     if self.attached then return end
     self.attached = true
     self.last_poll = nil -- the time spent detached is not a blocked poll
-    UIManager:scheduleIn(Session.POLL_INTERVAL, self._poll, self)
+    UIManager:scheduleIn(Session.POLL_INTERVAL, self._poll_task)
     -- Non-incremental full area: resynchronises after a detach, and absorbs anything the
     -- server pushed while we were not reading.
     self:request_full_update()
@@ -440,13 +458,13 @@ end
 
 --- Stops the poll task, keeping the socket, the plane and Wi-Fi up.
 function Session:detach()
-    UIManager:unschedule(self._poll)
+    UIManager:unschedule(self._poll_task)
     self.attached = false
     self.app = nil
     self.dirty = nil
 end
 
---- The poll task. Must stay a single bound method so `UIManager:unschedule` can cancel it.
+--- The poll task (scheduled as `_poll_task`, which `UIManager:unschedule` can cancel).
 function Session:_poll()
     if not self.attached then return end
     if Util.timing_enabled() then
@@ -460,11 +478,11 @@ function Session:_poll()
     end
     local status = self:_pump()
     if status == "error" or status == "done" then
-        UIManager:unschedule(self._poll)
+        UIManager:unschedule(self._poll_task)
         self.attached = false
         return
     end
-    if self.proto and self.proto.update_pending and not self:_input_recent() then
+    if self.proto and self.proto.update_pending and not self:_holding() then
         self.proto:release_update()
         local ok, err = self:_flush_tx()
         if not ok then
@@ -477,12 +495,12 @@ function Session:_poll()
         self.dirty = nil
         self.app:on_framebuffer_dirty(rects)
     end
-    UIManager:scheduleIn(Session.POLL_INTERVAL, self._poll, self)
+    UIManager:scheduleIn(Session.POLL_INTERVAL, self._poll_task)
 end
 
 --- Closes the socket and frees the protocol, keeping the plane for display.
 function Session:_teardown_connection()
-    UIManager:unschedule(self._poll)
+    UIManager:unschedule(self._poll_task)
     self.attached = false
     if self.sock then
         self.sock:close()
@@ -550,6 +568,11 @@ end
 --- @treturn boolean true while key input happened less than `INPUT_QUIET` ago
 function Session:_input_recent()
     return self.last_input ~= nil and Session._now() - self.last_input < Session.INPUT_QUIET
+end
+
+--- @treturn boolean true while the incremental update request is to be held
+function Session:_holding()
+    return self.hold_incremental or self:_input_recent()
 end
 
 --- @tparam number x remote x
