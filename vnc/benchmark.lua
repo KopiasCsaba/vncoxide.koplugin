@@ -15,7 +15,10 @@ the server encodes and sends the requested pixels each time even when they are i
    requested on the next tick, so the e-ink refresh of the progress dialog is not counted in it.
 
 Each request is timed from the moment it is sent until its FramebufferUpdate has been decoded and
-drawn. Every received rect is marked dirty by the session and drawn with @{Remote:draw_to} into one
+drawn. While it is in flight the session polls every `POLL_INTERVAL` (5 ms) instead of its usual
+50 ms, so the reply is read when it arrives rather than on the next ordinary poll tick. A sample
+counts at most the requested area's pixels, and a DesktopSize fails the combination ("screen size
+changed"). Every received rect is marked dirty by the session and drawn with @{Remote:draw_to} into one
 off-screen BlitBuffer of the viewer's canvas size and type (allocated once per run), with the
 viewer's view, scaling and dither flag (`canvas.dither`), like the viewer would; so decode and
 draw are paid on every request. Per phase the run sums the elapsed wall time, the remote pixels
@@ -72,6 +75,9 @@ Benchmark.FULL_SAMPLES = 3
 Benchmark.TILES = 16
 -- Seconds to wait for the answer to one request before the combination counts as failed.
 Benchmark.REQUEST_TIMEOUT = 15
+-- Seconds between the session's poll ticks while a request is in flight (instead of
+-- `Session.POLL_INTERVAL`), so its reply is read, and timed, as soon as it arrives.
+Benchmark.POLL_INTERVAL = 0.005
 -- Seconds between benchmark ticks (phase deadlines, failures, the next combination).
 Benchmark.TICK = 0.05
 
@@ -120,7 +126,8 @@ end
 
 --[[--
 The tiles phase's areas: a `n`×`n` grid (`n` = the square root of `count`) over a `w`×`h`
-framebuffer, row by row; the edges are rounded down, so the tiles cover it exactly.
+framebuffer, row by row; the edges are rounded down, so the tiles cover it exactly. Empty tiles
+(a framebuffer under `n` pixels wide or high) are left out.
 --- @treturn table `{ {x, y, w, h}, ... }`
 ]]
 function Benchmark._tiles(w, h, count)
@@ -130,7 +137,10 @@ function Benchmark._tiles(w, h, count)
         local y0, y1 = math.floor(r * h / n), math.floor((r + 1) * h / n)
         for c = 0, n - 1 do
             local x0, x1 = math.floor(c * w / n), math.floor((c + 1) * w / n)
-            out[#out + 1] = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }
+            -- a framebuffer narrower than the grid leaves empty tiles: nothing to request
+            if x1 > x0 and y1 > y0 then
+                out[#out + 1] = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }
+            end
         end
     end
     return out
@@ -308,7 +318,11 @@ function Benchmark:_on_connected(run, session)
     self:_new_request(run)
     session:attach({
         on_framebuffer_dirty = function() self:_on_dirty(run) end,
-        on_remote_resized = function() self:_apply_view() end,
+        -- the session answers a DesktopSize with a request of its own, and the tiles no longer
+        -- fit: this combination's figures are void
+        on_remote_resized = function()
+            if self.run == run then run.err = run.err or "screen size changed" end
+        end,
         on_bell = function() end,
     })
 end
@@ -327,9 +341,17 @@ function Benchmark:_apply_view()
     end
 end
 
---- Starts timing a request.
-function Benchmark:_new_request(run)
-    run.cur = { t0 = Session._now(), px = 0, bytes = 0, decode = 0, draw = 0 }
+--- Starts timing a request for `rect` (nil: the whole screen); the session polls fast meanwhile.
+function Benchmark:_new_request(run, rect)
+    local area
+    if rect then
+        area = rect.w * rect.h
+    else
+        local w, h = self.session:get_remote():get_size()
+        area = w * h
+    end
+    run.cur = { t0 = Session._now(), area = area, px = 0, bytes = 0, decode = 0, draw = 0 }
+    self.session.poll_interval = Benchmark.POLL_INTERVAL
 end
 
 --[[--
@@ -338,20 +360,23 @@ flushed at once, so no poll interval is added to its time.
 ]]
 function Benchmark:_request(run, rect)
     local s = self.session
-    self:_new_request(run)
+    self:_new_request(run, rect)
     if rect then
         s.proto:request_update(0, rect.x, rect.y, rect.w, rect.h)
     else
         s:request_full_update()
     end
     s:_flush_now()
+    s:poll_soon()
 end
 
 function Benchmark:_on_update(run, tm)
     local cur = run.cur
     -- an empty update is not the area asked for
     if not cur or tm.px <= 0 then return end
-    cur.px, cur.bytes, cur.decode = cur.px + tm.px, cur.bytes + tm.bytes, cur.decode + tm.cpu
+    -- a server that sends more than was asked for must not inflate the score
+    cur.px = math.min(cur.px + tm.px, cur.area)
+    cur.bytes, cur.decode = cur.bytes + tm.bytes, cur.decode + tm.cpu
     -- complete once drawn (the session hands the rects over later in the same poll tick)
     cur.received = true
 end
@@ -379,6 +404,10 @@ function Benchmark:_draw(run)
     if not cur.received then return end
     cur.elapsed = Session._now() - cur.t0
     run.cur = nil
+    -- back to the normal poll interval until the next request
+    self.session.poll_interval = nil
+    -- a failed combination asks for nothing more; the next tick ends it
+    if run.err then return end
     local phase = run.phase
     local list = run.samples[phase]
     list[#list + 1] = cur

@@ -1585,7 +1585,7 @@ local function main()
                 if tasks[i].fn == fn then table.remove(tasks, i) end
             end
         end
-        local env = { Benchmark = Benchmark, tasks = tasks }
+        local env = { Benchmark = Benchmark, Session = Session, tasks = tasks }
         -- Runs tasks until `stop()` or no task is left (or a step cap); true when stop() held.
         function env.run(stop, max_steps)
             for _ = 1, max_steps or 20000 do
@@ -1774,6 +1774,14 @@ local function main()
         for i = 2, #results do
             if results[i - 1].tile_px_per_s < results[i].tile_px_per_s then return nil, "not sorted by tile_px_per_s" end
         end
+        -- the reply to a request is read as soon as it arrives, not on the session's next 50 ms poll
+        local poll_ms = env.Session.POLL_INTERVAL * 1000
+        for _, r in ipairs(results) do
+            if not (r.tile_ms < poll_ms and r.full_ms < poll_ms) then
+                return nil, string.format("%s: %.1f ms/tile, full %.1f ms: a poll interval is in every sample",
+                    r.combination.label, r.tile_ms, r.full_ms)
+            end
+        end
         -- the requests, per connection
         local conns = requests_per_connection(log)
         if #conns ~= 3 then return nil, "expected 3 connections, got " .. #conns end
@@ -1829,11 +1837,65 @@ local function main()
             return nil, string.format("first row: ok=%s err=%s", tostring(r1.ok), tostring(r1.error))
         end
         if not (r1.full_ms and r1.full_ms >= 0 and r1.tile_px_per_s > 0) then return nil, "figures missing" end
+        -- the Tight mock answers every tile with the whole screen: only the requested area counts
+        if r1.tiles.px ~= 200 * 150 or r1.full.px ~= 2 * 200 * 150 then
+            return nil, string.format("pixels not capped at the requested areas: tiles %d, full %d", r1.tiles.px, r1.full.px)
+        end
         if r2.ok ~= false or type(r2.error) ~= "string" or r2.error == "" then
             return nil, "the refused combination must fail with a reason"
         end
         if log_count(log, "AUTH ok") ~= 2 then return nil, "expected 2 connections" end
         if run_err ~= nil then return nil, "a failure after connecting must not end the run: " .. tostring(run_err) end
+        return true
+    end)
+
+    -- A DesktopSize mid-run (on the 5th request, a tile) fails the combination, which then asks
+    -- for nothing more; the run goes on.
+    check("benchmark_resize_fails_the_combination", function()
+        local env = bench_env()
+        local pid, port, log = start_multi{ name = "bench_resize", extra = " --resize-after 5" }
+        local results
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off", "8-bit, Tight off"),
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_done = function(r) results = r end,
+        }
+        b:start()
+        local finished = env.run(function() return results ~= nil end)
+        env.restore()
+        stop_mock(pid)
+        if not finished then return nil, "benchmark never finished" end
+        if #results ~= 2 then return nil, "expected 2 results, got " .. #results end
+        -- the mock resizes on every connection's 5th request
+        for _, r in ipairs(results) do
+            if r.ok ~= false or r.error ~= "screen size changed" then
+                return nil, r.combination.label .. ": ok=" .. tostring(r.ok) .. " error=" .. tostring(r.error)
+            end
+        end
+        -- no tile is requested after the resize: only the session's own whole-screen request
+        for i, reqs in ipairs(requests_per_connection(log)) do
+            local after = 0
+            for j = 6, #reqs do after = after + 1 end
+            if #reqs < 6 or reqs[6] ~= "0 0,0 232x166" or after ~= 1 then
+                return nil, string.format("connection %d requests: %s", i, table.concat(reqs, ";"))
+            end
+        end
+        return true
+    end)
+
+    -- Tiles below 1 px are not requested; the rest cover the framebuffer exactly.
+    check("benchmark_tiles_skip_empty", function()
+        local Benchmark = require("vnc/benchmark")
+        for _, sz in ipairs{ { 3, 2 }, { 200, 150 }, { 1, 1 } } do
+            local area = 0
+            for _, t in ipairs(Benchmark._tiles(sz[1], sz[2], 16)) do
+                if t.w < 1 or t.h < 1 then return nil, string.format("%dx%d: empty tile requested", sz[1], sz[2]) end
+                area = area + t.w * t.h
+            end
+            if area ~= sz[1] * sz[2] then return nil, string.format("%dx%d: tiles cover %d px", sz[1], sz[2], area) end
+        end
         return true
     end)
 

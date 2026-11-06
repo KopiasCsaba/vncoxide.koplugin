@@ -100,6 +100,9 @@ function Session.new(opts)
         -- still owed (it waits while requests are held).
         view_area = nil,
         forced = nil,
+        -- Seconds between poll ticks while attached; nil = `POLL_INTERVAL`. The benchmark shortens
+        -- it while a request is in flight, so the reply is read as soon as it arrives.
+        poll_interval = nil,
     }, Session)
     -- The poll task, bound to this session: `UIManager:unschedule` matches the function, so the
     -- shared `Session._poll` would cancel every session's poll (e.g. a benchmark's own connection
@@ -463,7 +466,7 @@ function Session:attach(app)
     if self.attached then return end
     self.attached = true
     self.last_poll = nil -- the time spent detached is not a blocked poll
-    UIManager:scheduleIn(Session.POLL_INTERVAL, self._poll_task)
+    UIManager:scheduleIn(self.poll_interval or Session.POLL_INTERVAL, self._poll_task)
     -- Non-incremental full area: resynchronises after a detach, and absorbs anything the
     -- server pushed while we were not reading.
     self:request_full_update()
@@ -517,7 +520,18 @@ function Session:_poll()
         self.dirty = nil
         self.app:on_framebuffer_dirty(rects)
     end
-    UIManager:scheduleIn(Session.POLL_INTERVAL, self._poll_task)
+    -- the app callback may have rescheduled the task (see `poll_soon`): keep exactly one
+    UIManager:unschedule(self._poll_task)
+    if self.attached then
+        UIManager:scheduleIn(self.poll_interval or Session.POLL_INTERVAL, self._poll_task)
+    end
+end
+
+--- Moves the next poll tick to `poll_interval` from now (attached sessions only).
+function Session:poll_soon()
+    if not self.attached then return end
+    UIManager:unschedule(self._poll_task)
+    UIManager:scheduleIn(self.poll_interval or Session.POLL_INTERVAL, self._poll_task)
 end
 
 --- Closes the socket and frees the protocol, keeping the plane for display.
