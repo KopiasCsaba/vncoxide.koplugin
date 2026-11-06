@@ -42,25 +42,6 @@ local ROTATIONS = {
     { label = _("Landscape inverted"), mode = 3 },
 }
 
-local COLOR_DEPTHS = {
-    { label = _("24-bit"), value = 24 },
-    { label = _("16-bit"), value = 16 },
-    { label = _("8-bit"), value = 8 },
-}
-
-local NEXT_CONNECTION = _("Takes effect on the next connection.")
-
-local function level_label(value)
-    return value == false and _("Off") or tostring(value)
-end
-
-local function depth_label(depth)
-    for _i, choice in ipairs(COLOR_DEPTHS) do
-        if choice.value == depth then return choice.label end
-    end
-    return tostring(depth)
-end
-
 local function zoom_label(mode)
     for _i, choice in ipairs(ZOOM_CHOICES) do
         if choice.value == mode then return choice.label end
@@ -199,67 +180,6 @@ function MenuBuilder.open(app)
             plugin.settings:flush()
         end),
     }
-
-    -- ---- bandwidth: read once per connection, so a change only applies to the next one
-    local function set_connection_setting(key, value)
-        return action(function()
-            settings[key] = value
-            plugin.settings:flush()
-            if session:get_state() == "connected" then
-                UIManager:show(InfoMessage:new{ text = NEXT_CONNECTION, timeout = 2 })
-            end
-        end)
-    end
-    local depth_items = {}
-    for _i, choice in ipairs(COLOR_DEPTHS) do
-        depth_items[#depth_items + 1] = {
-            text = choice.label,
-            mandatory = settings.color_depth == choice.value and "✓" or nil,
-            callback = set_connection_setting("color_depth", choice.value),
-        }
-    end
-    item_table[#item_table + 1] = {
-        text = _("Colour depth (next connection)"),
-        sub_item_table = depth_items,
-        mandatory = depth_label(settings.color_depth),
-        help_text = NEXT_CONNECTION,
-    }
-    item_table[#item_table + 1] = {
-        text = _("Tight encoding (next connection)"),
-        mandatory = settings.enable_tight and "✓" or "-",
-        help_text = NEXT_CONNECTION .. "\n"
-            .. _("Tight can send JPEG, so lowering JPEG quality saves bandwidth on photos."),
-        callback = set_connection_setting("enable_tight", not settings.enable_tight),
-    }
-    -- JPEG quality and compression level are Tight pseudo-encodings: without Tight the server
-    -- never sees them, so the entries are dimmed (and have no submenu to open).
-    local function level_entry(text, key, help_text)
-        local entry = {
-            text = text,
-            mandatory = level_label(settings[key]),
-            help_text = help_text,
-        }
-        if not settings.enable_tight then
-            entry.select_enabled = false
-            entry.dim = true
-            return entry
-        end
-        local items = {}
-        for value = -1, 9 do
-            local stored = value >= 0 and value or false
-            items[#items + 1] = {
-                text = level_label(stored),
-                mandatory = settings[key] == stored and "✓" or nil,
-                callback = set_connection_setting(key, stored),
-            }
-        end
-        entry.sub_item_table = items
-        return entry
-    end
-    item_table[#item_table + 1] = level_entry(_("JPEG quality (next connection)"), "jpeg_quality",
-        NEXT_CONNECTION .. "\n" .. _("Only used at 24-bit colour."))
-    item_table[#item_table + 1] = level_entry(_("Compression level (next connection)"), "compress_level",
-        NEXT_CONNECTION)
 
     -- ---- page buttons: read on every key press, so this applies at once
     local function set_page_buttons(value)

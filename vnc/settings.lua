@@ -18,7 +18,15 @@ local Settings = {}
 Settings.__index = Settings
 
 --- Profile field names.
-Settings.PROFILE_FIELDS = { "name", "host", "port", "password", "autoconnect" }
+Settings.PROFILE_FIELDS = {
+    "name", "host", "port", "password", "autoconnect",
+    -- Picture: read once per connection, so a change applies on the next one (see NOTES.txt,
+    -- "Pixel format").
+    "color_depth",                   -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
+    "enable_tight",                  -- opt-in Tight encoding (not in RFC 6143; see NOTES.txt)
+    "jpeg_quality",                  -- Tight JPEG quality 0..9, false = server default
+    "compress_level",                -- Tight zlib level 0..9, false = server default
+}
 
 --- The only top-level keys of the file.
 Settings.DATA_KEYS = { "profiles", "settings", "server" }
@@ -31,29 +39,12 @@ Settings.DEFAULTS = {
     orientation = 0,                 -- Screen.DEVICE_ROTATED_UPRIGHT, used as the app default
     keyboard_always_visible = false,
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
-    enable_tight = false,            -- opt-in Tight encoding (not in RFC 6143; see NOTES.txt)
-    -- Bandwidth: all three apply on the next connection only (see NOTES.txt, "Pixel format").
-    color_depth = 24,                -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
-    jpeg_quality = false,            -- Tight JPEG quality 0..9, false = server default
-    compress_level = false,          -- Tight zlib level 0..9, false = server default
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
 }
 
 --- Settings whose value is not just "the type of the default": each maps a raw value to a usable
 --- one, falling back to the default.
-local function level_or_off(value)
-    if type(value) == "number" and value == math.floor(value) and value >= 0 and value <= 9 then
-        return value
-    end
-    return false
-end
 local SETTING_CHECKS = {
-    color_depth = function(value)
-        if value == 24 or value == 16 or value == 8 then return value end
-        return Settings.DEFAULTS.color_depth
-    end,
-    jpeg_quality = level_or_off,
-    compress_level = level_or_off,
     page_buttons = function(value)
         if value == "keys" or value == "wheel" then return value end
         return Settings.DEFAULTS.page_buttons
@@ -165,9 +156,19 @@ local function coerce_like(value, default)
     return value
 end
 
+--- A Tight level (JPEG quality or compression level): an integer 0..9, else false (server default).
+local function level_or_off(value)
+    if type(value) == "number" and value == math.floor(value) and value >= 0 and value <= 9 then
+        return value
+    end
+    return false
+end
+
 --- Cleans one profile table, dropping unknown fields and coercing types.
+--- @tparam table p raw profile
+--- @tparam[opt] boolean tight_default `enable_tight` for a profile that has no such field
 --- @treturn table|nil cleaned profile, or nil when it has no usable name
-local function clean_profile(p)
+local function clean_profile(p, tight_default)
     if type(p) ~= "table" then return nil end
     local name = p.name
     if type(name) ~= "string" then return nil end
@@ -183,6 +184,10 @@ local function clean_profile(p)
         password = type(p.password) == "string" and p.password or "",
         -- Only the boolean true counts: a hand-edited `"yes"` (or anything else) means "no".
         autoconnect = p.autoconnect == true,
+        color_depth = (p.color_depth == 16 or p.color_depth == 8) and p.color_depth or 24,
+        enable_tight = (p.enable_tight == nil and tight_default or p.enable_tight) == true,
+        jpeg_quality = level_or_off(p.jpeg_quality),
+        compress_level = level_or_off(p.compress_level),
     }
 end
 
@@ -225,6 +230,10 @@ function Settings:normalise()
         return section
     end
 
+    -- `enable_tight` used to be a global setting (and was released as one): a user who turned it on
+    -- keeps it, as the value of every profile that has no choice of its own. The global itself is
+    -- dropped with the other unknown settings below.
+    local legacy_tight = type(data.settings) == "table" and data.settings.enable_tight == true
     normalise_section("settings", Settings.DEFAULTS, SETTING_CHECKS)
     local server = normalise_section("server", Settings.SERVER_DEFAULTS)
     server.port = math.max(1, math.min(65535, math.floor(server.port)))
@@ -233,7 +242,7 @@ function Settings:normalise()
     if type(data.profiles) ~= "table" then data.profiles = {} end
     local cleaned = {}
     for _, p in ipairs(data.profiles) do
-        local c = clean_profile(p)
+        local c = clean_profile(p, legacy_tight)
         if c then
             cleaned[#cleaned + 1] = c
         else
@@ -294,7 +303,10 @@ end
 
 --- Adds or updates a profile, keyed by name.
 ---
---- @param p table profile (`name`, `host`, `port`, `password`)
+--- An omitted `autoconnect` or picture field (`color_depth`, `enable_tight`, `jpeg_quality`,
+--- `compress_level`) keeps the value the profile had, so an editor that does not know a field
+--- cannot reset it.
+--- @param p table profile (see @{Settings.PROFILE_FIELDS})
 --- @param existing_name string|nil name to replace; when nil, `p.name` must be unused
 --- @treturn boolean, string|nil true on success, else false and an error message
 function Settings:save_profile(p, existing_name)
@@ -335,11 +347,19 @@ function Settings:save_profile(p, existing_name)
         end
     end
 
+    -- An omitted field means "keep what this profile had" (or the default for a new one).
+    local function given_or_kept(key)
+        if p[key] ~= nil then return p[key] end
+        if found then return found[key] end
+        return nil
+    end
     local cleaned = clean_profile({
         name = name, host = p.host, port = port, password = p.password,
-        -- An editor that does not know about `autoconnect` must not clear the flag: an omitted
-        -- field means "keep what this profile had".
-        autoconnect = p.autoconnect == nil and (found and found.autoconnect or false) or p.autoconnect,
+        autoconnect = given_or_kept("autoconnect"),
+        color_depth = given_or_kept("color_depth"),
+        enable_tight = given_or_kept("enable_tight"),
+        jpeg_quality = given_or_kept("jpeg_quality"),
+        compress_level = given_or_kept("compress_level"),
     })
     if idx then
         profiles[idx] = cleaned

@@ -41,7 +41,8 @@ already ships.
 
 Open the file browser menu in KOReader, then **More tools** ▸ **VNC viewer**. You get the
 connection list; start with **New connection…** and give it a name, the host, the port (5900 by
-default) and the password your VNC server uses. Tap a connection to connect.
+default) and the password your VNC server uses; the **Picture: …** button sets that connection's
+colour depth and Tight options (see "Lower bandwidth" below). Tap a connection to connect.
 
 **Manage connections…** opens each saved connection's own actions (Connect, Edit, Delete), plus an
 **Auto connect on start** switch. Turning it on dials that connection by itself on KOReader's next
@@ -79,9 +80,8 @@ keyboard, the **Menu** key (F1 on KOReader's own keymap) toggles it too.
 
 **The menu** offers the connection list, a status line, the zoom presets, a "keyboard always
 visible" toggle, show/hide keyboard, the screen orientation (including rotations), "use current
-orientation as default", the bandwidth settings (colour depth, the Tight toggle, and with Tight on,
-JPEG quality and compression level), sending single keys (Enter/Tab/Esc/Delete), **Disconnect** (with a
-confirmation) and **Leave (keep connection)**. If the connection has just dropped, it leads with
+orientation as default", what the page buttons send, sending single keys (Enter/Tab/Esc/Delete),
+**Disconnect** (with a confirmation) and **Leave (keep connection)**. If the connection has just dropped, it leads with
 **Reconnect to …**.
 
 **The keyboard** is drawn over the framebuffer, and showing it leaves the zoom alone — except in
@@ -188,16 +188,17 @@ Connection profiles live in a plain Lua file inside KOReader's settings director
 return {
     ["profiles"] = {
         [1] = { ["name"] = "desktop", ["host"] = "10.0.0.5", ["port"] = 5900, ["password"] = "",
-                ["autoconnect"] = true },  -- connect here at start
+                ["autoconnect"] = true,    -- connect here at start
+                -- picture settings, per connection (see "Lower bandwidth" below)
+                ["color_depth"] = 24,      -- 24, 16 or 8: fewer bits = less bandwidth, fewer colours
+                ["enable_tight"] = false,  -- opt-in Tight encoding, see below
+                ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
+                ["compress_level"] = false }, -- Tight compression level 0..9 (false = server default)
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)
         ["keyboard_always_visible"] = false,
         ["zoom_mode"] = "fit",             -- "fit", "fit_with_keyboard" or 0.25 .. 4
-        ["enable_tight"] = false,          -- opt-in Tight encoding, see below
-        ["color_depth"] = 24,              -- 24, 16 or 8: fewer bits = less bandwidth, fewer colours
-        ["jpeg_quality"] = false,          -- Tight JPEG quality 0..9 (false = server default)
-        ["compress_level"] = false,        -- Tight compression level 0..9 (false = server default)
         ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
     },
     ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface
@@ -212,7 +213,9 @@ return {
 You never have to edit it by hand (the editor in the viewer writes it), but it is one way to set a
 password without typing it into a dialog. Unknown keys are dropped and missing ones defaulted when
 it is loaded, so a broken file does not keep the plugin from starting; if a hand-edited file flags
-more than one profile for `autoconnect`, the first keeps the flag and the rest are cleared.
+more than one profile for `autoconnect`, the first keeps the flag and the rest are cleared. A
+global `["enable_tight"] = true` in `settings` (where older versions kept it) turns Tight on for
+every profile that has no `enable_tight` of its own, and is then dropped.
 
 > **Passwords are stored in clear text**, like KOReader itself does for OPDS and progress sync.
 > VNC Authentication is a weak, DES-based scheme anyway, and **nothing in a VNC session is
@@ -233,13 +236,16 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
 - Encodings: ZRLE, TRLE, Hextile, RRE, CopyRect and Raw — all of RFC 6143 — plus DesktopSize
   (servers that resize their desktop are followed automatically).
 - **Tight** compression is implemented but **off by default**: it is not part of RFC 6143 and
-  servers interpret its control byte differently, so it is opt-in (the menu's **Tight encoding**
-  entry, or `["enable_tight"] = true`) until it has been tested against the server you use.
-- **Lower bandwidth**: the menu's **Colour depth** (24/16/8-bit) asks the server for fewer bits
-  per pixel; with Tight on, **JPEG quality** and **Compression level** (Off or 0–9; Off leaves the
-  server's default) trade picture quality and CPU for bytes. JPEG is only used at 24-bit colour.
-  All four **take effect on the next connection** — reconnect to apply a change. Long-press an
-  entry for its help.
+  servers interpret its control byte differently, so it is opt-in per connection (**Tight
+  encoding** under the connection editor's **Picture** button, or the profile's
+  `["enable_tight"] = true`) until it has been tested against the server you use.
+- **Lower bandwidth**: each connection has its own picture settings, set with the **Picture: …**
+  button in the connection editor (its label sums them up, e.g. `Picture: 16-bit, Tight, JPEG 3`).
+  **Colour depth** (24/16/8-bit) asks the server for fewer bits per pixel; with Tight on, **JPEG
+  quality** and **Compression level** (Off or 0–9; Off leaves the server's default) trade picture
+  quality and CPU for bytes. JPEG is only used at 24-bit colour. The choice is stored when the
+  connection is saved and **takes effect on the next connection** — saving the connection that is
+  live says to reconnect. Long-press a setting for its help.
 - **Page buttons**: the menu's **Page buttons send** chooses what a device's page-turn buttons do.
   The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
   scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also

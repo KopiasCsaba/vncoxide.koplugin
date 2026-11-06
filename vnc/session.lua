@@ -60,7 +60,7 @@ Creates a session. Nothing is opened until @{Session:connect} is called.
 
 --- @tparam table opts
 --- @tparam table opts.profile connection profile (see @{vnc.settings})
---- @tparam[opt] table opts.plugin the plugin instance (for settings)
+--- @tparam[opt] table opts.plugin the plugin instance
 --- @tparam[opt] function opts.on_state `(state, err)` on every transition
 --- @tparam[opt] table opts.network_mgr override the network manager (tests)
 ]]
@@ -189,16 +189,9 @@ function Session:_do_connect()
     sock:setoption("tcp-nodelay", true)
     self.sock = sock
 
-    -- Read once per connection: a change in the menu applies on the next connection only, since a
-    -- live SetPixelFormat would race updates already in flight in the old format.
-    local enable_tight, color_depth, jpeg_quality, compress_level = false, 24, false, false
-    if self.plugin and self.plugin.settings then
-        local settings = self.plugin.settings
-        enable_tight = settings:get_setting("enable_tight") and true or false
-        color_depth = settings:get_setting("color_depth") or 24
-        jpeg_quality = settings:get_setting("jpeg_quality") or false
-        compress_level = settings:get_setting("compress_level") or false
-    end
+    -- The picture settings come from the profile and are read once per connection: an edit applies
+    -- on the next connection only, since a live SetPixelFormat would race updates already in flight
+    -- in the old format.
     local self_ref = self
     self.proto = Protocol.new{
         io = {
@@ -209,9 +202,9 @@ function Session:_do_connect()
         port = p.port,
         password = p.password,
         shared = true,
-        pixel_format = PxFmt.for_depth(color_depth),
-        encodings = Encodings.order(enable_tight,
-            { jpeg_quality = jpeg_quality, compress_level = compress_level }),
+        pixel_format = PxFmt.for_depth(p.color_depth),
+        encodings = Encodings.order(p.enable_tight == true,
+            { jpeg_quality = p.jpeg_quality, compress_level = p.compress_level }),
         get_plane = function() return self_ref.remote and self_ref.remote:get_plane() end,
         hold_updates = function() return self_ref:_input_recent() end,
         callbacks = {
@@ -481,6 +474,8 @@ function Session:_teardown_connection()
         self.proto = nil
     end
     self.tx, self.rx, self.need, self.done = {}, "", nil, false
+    -- An update cut short by the teardown must not leave its timing state for the next connection.
+    self.tm = nil
     -- Rectangles a dead connection never got to report: a reconnect requests the whole screen again,
     -- so they would only be redundant (and they may be in the old desktop's coordinates).
     self.dirty = nil

@@ -39,7 +39,8 @@ vnc/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer) and the view tr
 vnc/app.lua         The full-screen viewer widget: canvas, gestures, on-screen keyboard,
                           menu wiring, remote input.
 vnc/menu.lua        The in-app menu.
-vnc/dialogs.lua     Connection list, per-connection actions, profile editor.
+vnc/dialogs.lua     Connection list, per-connection actions, profile editor (with its picture
+                    settings).
 vnc/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via a stub inputbox.
 vnc/settings.lua    LuaSettings wrapper: profiles + global settings + the server section,
                           including the environment overrides (read once, never persisted).
@@ -111,16 +112,20 @@ name are dropped. One invariant is enforced there too: at most one profile may c
 `autoconnect` (see below), so the first flagged one keeps it and the rest are cleared.
 Never add migration code "just in case" before a format has actually shipped.
 
-Pixel format and bandwidth. The session reads three settings once per connection:
-`color_depth` (24, 16 or 8; vnc/pxfmt.lua:for_depth gives 32 bpp RGB, RGB565 or BGR233, all
+Pixel format and bandwidth. These are per-connection profile fields (vnc/settings.lua
+PROFILE_FIELDS), edited behind the connection editor's Picture button (Dialogs.picture_settings)
+and stored only on Save; save_profile keeps a field the caller omits. The session reads them from
+the connecting profile once per connection: `color_depth` (24, 16 or 8; vnc/pxfmt.lua:for_depth gives 32 bpp RGB, RGB565 or BGR233, all
 expanded to the RGB24 plane), and `jpeg_quality`/`compress_level` (false or 0..9), which
 Encodings.order appends as the Tight pseudo-encodings -32+q and -256+l - only when `enable_tight`
 is on, since without Tight no server reads them. Servers only send Tight JPEG at 32 bpp, so JPEG
 quality does nothing at 16/8-bit. normalise() resets anything else to the default (24 / false).
-A change to any of these (or to the menu's Tight toggle) applies on the next connection only,
-and the menu says so (entry text, long-press help, and a short notice when it is changed while
-connected): a live SetPixelFormat would race updates already in flight in the old format, and the
-client cannot tell those apart from the new ones.
+`enable_tight` was a released global setting: normalise() takes a stored global true as the value
+of every profile without its own `enable_tight`, then drops the global (the other three never
+shipped as globals and are just dropped). A change applies on the next connection only, and the
+editor says so (long-press help, and "Reconnect to apply the new settings." after saving the live
+connection): a live SetPixelFormat would race updates already in flight in the old format, and
+the client cannot tell those apart from the new ones.
 
 Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
 opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be
@@ -498,7 +503,7 @@ Not verified, and where to look first if something is wrong:
   from real fingers is not. Same for a real tap in the menu zone.
 - Tight compression: exercised against the mock only. It is not RFC 6143 and servers differ in how
   they read its control byte (0x0A is "uncompressed" in libvncclient, "PNG" in TurboVNC/noVNC);
-  the implementation follows libvncclient, cross-checked against noVNC. Flip the
+  the implementation follows libvncclient, cross-checked against noVNC. Flip the profile
   ["enable_tight"] default only after a real server has been verified.
 - 16/8-bit decoding and the Tight quality/compression pseudo-encodings: checked only against
   tools/mock_vnc_server.py, whose 16/8-bit Tight gradient encoder was written together with the

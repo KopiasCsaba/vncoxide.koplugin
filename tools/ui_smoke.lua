@@ -595,7 +595,7 @@ local function new_app(plane_w, plane_h)
         plugin = {
             settings = {
                 data = { settings = { orientation = 0, keyboard_always_visible = false,
-                                      zoom_mode = "fit", enable_tight = false } },
+                                      zoom_mode = "fit" } },
                 profiles = function() return {} end,
                 flush = function() end,
             },
@@ -1915,48 +1915,212 @@ check("leaving_the_viewer_through_the_plugin_restores_the_home_screen", function
     remote:free()
 end)
 
--- ---------------------------------------------------------------- bandwidth settings
+-- ---------------------------------------------------------------- picture settings (per connection)
 
-check("bandwidth_settings_default_and_are_kept_in_shape", function()
+check("picture_settings_are_profile_fields_kept_in_shape", function()
     local Settings = require("vnc/settings")
     local writeToFile = require("util").writeToFile
-    -- a file from before these settings existed gets their defaults
-    local old = data_dir .. "/ui_smoke_settings_no_bandwidth.lua"
-    writeToFile('{ ["settings"] = { ["enable_tight"] = true } }\n', old, true, true)
-    local s = Settings.open(old)
-    assert_true(s.data.settings.color_depth == 24, "colour depth defaults to 24, got "
-        .. tostring(s.data.settings.color_depth))
-    assert_true(s.data.settings.jpeg_quality == false, "JPEG quality defaults to off, got "
-        .. tostring(s.data.settings.jpeg_quality))
-    assert_true(s.data.settings.compress_level == false, "compression level defaults to off, got "
-        .. tostring(s.data.settings.compress_level))
-
-    -- usable values survive, anything else falls back to the default
-    local good = data_dir .. "/ui_smoke_settings_bandwidth_good.lua"
-    writeToFile('{ ["settings"] = { ["color_depth"] = 8, ["jpeg_quality"] = 0, ["compress_level"] = 9 } }\n',
-        good, true, true)
-    s = Settings.open(good)
-    assert_true(s.data.settings.color_depth == 8 and s.data.settings.jpeg_quality == 0
-        and s.data.settings.compress_level == 9, "valid values are kept")
-    local bad = data_dir .. "/ui_smoke_settings_bandwidth_bad.lua"
-    writeToFile('{ ["settings"] = { ["color_depth"] = 15, ["jpeg_quality"] = 12, ["compress_level"] = 2.5 } }\n',
-        bad, true, true)
-    s = Settings.open(bad)
-    assert_true(s.data.settings.color_depth == 24, "an unknown depth falls back to 24")
-    assert_true(s.data.settings.jpeg_quality == false, "an out-of-range quality falls back to off")
-    assert_true(s.data.settings.compress_level == false, "a non-integer level falls back to off")
+    local path = data_dir .. "/ui_smoke_settings_picture.lua"
+    writeToFile([==[
+{
+    ["settings"] = { ["color_depth"] = 8, ["jpeg_quality"] = 3, ["compress_level"] = 9 },
+    ["profiles"] = {
+        { ["name"] = "old", ["host"] = "h", ["port"] = 5900 },
+        { ["name"] = "good", ["host"] = "h", ["port"] = 5900, ["color_depth"] = 16,
+          ["enable_tight"] = true, ["jpeg_quality"] = 0, ["compress_level"] = 9 },
+        { ["name"] = "bad", ["host"] = "h", ["port"] = 5900, ["color_depth"] = 15,
+          ["enable_tight"] = "yes", ["jpeg_quality"] = 12, ["compress_level"] = 2.5 },
+    },
+}
+]==], path, true, true)
+    local s = Settings.open(path)
+    local old, good, bad = s:get_profile("old"), s:get_profile("good"), s:get_profile("bad")
+    assert_true(old.color_depth == 24 and old.enable_tight == false and old.jpeg_quality == false
+        and old.compress_level == false, "a profile without the fields loads as 24/false/false/false")
+    assert_true(good.color_depth == 16 and good.enable_tight == true and good.jpeg_quality == 0
+        and good.compress_level == 9, "valid values are kept")
+    assert_true(bad.color_depth == 24, "an unknown depth falls back to 24")
+    assert_true(bad.enable_tight == false, "only the boolean true turns Tight on")
+    assert_true(bad.jpeg_quality == false, "an out-of-range quality falls back to off")
+    assert_true(bad.compress_level == false, "a non-integer level falls back to off")
+    for _, key in ipairs({ "color_depth", "enable_tight", "jpeg_quality", "compress_level" }) do
+        assert_true(s.data.settings[key] == nil, "the global " .. key .. " is gone")
+    end
 end)
 
-check("session_hands_the_bandwidth_settings_to_the_protocol", function()
+check("a_stored_global_tight_becomes_the_profile_default", function()
+    -- `enable_tight` was a global setting in released versions: a user who had it on keeps it.
+    local Settings = require("vnc/settings")
+    local writeToFile = require("util").writeToFile
+    local path = data_dir .. "/ui_smoke_settings_legacy_tight.lua"
+    writeToFile([==[
+{
+    ["settings"] = { ["enable_tight"] = true },
+    ["profiles"] = {
+        { ["name"] = "plain", ["host"] = "h", ["port"] = 5900 },
+        { ["name"] = "off", ["host"] = "h", ["port"] = 5900, ["enable_tight"] = false },
+    },
+}
+]==], path, true, true)
+    local s = Settings.open(path)
+    assert_true(s:get_profile("plain").enable_tight == true, "a profile without the field inherits Tight")
+    assert_true(s:get_profile("off").enable_tight == false, "a profile's own choice wins")
+    assert_true(s.data.settings.enable_tight == nil, "the global is dropped")
+    s:flush()
+    local on_disk = dofile(path)
+    assert_true(on_disk.profiles[1].enable_tight == true, "the inherited value is written to the profile")
+    assert_true(on_disk.settings.enable_tight == nil, "and the global is not written back")
+
+    local path2 = data_dir .. "/ui_smoke_settings_legacy_tight_off.lua"
+    writeToFile('{ ["settings"] = { ["enable_tight"] = false }, ["profiles"] = { { ["name"] = "p", ["host"] = "h" } } }\n',
+        path2, true, true)
+    assert_true(Settings.open(path2):get_profile("p").enable_tight == false, "a global off leaves Tight off")
+end)
+
+check("save_profile_keeps_omitted_picture_fields", function()
+    local Settings = require("vnc/settings")
+    local path = data_dir .. "/ui_smoke_settings_picture_save.lua"
+    os.remove(path)
+    local s = Settings.open(path)
+    s:save_profile{ name = "p", host = "h", port = 5900 }
+    local p = s:get_profile("p")
+    assert_true(p.color_depth == 24 and p.enable_tight == false and p.jpeg_quality == false
+        and p.compress_level == false, "a new profile gets the defaults")
+    s:save_profile({ name = "p", host = "h", port = 5900, color_depth = 8, enable_tight = true,
+        jpeg_quality = 3, compress_level = 9 }, "p")
+    s:save_profile({ name = "p", host = "h2", port = 5900 }, "p")
+    p = s:get_profile("p")
+    assert_true(p.host == "h2", "the edit is applied")
+    assert_true(p.color_depth == 8 and p.enable_tight == true and p.jpeg_quality == 3
+        and p.compress_level == 9, "an edit without the picture fields keeps them")
+    s:save_profile({ name = "p", host = "h2", port = 5900, color_depth = 99, enable_tight = false,
+        jpeg_quality = false, compress_level = false }, "p")
+    p = s:get_profile("p")
+    assert_true(p.color_depth == 24 and p.enable_tight == false and p.jpeg_quality == false
+        and p.compress_level == false, "given fields are applied and normalised")
+end)
+
+--- The editor's Picture button (its label carries the summary).
+local function picture_button(editor)
+    for _, row in ipairs(editor.buttons or {}) do
+        for _, btn in ipairs(row) do
+            if btn.text and btn.text:sub(1, 8) == "Picture:" then return btn end
+        end
+    end
+    error("no Picture button in the editor")
+end
+local function button_starting(widget, prefix)
+    for _, row in ipairs(widget.buttons or {}) do
+        for _, btn in ipairs(row) do
+            if btn.text and btn.text:sub(1, #prefix) == prefix then return btn end
+        end
+    end
+    error(string.format("no button starting with %q in %s", prefix, stack_desc()), 2)
+end
+
+check("editor_picture_settings_save_and_cancel", function()
+    local Dialogs = require("vnc/dialogs")
+    store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, color_depth = 24,
+        enable_tight = false, jpeg_quality = false, compress_level = false }, "good")
+    local NEXT = "Takes effect on the next connection."
+
+    local editor = Dialogs.edit_profile(plugin, store:get_profile("good"), {})
+    assert_true(picture_button(editor).text == "Picture: 24-bit", "all defaults read as 24-bit, got "
+        .. picture_button(editor).text)
+    assert_true(editor.buttons[#editor.buttons][1].text == "Cancel", "Cancel/Save stay the last row")
+    editor.input_fields[2]:setText("10.1.1.1")   -- typed, not yet saved
+
+    picture_button(editor).callback()
+    local pic = top()
+    assert_true(pic ~= editor and pic.buttons, "the picture dialog opens over the editor")
+    assert_true(not editor:isKeyboardVisible(), "the editor's keyboard makes way for it")
+    local depth = button_starting(pic, "Colour depth")
+    local jpeg = button_starting(pic, "JPEG quality")
+    local level = button_starting(pic, "Compression level")
+    assert_true(depth.text == "Colour depth: 24-bit", "the depth row shows the value, got " .. depth.text)
+    assert_true(jpeg.enabled == false and level.enabled == false, "JPEG/compression need Tight")
+    -- long press shows the same help as the old menu entries
+    jpeg.hold_callback()
+    assert_true(top().text and top().text:find(NEXT, 1, true)
+        and top().text:find("Only used at 24-bit colour.", 1, true), "JPEG help, got " .. tostring(top().text))
+    UIManager:close(top())
+    button_starting(pic, "Tight encoding").hold_callback()
+    assert_true(top().text:find("JPEG", 1, true), "Tight help mentions JPEG")
+    UIManager:close(top())
+
+    depth.callback()
+    local choice = top()
+    find_button(choice, "8-bit").callback()
+    pic = top()
+    assert_true(button_starting(pic, "Colour depth").text == "Colour depth: 8-bit", "the choice is shown")
+    button_starting(pic, "Tight encoding").callback()
+    pic = top()
+    assert_true(button_starting(pic, "Tight encoding").text == "Tight encoding: on", "Tight is shown on")
+    jpeg = button_starting(pic, "JPEG quality")
+    assert_true(jpeg.enabled ~= false, "with Tight on JPEG is selectable")
+    jpeg.callback()
+    choice = top()
+    find_button(choice, "Off")
+    find_button(choice, "9")
+    find_button(choice, "3").callback()
+    pic = top()
+    find_button(pic, "Done").callback()
+    -- (the editor's keyboard comes back above it)
+    for _, w in ipairs(stack()) do
+        assert_true(w == editor or not w.buttons, "the picture dialog is gone: " .. stack_desc())
+    end
+    assert_true(count(is_editor) == 1 and stack()[1] == editor, "the same editor, not a new one")
+    assert_true(editor:isKeyboardVisible(), "the keyboard is back")
+    assert_true(editor.input_fields[2]:getText() == "10.1.1.1", "typed text survives the picture dialog")
+    assert_true(picture_button(editor).text == "Picture: 8-bit, Tight, JPEG 3",
+        "the button summarises the choice, got " .. picture_button(editor).text)
+    assert_true(editor.button_table:getButtonById("picture").text == "Picture: 8-bit, Tight, JPEG 3",
+        "the shown button is relabelled")
+    local p = store:get_profile("good")
+    assert_true(p.color_depth == 24 and p.enable_tight == false, "nothing is stored before Save")
+
+    plugin.sessions = { good = { is_connected = function() return true end } }
+    find_button(editor, "Save").callback()
+    plugin.sessions = {}
+    p = store:get_profile("good")
+    assert_true(p.color_depth == 8 and p.enable_tight == true and p.jpeg_quality == 3
+        and p.compress_level == false, "Save stores the choice on the profile")
+    assert_true(top().text == "Reconnect to apply the new settings.", "saving the live profile says to reconnect")
+    UIManager:close(top())
+
+    -- the same changes, then Cancel: nothing changes
+    editor = Dialogs.edit_profile(plugin, store:get_profile("good"), {})
+    assert_true(picture_button(editor).text == "Picture: 8-bit, Tight, JPEG 3", "the stored choice is shown")
+    picture_button(editor).callback()
+    button_starting(top(), "Colour depth").callback()
+    find_button(top(), "16-bit").callback()
+    button_starting(top(), "Compression level").callback()
+    find_button(top(), "9").callback()
+    find_button(top(), "Done").callback()
+    assert_true(picture_button(editor).text == "Picture: 16-bit, Tight, JPEG 3, compr. 9", "summary with all four")
+    find_button(editor, "Cancel").callback()
+    p = store:get_profile("good")
+    assert_true(p.color_depth == 8 and p.compress_level == false, "Cancel discards the choice")
+
+    -- a save while not connected shows no notice
+    editor = Dialogs.edit_profile(plugin, store:get_profile("good"), {})
+    find_button(editor, "Save").callback()
+    for _, w in ipairs(stack()) do
+        assert_true(w.text ~= "Reconnect to apply the new settings.", "no notice without a live session")
+    end
+    store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, color_depth = 24,
+        enable_tight = false, jpeg_quality = false, compress_level = false }, "good")
+end)
+
+check("session_hands_the_profile_picture_settings_to_the_protocol", function()
     local socket = require("socket")
     local Protocol = require("vnc/protocol")
     local Session = require("vnc/session")
     local listener = assert(socket.bind("127.0.0.1", 0))
     local _, port = listener:getsockname()
-    local values = { enable_tight = true, color_depth = 8, jpeg_quality = 3, compress_level = false }
     local session = Session.new{
-        profile = { name = "t", host = "127.0.0.1", port = port, password = "" },
-        plugin = { settings = { get_setting = function(_, key) return values[key] end } },
+        profile = { name = "t", host = "127.0.0.1", port = port, password = "",
+                    color_depth = 8, enable_tight = true, jpeg_quality = 3, compress_level = false },
     }
     local real_new, captured = Protocol.new, nil
     local STOP = {}
@@ -1976,84 +2140,25 @@ check("session_hands_the_bandwidth_settings_to_the_protocol", function()
     end
 end)
 
-check("bandwidth_menu_entries", function()
+check("session_teardown_drops_the_timing_state", function()
+    local Session = require("vnc/session")
+    local session = Session.new{ profile = { name = "t", host = "h", port = 1 } }
+    session.tm = { bytes = 0 }
+    session:_teardown_connection()
+    assert_true(session.tm == nil, "a torn-down connection keeps no timing state")
+end)
+
+check("viewer_menu_has_no_picture_entries", function()
     local app, remote = new_app()
-    local s = app.plugin.settings.data.settings
-    s.color_depth, s.jpeg_quality, s.compress_level, s.enable_tight = 24, false, false, false
-    local NEXT = "Takes effect on the next connection."
-    local function entry(prefix)
-        for _, item in ipairs(app.menu.item_table) do
-            if item.text:sub(1, #prefix) == prefix then return item end
+    app:open_menu()
+    local has_page_buttons = false
+    for _, item in ipairs(app.menu.item_table) do
+        for _, prefix in ipairs({ "Colour depth", "Tight encoding", "JPEG quality", "Compression level" }) do
+            assert_true(item.text:sub(1, #prefix) ~= prefix, "the viewer menu still has " .. item.text)
         end
-        error("no menu entry starting with " .. prefix)
+        if item.text == "Page buttons send" then has_page_buttons = true end
     end
-
-    app:open_menu()
-    local depth, jpeg, level = entry("Colour depth"), entry("JPEG quality"), entry("Compression level")
-    for _, item in ipairs({ depth, jpeg, level }) do
-        assert_true(item.text:find("next connection", 1, true), "the entry must say when it applies: " .. item.text)
-        assert_true(item.help_text and item.help_text:find(NEXT, 1, true), "help for " .. item.text)
-    end
-    assert_true(jpeg.help_text:find("Only used at 24-bit colour.", 1, true), "JPEG help mentions 24-bit")
-    assert_true(depth.sub_item_table and #depth.sub_item_table == 3, "three colour depths")
-    assert_true(depth.mandatory == "24-bit", "the current depth is shown, got " .. tostring(depth.mandatory))
-    assert_true(jpeg.select_enabled == false and jpeg.sub_item_table == nil and jpeg.dim,
-        "JPEG quality is disabled without Tight")
-    assert_true(level.select_enabled == false and level.sub_item_table == nil and level.dim,
-        "compression level is disabled without Tight")
-    -- a long press shows the help
-    app.menu:onMenuHold(depth)
-    assert_true(top().text and top().text:find(NEXT, 1, true), "holding an entry shows its help")
-    UIManager:close(top())
-    app:close_menu()
-
-    -- the Tight toggle sits before the two Tight-only entries and turns them on
-    app:open_menu()
-    local tight = entry("Tight encoding")
-    assert_true(tight.text:find("next connection", 1, true), "the Tight entry says when it applies")
-    assert_true(tight.help_text and tight.help_text:find(NEXT, 1, true)
-        and tight.help_text:find("JPEG", 1, true), "the Tight help mentions the next connection and JPEG")
-    assert_true(tight.mandatory == "-", "Tight is shown off")
-    local pos = {}
-    for i, item in ipairs(app.menu.item_table) do pos[item] = i end
-    assert_true(pos[tight] < pos[entry("JPEG quality")] and pos[tight] < pos[entry("Compression level")],
-        "the Tight entry comes before JPEG quality and compression level")
-    tight.callback()
-    assert_true(s.enable_tight == true, "toggling the entry turns Tight on")
-    assert_true(top().text == NEXT, "a connected session is told the toggle applies next time")
-    UIManager:close(top())
-    app:open_menu()
-    jpeg, level = entry("JPEG quality"), entry("Compression level")
-    assert_true(entry("Tight encoding").mandatory == "✓", "Tight is shown on")
-    assert_true(jpeg.select_enabled ~= false and not jpeg.dim and level.select_enabled ~= false
-        and not level.dim, "with Tight on the two entries are enabled")
-    assert_true(jpeg.sub_item_table and #jpeg.sub_item_table == 11, "Off plus 0..9 qualities")
-    assert_true(level.sub_item_table and #level.sub_item_table == 11, "Off plus 0..9 levels")
-    assert_true(jpeg.mandatory == "Off", "off is shown as Off")
-    -- choosing a value while connected stores it and says when it applies
-    find_item(jpeg.sub_item_table, "3").callback()
-    assert_true(s.jpeg_quality == 3, "the quality is stored as an integer, got " .. tostring(s.jpeg_quality))
-    assert_true(top().text == NEXT, "a connected session is told it applies next time")
-    UIManager:close(top())
-    app:open_menu()
-    find_item(entry("JPEG quality").sub_item_table, "Off").callback()
-    assert_true(s.jpeg_quality == false, "Off stores false")
-    UIManager:close(top())
-    app:open_menu()
-    find_item(entry("Colour depth").sub_item_table, "8-bit").callback()
-    assert_true(s.color_depth == 8, "the depth is stored")
-    UIManager:close(top())
-    app:open_menu()
-    find_item(entry("Compression level").sub_item_table, "9").callback()
-    assert_true(s.compress_level == 9, "the level is stored")
-    UIManager:close(top())
-
-    -- without a live connection there is nothing to warn about
-    app.session.get_state = function() return "error" end
-    app:open_menu()
-    find_item(entry("Compression level").sub_item_table, "0").callback()
-    assert_true(s.compress_level == 0, "the level is stored")
-    assert_true(not (top() and top().text == NEXT), "no notice without a connected session")
+    assert_true(has_page_buttons, "Page buttons send stays in the viewer menu")
     app:onCloseWidget()
     remote:free()
 end)
