@@ -37,25 +37,47 @@ local COLOR_DEPTHS = {
     { label = _("8-bit"), value = 8 },
 }
 
-local NEXT_CONNECTION = _("Takes effect on the next connection.")
-
---- Long-press help for each picture setting.
-local PICTURE_HELP = {
-    color_depth = NEXT_CONNECTION,
-    enable_tight = NEXT_CONNECTION .. "\n"
-        .. _("Tight can send JPEG, so lowering JPEG quality saves bandwidth on photos."),
-    jpeg_quality = NEXT_CONNECTION .. "\n" .. _("Only used at 24-bit colour."),
-    compress_level = NEXT_CONNECTION,
+-- The explanation of each setting: shown above the rows (names in bold) and, per setting, as the
+-- row's long-press help.
+local PICTURE_TEXT = {
+    color_depth = {
+        name = _("Colour depth"),
+        body = _("how many bits the PC sends per pixel. 24-bit is full colour. 16-bit halves the data, and greys still look smooth on e-ink. 8-bit quarters it, but greys show visible steps."),
+    },
+    enable_tight = {
+        name = _("Tight"),
+        body = _("a different packing format. Its main advantage is JPEG: photo-like areas (pictures, video, images in web pages) can be sent as JPEG, which is far smaller than lossless. Worth trying on slow Wi-Fi when the screen shows images. Without JPEG it is lossless, like the default format."),
+    },
+    jpeg_quality = {
+        name = _("JPEG quality"),
+        body = _("Off sends everything lossless. 0–9 sends photo-like areas as JPEG; lower is smaller and blurrier. Only works at 24-bit colour."),
+    },
+    compress_level = {
+        name = _("Compression level"),
+        body = _("how hard the PC compresses. Higher means fewer bytes and more work for the PC; unpacking on the e-reader costs about the same. Off uses the server's default."),
+    },
 }
+local PICTURE_ORDER = { "color_depth", "enable_tight", "jpeg_quality", "compress_level" }
+local PICTURE_FOOTER = _("Changes take effect on the next connection.")
 
---- Always shown in the picture dialog: what each setting does, and when it applies.
-local PICTURE_EXPLANATION = table.concat({
-    _("Colour depth: fewer bits = less data. 16-bit looks the same on e-ink greys."),
-    _("Tight: an extra compression method; needed for the JPEG and compression settings."),
-    _("JPEG quality: lower = smaller photos/video (24-bit colour only)."),
-    _("Compression level: higher = less data, more work for the PC."),
-    _("Depth, Tight, JPEG and compression take effect on the next connection."),
-}, "\n")
+--- Long-press help for each picture setting (plain text).
+local PICTURE_HELP = {}
+for key, entry in pairs(PICTURE_TEXT) do PICTURE_HELP[key] = entry.name .. ": " .. entry.body end
+
+--- Always shown in the picture dialog (ButtonDialog's title is a TextBoxWidget, which honours PTF):
+--- what each setting does, with the setting names in bold.
+local PICTURE_EXPLANATION
+do
+    local TextBoxWidget = require("ui/widget/textboxwidget")
+    local paragraphs = {}
+    for _i, key in ipairs(PICTURE_ORDER) do
+        local entry = PICTURE_TEXT[key]
+        paragraphs[#paragraphs + 1] = TextBoxWidget.PTF_BOLD_START .. entry.name
+            .. TextBoxWidget.PTF_BOLD_END .. ": " .. entry.body
+    end
+    paragraphs[#paragraphs + 1] = PICTURE_FOOTER
+    PICTURE_EXPLANATION = TextBoxWidget.PTF_HEADER .. table.concat(paragraphs, "\n\n")
+end
 
 -- Marks the Tight pseudo-encodings as sub-items of the Tight row.
 local SUB_ITEM = "   \u{21B3} "
@@ -104,7 +126,7 @@ end
 
 --[[--
 The picture settings of one connection: colour depth, Tight, and Tight's JPEG
-quality and compression level (indented under it, and marked as needing it while it is off). An
+quality and compression level (indented under it, dimmed while it is off). An
 explanation of every setting stays visible above the rows (ButtonDialog's title area).
 
 Edits `picture` in place. Picking a value reopens this dialog so its labels follow; Done, Back or
@@ -160,11 +182,10 @@ function Dialogs.picture_settings(picture, on_done)
             reopen()
         end
     end
-    -- A Tight pseudo-encoding row: without Tight the server never sees it.
+    -- A Tight pseudo-encoding row: dimmed (but still long-pressable) while Tight is off.
     local function tight_sub_item(label, title, key)
         return { {
-            text = SUB_ITEM .. T(label, picture.enable_tight and level_label(picture[key])
-                or _("needs Tight")),
+            text = SUB_ITEM .. T(label, level_label(picture[key])),
             align = "left",
             enabled = picture.enable_tight,
             allow_hold_when_disabled = true,

@@ -2119,25 +2119,41 @@ check("editor_picture_settings_save_and_cancel", function()
     local level = button_starting(pic, SUB .. "Compression level")
     assert_true(depth.text == "Colour depth: 24-bit", "the depth row shows the value, got " .. depth.text)
     assert_true(jpeg.enabled == false and level.enabled == false, "JPEG/compression need Tight")
-    assert_true(jpeg.text == SUB .. "JPEG quality: needs Tight", "the JPEG row says it needs Tight, got " .. jpeg.text)
-    assert_true(level.text == SUB .. "Compression level: needs Tight", "so does compression, got " .. level.text)
+    assert_true(jpeg.text == SUB .. "JPEG quality: Off", "the JPEG row shows its value, got " .. jpeg.text)
+    assert_true(level.text == SUB .. "Compression level: Off", "so does compression, got " .. level.text)
+    assert_true(jpeg.allow_hold_when_disabled and level.allow_hold_when_disabled, "dimmed rows stay long-pressable")
+    for _, row in ipairs(pic.buttons) do
+        assert_true(not row[1].text:find("needs", 1, true), "no label says needs: " .. row[1].text)
+    end
     for _, row in ipairs(pic.buttons) do
         assert_true(not row[1].text:find("Sharp", 1, true), "no sharp row in the picture dialog: " .. row[1].text)
     end
     assert_true(not pic.title:find("Sharp", 1, true) and not pic.title:find("sharp", 1, true),
         "the explanation does not mention sharp scaling")
-    assert_true(pic.title:find("Depth, Tight, JPEG and compression take effect on the next connection.", 1, true),
-        "the last explanation line, got " .. pic.title)
+    assert_true(pic.title:find("Its main advantage is JPEG", 1, true) and pic.title:find("next connection", 1, true),
+        "the new explanation, got " .. pic.title)
+    local TextBoxWidget = require("ui/widget/textboxwidget")
+    assert_true(pic.title:sub(1, #TextBoxWidget.PTF_HEADER) == TextBoxWidget.PTF_HEADER, "title is PTF text")
+    assert_true(pic.title:find(TextBoxWidget.PTF_BOLD_START .. "Colour depth" .. TextBoxWidget.PTF_BOLD_END
+        .. ": how many bits", 1, true), "setting names are bold")
+    assert_true(not pic.title:find("needs", 1, true), "no 'needs' in the explanation")
+    local tbw = pic.title_group and pic.title_group[1] and pic.title_group[1][1]
+    assert_true(tbw and tbw._ptf_char_is_bold, "the rendering TextBoxWidget honours PTF (bold map built)")
+    local bold_n = 0
+    for _ in pairs(tbw._ptf_char_is_bold) do bold_n = bold_n + 1 end
+    assert_true(bold_n == #("Colour depth") + #("Tight") + #("JPEG quality") + #("Compression level"),
+        "exactly the four names are bold, got " .. bold_n)
+    assert_true(tbw.text:find("Colour depth: how many bits", 1, true) and not tbw.text:find("\u{FFF2}", 1, true),
+        "markers are stripped from the rendered text")
     local order = {}
     for _, row in ipairs(pic.buttons) do order[#order + 1] = row[1].text:match("^[^:]+") end
     assert_true(table.concat(order, "|") == "Colour depth|Tight encoding|"
         .. SUB .. "JPEG quality|" .. SUB .. "Compression level|Done", "row order, got " .. table.concat(order, "|"))
-    assert_true(type(pic.title) == "string" and pic.title:find("Tight:", 1, true)
-        and pic.title:find("next connection", 1, true), "the explanation is shown, got " .. tostring(pic.title))
+    assert_true(type(pic.title) == "string" and pic.title:find("Tight", 1, true), "the explanation is shown")
     -- long press shows the same help as the old menu entries
     jpeg.hold_callback()
-    assert_true(top().text and top().text:find(NEXT, 1, true)
-        and top().text:find("Only used at 24-bit colour.", 1, true), "JPEG help, got " .. tostring(top().text))
+    assert_true(top().text and top().text:find("JPEG quality: Off sends everything lossless.", 1, true)
+        and top().text:find("Only works at 24-bit colour.", 1, true), "JPEG help, got " .. tostring(top().text))
     UIManager:close(top())
     button_starting(pic, "Tight encoding").hold_callback()
     assert_true(top().text:find("JPEG", 1, true), "Tight help mentions JPEG")
@@ -2307,6 +2323,29 @@ check("session_teardown_drops_the_timing_state", function()
     session.tm = { bytes = 0 }
     session:_teardown_connection()
     assert_true(session.tm == nil, "a torn-down connection keeps no timing state")
+end)
+
+check("viewer_menu_disconnect_returns_to_the_list", function()
+    local app, remote = new_app()
+    local session = app.session
+    local disconnected = false
+    session.disconnect = function() disconnected = true end
+    session.detach = function() end
+    plugin.sessions = { test = session }
+    plugin.app = app
+    app.plugin = plugin
+    app:open_menu()
+    find_item(app.menu.item_table, "Disconnect").callback()
+    local confirm = top()
+    assert_true(confirm.ok_callback, "a confirmation, stack: " .. stack_desc())
+    answer_confirm(confirm, true)
+    UIManager:close(confirm)
+    assert_true(plugin.sessions.test == nil and disconnected, "the session is gone")
+    assert_true(plugin.app == nil, "the viewer is closed")
+    for _, w in ipairs(stack()) do assert_true(w ~= app, "viewer still on the stack") end
+    assert_true(is_list(top()) and plugin.connection_list == top(), "the connection list is on top: " .. stack_desc())
+    UIManager:close(top())
+    remote:free()
 end)
 
 check("viewer_menu_has_no_picture_entries", function()

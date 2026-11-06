@@ -903,6 +903,8 @@ end
 
 function ViewerApp:disconnect_session()
     self.plugin:disconnect_session(self.session:get_profile().name)
+    -- a user-initiated disconnect lands on the connection list, not the file browser
+    self.plugin:show_connection_list()
 end
 
 function ViewerApp:on_session_error(err)

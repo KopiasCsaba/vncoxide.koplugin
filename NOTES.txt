@@ -106,6 +106,8 @@ Detach/attach. Leaving the viewer detaches (unschedules the poll, stops reading,
 and the plane). Re-attaching sends a non-incremental request for the whole screen, which is both
 the resynchronisation and the way updates pushed while detached are absorbed. Only Disconnect
 closes the socket and restores Wi-Fi, and only Wi-Fi that the plugin turned on is turned off.
+A Disconnect chosen in the viewer menu (ViewerApp:disconnect_session) then opens the connection
+list; other disconnects (list actions, errors) and Leave do not.
 
 Settings. There is no schema version. The only migration is for the released global `enable_tight`
 (see "Pixel format and bandwidth" below). vnc/settings.lua:normalise() otherwise just keeps the
@@ -125,7 +127,9 @@ quality does nothing at 16/8-bit. normalise() resets anything else to the defaul
 `enable_tight` was a released global setting: normalise() takes a stored global true as the value
 of every profile without its own `enable_tight`, then drops the global (the other three never
 shipped as globals and are just dropped). A change applies on the next connection only, and the
-editor says so (long-press help, and "Reconnect to apply the new settings." after saving the live
+editor says so (the picture dialog's explanation block, which is PTF text with the setting names in
+bold and ends "Changes take effect on the next connection."; each row's long-press help is its
+paragraph as plain text; and "Reconnect to apply the new settings." after saving the live
 connection, only when host, port, password or one of these four changed): a live SetPixelFormat
 would race updates already in flight in the old format, and the client cannot tell those apart
 from the new ones. Scaling ("smooth" by default, or "sharp") is not a profile field: it is the global setting

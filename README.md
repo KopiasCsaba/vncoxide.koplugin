@@ -22,7 +22,8 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
 - One connection can be flagged to connect by itself at KOReader's start (and to appear as
   **VNC auto connect** in KOReader's **Start with** menu).
 - Wi-Fi is turned on when a connection needs it.
-- **Leave** the viewer and the connection survives; only **Disconnect** closes the session.
+- **Leave** the viewer and the connection survives; only **Disconnect** closes the session (and
+  returns you to the connection list).
 
 ## Install
 
@@ -244,11 +245,12 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   button in the connection editor (its label sums them up, e.g. `Picture: 16-bit, sharp, Tight, JPEG 3`).
   **Colour depth** (24/16/8-bit) asks the server for fewer bits per pixel; with Tight on, **JPEG
   quality** and **Compression level** (Off or 0–9; Off leaves the server's default) trade picture
-  quality and CPU for bytes (they are listed under **Tight encoding** and read "needs Tight" while
-  it is off). JPEG is only used at 24-bit colour. The choice is stored when the connection is saved
+  quality and CPU for bytes (they are listed under **Tight encoding** and are dimmed, but still
+  show their value and can be long-pressed, while it is off). JPEG is only used at 24-bit colour. The choice is stored when the connection is saved
   and **takes effect on the next connection** — saving the connection that is live says to
   reconnect when one of these (or the host, port or password) changed. New connections start with
-  Tight off. The dialog explains every setting; long-press one for its help.
+  Tight off. The dialog explains every setting, with the setting names in bold; long-press a row for that
+  setting's explanation.
 - **Sharp scaling (faster)**: a switch in the viewer menu, next to **Page buttons send**. It scales
   by repeating pixels instead of blending them: much faster redraws when the zoom is not 100% and
   crisper text, but uneven at non-whole zoom levels. It is one global setting (not per connection)
