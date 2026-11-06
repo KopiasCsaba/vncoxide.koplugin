@@ -164,9 +164,10 @@ function Benchmark:_guarded(fn)
         logger.warn("vnc: benchmark error:", err)
         local combo = self.combinations[self.index]
         if not combo then
-            -- the error came from finishing: stop without results
+            -- the error came from finishing: stop, but still hand over what was collected
             pcall(self._stop, self)
             self.stopped = true
+            self:_report()
             return
         end
         local last = self.results[#self.results]
@@ -224,7 +225,10 @@ function Benchmark:_next()
             return
         end
         local ok2, e = pcall(self._on_connected, self, run, session)
-        if not ok2 and self.run == run then run.err = run.err or tostring(e) end
+        if not ok2 then
+            logger.warn("vnc: benchmark connect callback failed:", e)
+            if self.run == run then run.err = run.err or tostring(e) end
+        end
     end)
 end
 
@@ -372,10 +376,15 @@ end
 
 function Benchmark:_finish()
     self:_stop()
-    if self.on_done then
-        local ok, e = pcall(self.on_done, Benchmark._sort(self.results))
-        if not ok then logger.warn("vnc: benchmark on_done failed:", e) end
-    end
+    self:_report()
+end
+
+--- Calls `on_done` with the sorted results, at most once.
+function Benchmark:_report()
+    if self._reported or not self.on_done then return end
+    self._reported = true
+    local ok, e = pcall(self.on_done, Benchmark._sort(self.results))
+    if not ok then logger.warn("vnc: benchmark on_done failed:", e) end
 end
 
 return Benchmark

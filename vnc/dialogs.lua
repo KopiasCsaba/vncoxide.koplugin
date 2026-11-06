@@ -63,8 +63,8 @@ local PICTURE_FOOTER = _("Changes take effect on the next connection.")
 -- Only in the Help viewer, after the per-setting paragraphs.
 local PICTURE_ADVICE = {
     {
-        name = _("Fastest on a fast network (e.g. PocketBook Era, PB700)"),
-        body = _("Colour depth 24-bit, Tight off, viewer zoom 100%. When the network is fast, fewer bytes gain little; the time goes into the e-reader's own work per pixel. 24-bit pixels are copied straight through, 16- and 8-bit ones have to be converted, and Tight's JPEG has to be decoded."),
+        name = _("Which is fastest?"),
+        body = _("it depends on the PC, the network and what is on the screen: on a PocketBook Era, 8-bit with compression has felt faster than 24-bit even on fast Wi-Fi. Measure it: in the connection's menu, tap Find fastest picture settings while something keeps changing on the PC."),
     },
     {
         name = _("Scale on the PC, not on the e-reader"),

@@ -1934,6 +1934,34 @@ local function main()
         return true
     end)
 
+    -- An unexpected error while finishing, with no combination left, still hands over the results.
+    check("benchmark_error_in_finish_still_reports", function()
+        local pid, port = start_multi{ name = "bench_finish", repaint = 0.01 }
+        local env = bench_env()
+        local results, calls = nil, 0
+        local b = env.Benchmark.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "bench" },
+            combinations = combos(env.Benchmark, "24-bit, Tight off"),
+            live_seconds = 1,
+            canvas = { w = 200, h = 150, bb_type = BB.TYPE_BB8 },
+            network_mgr = NET,
+            on_done = function(r) calls = calls + 1; results = r end,
+        }
+        local real, fired = b._stop, false
+        b._stop = function(...)
+            if not fired then fired = true; error("boom in _stop") end
+            return real(...)
+        end
+        local ok_start, start_err = pcall(b.start, b)
+        local finished = ok_start and env.run(function() return results ~= nil end)
+        env.restore()
+        stop_mock(pid)
+        if not ok_start then return nil, "start raised " .. tostring(start_err) end
+        if not finished then return nil, "on_done never called" end
+        if calls ~= 1 or #results ~= 1 then return nil, "calls=" .. calls .. " rows=" .. #results end
+        return true
+    end)
+
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
         os.exit(1)

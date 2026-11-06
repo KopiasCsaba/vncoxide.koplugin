@@ -2147,6 +2147,7 @@ check("editor_picture_settings_save_and_cancel", function()
         "no setting paragraph mentions sharp scaling")
     assert_true(viewer.text:find("-z 2", 1, true) and viewer.text:find("other than 100%", 1, true),
         "the advice points to the server script's -z and to zoom 100%")
+    assert_true(viewer.text:find("Find fastest picture settings", 1, true), "the advice points to the benchmark")
     assert_true(not viewer.text:find("needs", 1, true), "no 'needs' in the explanation")
     local TextBoxWidget = require("ui/widget/textboxwidget")
     assert_true(viewer.text:sub(1, #TextBoxWidget.PTF_HEADER) == TextBoxWidget.PTF_HEADER, "viewer text is PTF text")
@@ -2157,7 +2158,7 @@ check("editor_picture_settings_save_and_cancel", function()
     local bold_n = 0
     for _ in pairs(tbw._ptf_char_is_bold) do bold_n = bold_n + 1 end
     assert_true(bold_n == #("Colour depth") + #("Tight") + #("JPEG quality") + #("Compression level")
-        + #("Fastest on a fast network (e.g. PocketBook Era, PB700)") + #("Scale on the PC, not on the e-reader")
+        + #("Which is fastest?") + #("Scale on the PC, not on the e-reader")
         + #("Example"),
         "exactly the four names and the three advice headings are bold, got " .. bold_n)
     assert_true(tbw.text:find("Colour depth: how many bits", 1, true) and not tbw.text:find("\u{FFF2}", 1, true),
