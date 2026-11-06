@@ -18,7 +18,7 @@
 - New settings live in `Settings.DEFAULTS` (`vnc/settings.lua:30`); "off" is stored as `false`.
 - `tools/vnc-server.py`: Python 3 stdlib only, no venv, relative paths only.
 - No author names/brands in commits or source.
-- Test runtime: KOReader's LuaJIT, invoked exactly as in `NOTES.txt:336-360` (`proto_smoke.lua`, `ui_smoke.lua`, `server_smoke.lua`). If unavailable, report it; never claim a Lua test passed without running it.
+- Test runtime: KOReader's LuaJIT (Linux build in `../tmp/koreader`). Run suites with `../tmp/run-tests.sh [proto|ui|server|py|all]` from the repo root (wraps the `NOTES.txt:336-400` commands). Never claim a test passed without running it.
 
 ## Review Focus
 
@@ -74,7 +74,7 @@
 **Interfaces:**
 - Consumes: `PxFmt.for_depth`, `Encodings.order(enable_tight, opts)`, `Protocol.new{pixel_format=}`.
 - Produces: settings `color_depth = 24`, `jpeg_quality = false`, `compress_level = false`. Session builds `pixel_format = PxFmt.for_depth(color_depth)` and `encodings = Encodings.order(enable_tight, {jpeg_quality=…, compress_level=…})`.
-- Menu: "Colour depth" (24-bit / 16-bit / 8-bit, radio), "JPEG quality" (Off, 0–9) and "Compression level" (Off, 0–9), the latter two enabled only when Tight is on. Help text for all three: "Takes effect on the next connection." JPEG help also: "Only used at 24-bit colour."
+- Menu: "Colour depth" (24-bit / 16-bit / 8-bit, radio), "JPEG quality" (Off, 0–9) and "Compression level" (Off, 0–9), the latter two enabled only when Tight is on. Help text for all three: "Takes effect on the next connection." JPEG help also: "Only used at 24-bit colour." Additionally (user request): the menu entry text itself carries a visible hint (e.g. "Colour depth (next connection)" or a sub-line), and changing any of the three while a session is connected shows a short `InfoMessage`/notification "Takes effect on the next connection.".
 - Decision: apply on next connection only — a live SetPixelFormat races updates already in flight in the old format, which the client cannot tell apart.
 
 - [ ] **Step 1: Write failing tests** in `ui_smoke.lua`: (a) loading a settings file without the new keys yields `color_depth == 24`, `jpeg_quality == false`, `compress_level == false`; (b) with `color_depth = 8, enable_tight = true, jpeg_quality = 3` the session hands `Protocol.new` a format with `bits_per_pixel == 8` and an encoding list ending in `-29` (stub/capture `Protocol.new` the way existing ui tests capture session calls); (c) the three menu entries exist, JPEG/compression disabled while `enable_tight` is false.
