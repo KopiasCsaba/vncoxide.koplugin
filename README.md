@@ -242,12 +242,14 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   encoding** under the connection editor's **Picture** button, or the profile's
   `["enable_tight"] = true`) until it has been tested against the server you use.
 - **Lower bandwidth**: each connection has its own picture settings, set with the **Picture: …**
-  button in the connection editor (its label sums them up, e.g. `Picture: 16-bit, sharp, Tight, JPEG 3`).
+  button in the connection editor (its label sums them up, e.g. `Picture: 16-bit, Tight, JPEG 3`).
   **Colour depth** (24/16/8-bit) asks the server for fewer bits per pixel; with Tight on, **JPEG
   quality** and **Compression level** (Off or 0–9; Off leaves the server's default) trade picture
-  quality and CPU for bytes (they are listed under **Tight encoding** and are dimmed, but still
-  show their value and can be long-pressed, while it is off). JPEG is only used at 24-bit colour. The choice is stored when the connection is saved
-  and **takes effect on the next connection** — saving the connection that is live says to
+  quality and CPU for bytes. Compression level only packs the lossless parts (text, menus, flat
+  areas); on x11vnc only a few values differ: 2 with JPEG, 0 or 1 without (see its help). Both
+  are listed under **Tight encoding** and are dimmed, but still show their value and can be
+  long-pressed, while it is off. JPEG is only used at 24-bit colour. The choice is stored when the
+  connection is saved and **takes effect on the next connection** — saving the connection that is live says to
   reconnect when one of these (or the host, port or password) changed. New connections start with
   Tight off. The dialog explains every setting, with the setting names in bold; long-press a row for that
   setting's explanation.

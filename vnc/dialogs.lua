@@ -54,7 +54,7 @@ local PICTURE_TEXT = {
     },
     compress_level = {
         name = _("Compression level"),
-        body = _("how hard the PC compresses. Higher means fewer bytes and more work for the PC; unpacking on the e-reader costs about the same. Off uses the server's default."),
+        body = _("how hard the PC packs the lossless parts of the screen: text, menus and flat areas. JPEG areas are not affected. With JPEG on, a higher level also keeps areas with more shades, such as smooth text, lossless instead of turning them into JPEG. Higher means fewer bytes and more work for the PC; unpacking on the e-reader costs about the same. On x11vnc only a few values differ: with JPEG, 0–1 act as 1 and 2–9 as 2, so pick 2; without JPEG, 0 sends the data unpacked (for a fast network) and 1–9 all act as 1. Other servers may use the whole range. Off uses the server's default."),
     },
 }
 local PICTURE_ORDER = { "color_depth", "enable_tight", "jpeg_quality", "compress_level" }
