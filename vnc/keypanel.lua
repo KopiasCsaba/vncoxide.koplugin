@@ -20,7 +20,8 @@ all; nothing stays down on the remote between actions. That action is either
   in the middle of a drag.
 
 The last few distinct combos sent from the panel are kept in the `recent_combos` setting; tapping
-one sends exactly that combo again and leaves the armed modifiers for the next action.
+one sends exactly that combo again. That counts as the action: the armed modifiers are cleared, not
+added to it.
 
 @module vnc.keypanel
 ]]
@@ -205,9 +206,11 @@ function KeyPanel:send_modifiers_only()
     self:_update()
 end
 
---- Sends a remembered combo exactly, whatever is armed.
+--- Sends a remembered combo exactly. It is the action the armed modifiers were waiting for: they
+--- are not added to it, and are cleared.
 function KeyPanel:replay(combo)
     self:_send_combo(combo.mods, combo.keysym)
+    self.mods = {}
     self:_remember(combo)
     self:_update()
 end
@@ -371,7 +374,7 @@ function KeyPanel:_tab_row(width, row_height)
     local switch = ToggleSwitch:new{
         width = width - 2 * Size.padding.large,
         height = row_height - 2 * pad,
-        font_size = 20,
+        -- font: ToggleSwitch's own default, the size of the bottom config panel's toggles
         toggle = labels,
         values = values,
         name = "vnc_key_tab",
@@ -534,36 +537,51 @@ end
 
 -- ---------------------------------------------------------------- input / lifecycle
 
+--- Gestures that continue one started earlier, by the gesture that started it.
+local CONTINUES = {
+    pan = "pan", pan_release = "pan",
+    two_finger_pan = "pan", two_finger_pan_release = "pan",
+    hold = "hold", hold_pan = "hold", hold_release = "hold",
+}
+local STARTS = { pan = true, two_finger_pan = true, hold = true }
+local ENDS = { pan_release = true, two_finger_pan_release = true, hold_release = true }
+
 --[[--
-Swallows whatever lands on the panel itself and was not taken by one of its buttons (the gaps
-between them, the title): the viewer underneath would otherwise click the remote there. A drag
-belongs to where it started: one that began on the canvas stays the viewer's even when it slides
-over the panel (its release must reach the remote), and one that began here stays ours.
+Whether a gesture is the panel's: true (ours wherever it is now), false (the viewer's wherever it is
+now), or nil (decided by where it lands). A drag or a long press belongs to where it started: one
+that began on the canvas stays the viewer's even when the finger slides over the panel (its release
+must reach the remote, or a button and the modifiers it took would stay down), and one that began
+here stays ours.
 ]]
-function KeyPanel:onGesture(ev)
-    if not (ev and ev.pos and self.dimen) then return nil end
-    local ges = ev.ges
-    if ges == "pan" or ges == "two_finger_pan" then
+function KeyPanel:_gesture_owner(ev)
+    local kind = CONTINUES[ev.ges]
+    if not kind then return nil end
+    self._owner = self._owner or {}
+    local owner = self._owner[kind]
+    if owner == nil and STARTS[ev.ges] then
         local rel = ev.relative or { x = 0, y = 0 }
-        local origin = Geom:new{ x = ev.pos.x - rel.x, y = ev.pos.y - rel.y }
-        if self._drag_here == nil then self._drag_here = self.dimen:contains(origin) end
-        return self._drag_here or nil
-    elseif ges == "pan_release" or ges == "two_finger_pan_release" then
-        local here = self._drag_here
-        self._drag_here = nil
-        if here == nil then return self.dimen:contains(ev.pos) or nil end
-        return here or nil
+        owner = self.dimen:contains(Geom:new{ x = ev.pos.x - rel.x, y = ev.pos.y - rel.y })
+        self._owner[kind] = owner
     end
-    return self.dimen:contains(ev.pos) or nil
+    if ENDS[ev.ges] then self._owner[kind] = nil end
+    return owner
 end
 
---- A gesture off the panel never reaches its buttons: one rebuilt since the last paint does not
---- know where it is yet and would take a canvas tap for its own.
+--[[--
+Gestures: the viewer's never reach our buttons (a button rebuilt since the last paint does not know
+where it is yet and would take a canvas tap for its own), and ours never reach the viewer - whatever
+lands on the panel and none of its buttons takes (the gaps, the title) is swallowed, or the remote
+under the panel would be clicked.
+]]
 function KeyPanel:handleEvent(event)
     if event.handler == "onGesture" then
         local ev = event.args and event.args[1]
-        if ev and ev.pos and self.dimen and not self.dimen:contains(ev.pos) then
-            return self:onGesture(ev)
+        if ev and ev.pos and self.dimen then
+            local owner = self:_gesture_owner(ev)
+            if owner == nil then owner = self.dimen:contains(ev.pos) end
+            if not owner then return nil end
+            InputContainer.handleEvent(self, event)
+            return true
         end
     end
     return InputContainer.handleEvent(self, event)

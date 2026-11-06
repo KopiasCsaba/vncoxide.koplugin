@@ -97,8 +97,8 @@ Shift+click or Shift+drag to select, Alt+drag). The text to the right shows what
 next action; tap it to send just the modifiers (Super on its own opens most desktops' launcher). The tabs hold the special keys (Esc,
 Tab, Enter, Backspace, Delete, Insert, Home, End, Page Up/Down, Space, Menu, arrows, Print Screen,
 Pause, Caps Lock), F1-F12, letters and digits, and the symbol keys of a US keyboard (use Shift for
-the shifted ones). The bottom row repeats your last four combos exactly, and **Release all** disarms
-every modifier. Nothing stays pressed between actions. The panel stays open until its close button,
+the shifted ones). The bottom row repeats your last four combos exactly (armed modifiers are not added
+to them, and are cleared), and **Release all** disarms every modifier. Nothing stays pressed between actions. The panel stays open until its close button,
 Back or the Menu key; closing it, leaving the viewer or disconnecting in the middle of a drag lets
 go of the modifiers that drag holds.
 

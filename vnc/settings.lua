@@ -50,24 +50,37 @@ Settings.DEFAULTS = {
 --- How many combos the "Send keys" panel remembers.
 Settings.RECENT_COMBOS_MAX = 4
 
-local modifier_name = {}
-for _, m in ipairs(Keysyms.modifiers) do modifier_name[m.name] = true end
+local modifier_rank = {}
+for i, m in ipairs(Keysyms.modifiers) do modifier_rank[m.name] = i end
 
---- One remembered combo, or nil when it is not one: known modifiers, and a key or at least one
---- modifier.
+--- The largest keysym (X11 keysyms are 29-bit values).
+local KEYSYM_MAX = 0x1FFFFFFF
+
+--- One remembered combo in canonical form (modifiers once each, in press order), or nil when it is
+--- not one: known modifiers, a keysym in range, and a key or at least one modifier.
 local function clean_combo(c)
     if type(c) ~= "table" or type(c.mods) ~= "table" or type(c.label) ~= "string" then return nil end
     local keysym = c.keysym
-    if keysym ~= nil and (type(keysym) ~= "number" or keysym ~= math.floor(keysym) or keysym <= 0) then
+    if keysym ~= nil and (type(keysym) ~= "number" or keysym ~= math.floor(keysym)
+            or keysym < 0 or keysym > KEYSYM_MAX) then
         return nil
     end
-    local mods = {}
+    local seen = {}
     for _, name in ipairs(c.mods) do
-        if not modifier_name[name] then return nil end
-        mods[#mods + 1] = name
+        if not modifier_rank[name] then return nil end
+        seen[name] = true
+    end
+    local mods = {}
+    for _, m in ipairs(Keysyms.modifiers) do
+        if seen[m.name] then mods[#mods + 1] = m.name end
     end
     if keysym == nil and #mods == 0 then return nil end
     return { mods = mods, keysym = keysym, label = c.label }
+end
+
+--- A key identifying a combo regardless of the order its modifiers were listed in.
+local function combo_key(c)
+    return table.concat(c.mods, "+") .. "|" .. tostring(c.keysym)
 end
 
 --- Settings whose value is not just "the type of the default": each maps a raw value to a usable
@@ -84,9 +97,14 @@ local SETTING_CHECKS = {
     recent_combos = function(value)
         local list = {}
         if type(value) ~= "table" then return list end
+        local seen = {}
         for _, c in ipairs(value) do
             if #list >= Settings.RECENT_COMBOS_MAX then break end
-            list[#list + 1] = clean_combo(c)
+            local combo = clean_combo(c)
+            if combo and not seen[combo_key(combo)] then
+                seen[combo_key(combo)] = true
+                list[#list + 1] = combo
+            end
         end
         return list
     end,

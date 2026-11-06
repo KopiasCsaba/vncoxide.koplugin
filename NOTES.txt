@@ -229,10 +229,20 @@ panel and sends the downs before the pointer press; _release_action_mods sends t
 pointer release (for a drag, at its PanRelease). A drag cut short by the panel closing
 (ViewerApp:close_key_panel) or the viewer closing (ViewerApp:onCloseWidget, which leave_app and
 disconnect_session both reach before the session is detached or torn down) gets its ups there.
+A drag or long press belongs to where it started (KeyPanel:_gesture_owner): one begun on the
+canvas keeps its hold_pan / pan_release / hold_release even when the finger lifts over the panel,
+and the viewer takes those releases anywhere on the screen, acting only on a press it sent itself
+(_drag_active, _hold_active), also with a popup on top by then. A one-finger drag or long press
+that gains a second finger becomes a two-finger gesture in GestureDetector (Contact:handlePan with
+a buddy contact) and ends in two_finger_pan_release, never in pan_release; every two-finger handler
+therefore first ends such an action (ViewerApp:_end_pointer_action: button up, then the modifiers).
 Gestures off the panel never reach its buttons (KeyPanel:handleEvent): a button rebuilt since the
-last paint does not know its place yet. The release of the Back key that closed the panel is not
+last paint does not know its place yet. Replaying a recent combo is an action too: it clears the
+armed modifiers rather than adding them. The release of the Back key that closed the panel is not
 forwarded (its press never was).
-Recent combos live in the `recent_combos` setting (validated on load, at most four).
+Recent combos live in the `recent_combos` setting, validated on load: known modifiers once each in
+press order, keysyms within 0..0x1FFFFFFF, no duplicates (whatever order their modifiers were
+listed in), at most four.
 
 The on-screen keyboard yields to popups. KOReader stacks a non-modal Menu *below* the modal
 VirtualKeyboard, so the keyboard would cover a menu's lower half; ViewerApp:evaluate_keyboard()
@@ -523,9 +533,9 @@ the keyboard swipes behave (a swipe up from the bottom strip shows the keyboard 
 and a keyboard height change too - a swipe down above it hides it again, and the always-visible
 setting wins over both), platform text input is enabled exactly while the viewer is shown, typed
 text and physical keys reach the remote (through KOReader's own SDL event handler), the Send keys
-panel's combos, locks, recent list, close paths and per-tab keysyms behave (with taps on its
-buttons delivered through the real widget stack), and the
-settings store survives a hand-edited or empty file. It also covers the server menu's autostart
+panel's combos, one-shot modifiers on keys and canvas actions, recent list, close paths and per-tab
+keysyms behave (with taps on its buttons delivered through the real widget stack), and the settings
+store survives a hand-edited or empty file. It also covers the server menu's autostart
 toggle, the environment overrides' parsing rules and precedence (through read_env's lookup seam),
 that a flush after them leaves the settings file byte-identical, and that the deferred tick starts
 the server exactly once when the setting (or the environment) asks for it. The client half gets

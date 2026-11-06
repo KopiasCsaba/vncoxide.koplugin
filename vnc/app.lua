@@ -141,6 +141,9 @@ end
 
 function ViewerApp:init_gestures()
     local function canvas_range() return self:canvas_geom() end
+    -- The end of a drag or long press is ours wherever the finger lifts (over the key panel, or
+    -- beside a view that does not fill the screen): the handlers only act on one we started.
+    local function whole_screen() return Geom:new{ x = 0, y = 0, w = self.dimen.w, h = self.dimen.h } end
     local function bottom_strip()
         local c = self:canvas_geom()
         return Geom:new{
@@ -156,9 +159,9 @@ function ViewerApp:init_gestures()
     self.ges_events = {
         Tap = { GestureRange:new{ ges = "tap", range = canvas_range } },
         Hold = { GestureRange:new{ ges = "hold", range = canvas_range } },
-        HoldRelease = { GestureRange:new{ ges = "hold_release", range = canvas_range } },
+        HoldRelease = { GestureRange:new{ ges = "hold_release", range = whole_screen } },
         Pan = { GestureRange:new{ ges = "pan", range = canvas_range } },
-        PanRelease = { GestureRange:new{ ges = "pan_release", range = canvas_range } },
+        PanRelease = { GestureRange:new{ ges = "pan_release", range = whole_screen } },
         TwoFingerPan = { GestureRange:new{ ges = "two_finger_pan", range = canvas_range } },
         TwoFingerPanRelease = { GestureRange:new{ ges = "two_finger_pan_release", range = canvas_range } },
         InwardPan = { GestureRange:new{ ges = "inward_pan", range = canvas_range } },
@@ -166,6 +169,7 @@ function ViewerApp:init_gestures()
         Pinch = { GestureRange:new{ ges = "pinch", range = canvas_range } },
         Spread = { GestureRange:new{ ges = "spread", range = canvas_range } },
         Rotate = { GestureRange:new{ ges = "rotate", range = canvas_range } },
+        TwoFingerSwipe = { GestureRange:new{ ges = "two_finger_swipe", range = canvas_range } },
         KbdShow = { GestureRange:new{ ges = "swipe", direction = "north", range = bottom_strip } },
         KbdHide = { GestureRange:new{ ges = "swipe", direction = "south", range = upper_canvas } },
     }
@@ -595,18 +599,41 @@ function ViewerApp:onHold(_, ges)
     -- a long press is a right click: the armed modifiers go with it, like with a tap
     self:_press_armed()
     self:send_pointer(rx, ry, 4)
+    self._hold_active = true
     return true
 end
 
+--- Lets go of the right click a long press of ours started - also when a popup came up on top in
+--- the meantime or the finger lifted over the key panel: the button and the modifiers it took
+--- would otherwise stay down on the remote.
 function ViewerApp:onHoldRelease(_, ges)
-    if not self:_input_target() then return nil end
+    if not self._hold_active then return nil end
+    self._hold_active = nil
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 0)
     self:_release_action_mods()
     return true
 end
 
+--[[--
+A second finger came down during a one-finger drag or long press. GestureDetector then turns the
+contact into a two-finger gesture (Contact:handlePan with a buddy contact), and its lift is a
+two_finger_pan_release (Contact:handlePanRelease), not the pan_release / hold_release the drag is
+waiting for. Let go of the button and the modifiers now, before the two-finger gesture runs.
+]]
+function ViewerApp:_end_pointer_action()
+    if self._drag_active or self._hold_active then
+        self._drag_active = nil
+        self._hold_active = nil
+        if self._pointer_x then
+            self:send_pointer(self._pointer_x, self._pointer_y, 0)
+        end
+    end
+    self:_release_action_mods()
+end
+
 function ViewerApp:onTwoFingerPan(_, ges)
+    self:_end_pointer_action()
     if not self:_input_target() then return nil end
     local rel = ges.relative or { x = 0, y = 0 }
     self.remote:pan_by(-rel.x, -rel.y)
@@ -616,6 +643,7 @@ function ViewerApp:onTwoFingerPan(_, ges)
 end
 
 function ViewerApp:onTwoFingerPanRelease(_, ges)
+    self:_end_pointer_action()
     self:_view_settled()
     -- swipe up from the bottom still needs to be able to mean "show keyboard"
     UIManager:setDirty(self, "ui")
@@ -623,6 +651,7 @@ function ViewerApp:onTwoFingerPanRelease(_, ges)
 end
 
 function ViewerApp:_live_zoom(ges)
+    self:_end_pointer_action()
     if not self:_input_target() then return nil end
     local span = ges.span or 0
     local start_span = ges.start_span or 0
@@ -646,6 +675,7 @@ function ViewerApp:onInwardPan(_, ges) return self:_live_zoom(ges) end
 function ViewerApp:onOutwardPan(_, ges) return self:_live_zoom(ges) end
 
 function ViewerApp:onPinch()
+    self:_end_pointer_action()
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
@@ -656,6 +686,7 @@ function ViewerApp:onPinch()
 end
 
 function ViewerApp:onSpread()
+    self:_end_pointer_action()
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
@@ -666,9 +697,16 @@ function ViewerApp:onSpread()
 end
 
 function ViewerApp:onRotate(_, ges)
+    self:_end_pointer_action()
     if not self:_input_target() then return nil end
     self:rotate(ges.direction == "cw" and 1 or -1)
     return true
+end
+
+--- A two-finger flick: nothing of its own yet, but it ends a drag like any two-finger gesture.
+function ViewerApp:onTwoFingerSwipe()
+    self:_end_pointer_action()
+    return nil
 end
 
 function ViewerApp:onKbdShow()

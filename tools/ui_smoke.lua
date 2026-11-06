@@ -3266,6 +3266,74 @@ check("key_panel_armed_modifiers_go_with_the_next_canvas_action", function()
     close_viewer(app, remote)
 end)
 
+check("key_panel_long_press_ending_over_the_panel_releases_its_modifiers", function()
+    local InfoMessage = require("ui/widget/infomessage")
+    for _, case in ipairs({ "over the panel", "under a message" }) do
+        local app, remote = new_app()
+        local panel = open_key_panel(app)
+        local wire = wire_log(app)
+        touch(panel, "mod:Ctrl")
+        touch(panel, "mod:Alt")
+        wire()
+        UIManager:forceRePaint()
+        local above = Geom:new{ x = 20, y = 20 }
+        local on_panel = Geom:new{ x = 20, y = panel.dimen.y + math.floor(panel.dimen.h / 2) }
+        dispatch_gesture{ ges = "hold", pos = above }
+        local message
+        if case == "under a message" then
+            message = InfoMessage:new{ text = "busy" }
+            UIManager:show(message)
+        end
+        -- the finger slides onto the panel before it lifts
+        dispatch_gesture{ ges = "hold_pan", pos = on_panel, relative = { x = 0, y = on_panel.y - 20 } }
+        dispatch_gesture{ ges = "hold_release", pos = on_panel }
+        local got = wire()
+        assert_true(got == "+0xFFE3,+0xFFE9,p4,p0,-0xFFE9,-0xFFE3",
+            case .. ": the right click and its modifiers are let go, got " .. got)
+        if message then UIManager:close(message) end
+        close_viewer(app, remote)
+        assert_true(wire() == "", case .. ": nothing more later")
+    end
+end)
+
+check("key_panel_two_finger_gesture_ends_a_drag_and_its_modifiers", function()
+    -- GestureDetector turns a one-finger pan that gains a second finger into a two-finger gesture,
+    -- whose lift is a two_finger_pan_release (Contact:handlePan/handlePanRelease with a buddy):
+    -- the one-finger pan_release never comes.
+    local start = Screen:getRotationMode()
+    local starters = {
+        two_finger_pan = function(app) app:onTwoFingerPan(nil, { relative = { x = 5, y = 5 } }) end,
+        inward_pan = function(app) app:onInwardPan(nil, { pos = Geom:new{ x = 50, y = 50 }, span = 90, start_span = 100 }) end,
+        outward_pan = function(app) app:onOutwardPan(nil, { pos = Geom:new{ x = 50, y = 50 }, span = 110, start_span = 100 }) end,
+        pinch = function(app) app:onPinch(nil, { pos = Geom:new{ x = 50, y = 50 } }) end,
+        spread = function(app) app:onSpread(nil, { pos = Geom:new{ x = 50, y = 50 } }) end,
+        rotate = function(app) app:onRotate(nil, { direction = "cw", pos = Geom:new{ x = 50, y = 50 } }) end,
+        two_finger_swipe = function(app)
+            app:onTwoFingerSwipe(nil, { direction = "south", pos = Geom:new{ x = 50, y = 50 } })
+        end,
+        two_finger_pan_release = function(app) app:onTwoFingerPanRelease(nil, {}) end,
+    }
+    for name, start_two_finger in pairs(starters) do
+        local app, remote = new_app()
+        local panel = open_key_panel(app)
+        local wire = wire_log(app)
+        touch(panel, "mod:Shift")
+        UIManager:forceRePaint()
+        wire()
+        dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+        local got = wire()
+        assert_true(got == "+0xFFE1,p1,p1", name .. ": a Shift+drag is under way, got " .. got)
+        start_two_finger(app)
+        got = wire()
+        assert_true(got:sub(1, 10) == "p0,-0xFFE1", name .. " lets go of the button, then Shift, got " .. got)
+        assert_true(app._drag_active == nil and app._action_mods == nil, name .. ": no drag left")
+        app:onPanRelease(nil, { pos = Geom:new{ x = 40, y = 30 } })
+        assert_true(wire() == "", name .. ": a late pan_release sends nothing")
+        app:set_rotation_mode(start)
+        close_viewer(app, remote)
+    end
+end)
+
 check("key_panel_combo_order_and_modifiers_only", function()
     local app, remote, sent = new_app()
     local panel = open_key_panel(app)
@@ -3305,13 +3373,14 @@ check("key_panel_recent_combos_record_and_replay", function()
     assert_true(panel.button_by_id["recent:1"].text == "Ctrl+T", "and shown")
     take_keys(sent)
 
-    -- a replay sends exactly that combo, whatever is armed, and leaves the armed state alone
+    -- a replay is the action: it sends exactly that combo (the armed Shift is not added) and
+    -- clears what was armed
     touch(panel, "mod:Shift")
     touch(panel, "recent:1")
     local got = take_keys(sent)
-    assert_true(got == "+0xFFE3,+0x74,-0x74,-0xFFE3", "replay of Ctrl+T, got " .. got)
-    assert_true(panel:modifier_state("Shift") == "armed", "the armed Shift waits for a panel key")
-    touch(panel, "mod:Shift")
+    assert_true(got == "+0xFFE3,+0x74,-0x74,-0xFFE3", "replay of Ctrl+T without the armed Shift, got " .. got)
+    assert_true(panel:modifier_state("Shift") == nil, "the replay used up the armed Shift")
+    assert_true(panel.button_by_id["recent:1"].text == "Ctrl+T", "and the list still says Ctrl+T")
 
     -- distinct combos, most recent first, at most four; a repeat moves to the front
     pick_tab(panel, 1)
@@ -3498,8 +3567,11 @@ check("recent_combos_setting_is_kept_in_shape", function()
     local Settings = require("vnc/settings")
     local store = Settings.open(data_dir .. "/recent_combos_check.lua")
     store.data.settings.recent_combos = {
-        { mods = { "Ctrl" }, keysym = 0x74, label = "T" },
+        { mods = { "Shift", "Ctrl", "Shift" }, keysym = 0x74, label = "T" }, -- repeated, out of order
+        { mods = { "Ctrl", "Shift" }, keysym = 0x74, label = "T" },  -- the same combo again
         { mods = { "Hyper" }, keysym = 0x74, label = "T" },          -- unknown modifier
+        { mods = {}, keysym = 0x20000000, label = "big" },           -- not a keysym
+        { mods = {}, keysym = -1, label = "neg" },
         "junk",
         { mods = {}, label = "nothing" },                             -- neither key nor modifier
         { mods = { "Super" }, label = "" },                           -- a modifier on its own is fine
@@ -3513,7 +3585,8 @@ check("recent_combos_setting_is_kept_in_shape", function()
     local labels = {}
     for _, c in ipairs(list) do labels[#labels + 1] = table.concat(c.mods, "+") .. ":" .. tostring(c.keysym) end
     local got = table.concat(labels, " ")
-    assert_true(got == "Ctrl:116 Super:nil :65307 :65289", "valid entries only, at most four: " .. got)
+    assert_true(got == "Ctrl+Shift:116 Super:nil :65307 :65289",
+        "valid entries only, canonical, without duplicates, at most four: " .. got)
     store.data.settings.recent_combos = "nonsense"
     store:flush()
     store = Settings.open(data_dir .. "/recent_combos_check.lua")
