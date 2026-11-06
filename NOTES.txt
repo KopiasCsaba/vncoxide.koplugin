@@ -189,8 +189,11 @@ Era (1264x1680) per-request overhead varied 0-90 ms between combinations with no
 last ones scored best, so one pass let order and Wi-Fi jitter decide the ranking. Each
 combination's samples from both passes are pooled and scored by medians (Benchmark._score, pure,
 unit-tested); a failure in either pass makes the row failed, "failed in pass N: <reason>" from the
-first failure. Result rows ("%.1f Mpx/s · %d ms/tile · full %d ms · %d KB") fit one line of the
-monospace TextViewer at 1264x1680 (ui_smoke measures the worst case).
+first failure (shown as is, not prefixed "failed: " again). Result rows ("%.1f Mpx/s · %d ms ·
+%d ms · %d KB": tile median, full-frame median, KB per full frame; the intro line names the
+columns) must fit one line of the monospace TextViewer on the Era: the photo's old row, which
+wrapped there, measures about 0.97 of the emulated 1264x1680 text width, so ui_smoke holds the
+worst case to 0.85 of it (and checks the old row exceeds that).
 The benchmark session polls every 5 ms while a request is in flight (see the vnc/benchmark.lua
 header). It needs no changing content: every request is non-incremental (3 whole-screen ones, the first a
 warm-up, then the 16 tiles of a 4x4 grid, one at a time, the held incremental request settled by

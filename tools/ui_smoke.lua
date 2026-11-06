@@ -2530,7 +2530,7 @@ local BENCH_RESULTS = {
     { combination = bench_combo(16, false, false, false, "16-bit, Tight off"), ok = false,
       error = "no update within 15 s" },
     { combination = bench_combo(24, true, 2, 4, "24-bit, Tight, compr. 2, JPEG 4"), ok = false,
-      error = "server refused the format" },
+      error = "failed in pass 2: server refused the format" },
 }
 
 --- Opens the Connect/Edit/Delete dialog for `good` with the fake benchmark injected.
@@ -2652,17 +2652,19 @@ check("bench_results_table_and_apply_best", function()
     assert_true(viewer.monospace_font == true, "monospace table")
     for _, w in ipairs(stack()) do assert_true(not (w.title and w.title:find("(pass ", 1, true)), "progress closed") end
     local text = viewer.text
-    assert_true(text:find("decoding and drawing included. Medians over two runs.\n", 1, true), "results intro:\n" .. text)
     local p1 = text:find("1. 8-bit, Tight, compr. 2", 1, true)
     local p2 = text:find("2. 24-bit, Tight off", 1, true)
     local p3 = text:find("16-bit, Tight off", 1, true)
     local p4 = text:find("24-bit, Tight, compr. 2, JPEG 4", 1, true)
     assert_true(p1 and p2 and p3 and p4 and p1 < p2 and p2 < p3 and p3 < p4, "rows in order:\n" .. text)
-    for _, want in ipairs{ "3.5 Mpx/s · 12 ms/tile · full 813 ms · 200 KB",
-                           "1.0 Mpx/s · 40 ms/tile · full 95 ms · 1024 KB",
-                           "failed: no update within 15 s", "failed: server refused the format" } do
+    for _, want in ipairs{ "\n   3.5 Mpx/s · 12 ms · 813 ms · 200 KB\n",
+                           "\n   1.0 Mpx/s · 40 ms · 95 ms · 1024 KB\n",
+                           "\n   failed: no update within 15 s\n", "\n   failed in pass 2: server refused the format" } do
         assert_true(text:find(want, 1, true), "missing " .. want .. " in:\n" .. text)
     end
+    assert_true(not text:find("failed: failed", 1, true), "the engine's \"failed in pass N\" is not prefixed again:\n" .. text)
+    assert_true(text:sub(1, text:find("\n", 1, true) - 1) == "Fastest first. Each row: changed pixels per second in small pieces · time per piece · time per full screen · size of a full screen; decoding and drawing included. Medians over two runs.",
+        "results intro:\n" .. text)
     local buttons = viewer_buttons(viewer)
     assert_true(buttons["Apply best"] and buttons["Close"], "Apply best and Close")
     buttons["Apply best"].callback()
@@ -2695,20 +2697,20 @@ check("bench_results_rows_fit_one_line_on_era_portrait", function()
             tile_px_per_s = 10e6, full_px_per_s = 1e6, tile_ms = 999, full_ms = 9999, full_bytes = 9999 * 1024 }
         local results = { worst, BENCH_RESULTS[1], BENCH_RESULTS[2] }
         local text = Dialogs.benchmark_table(results)
-        assert_true(text:find("10.0 Mpx/s · 999 ms/tile · full 9999 ms · 9999 KB", 1, true), "worst case row:\n" .. text)
+        local worst_line = "   10.0 Mpx/s · 999 ms · 9999 ms · 9999 KB"
+        assert_true(text:find("\n" .. worst_line .. "\n", 1, true), "worst case row:\n" .. text)
         local viewer = Dialogs.benchmark_results(plugin, "good", results, function() end)
         local box = viewer.box_widget
         assert_true(box and box.face and box.width > 0, "the viewer's text box")
         local RenderText = require("ui/rendertext")
-        local n = 0
-        for line in (text .. "\n"):gmatch("(.-)\n") do
-            if line:find("Mpx/s", 1, true) then
-                n = n + 1
-                local w = RenderText:sizeUtf8Text(0, box.width, box.face, line).x
-                assert_true(w < box.width, string.format("%q is %d px wide, the text area %d px", line, w, box.width))
-            end
-        end
-        assert_true(n == 3, "figures lines measured: " .. n)
+        local function share(line) return RenderText:sizeUtf8Text(0, box.width, box.face, line).x / box.width end
+        -- calibrated on the device: this row (about 0.97 of the emulated width) wrapped in the photo,
+        -- so the device has less room than the emulation; 0.85 keeps a margin below that
+        local LIMIT = 0.85
+        local photo = share("   2.1 Mpx/s small  63 ms/tile  full 998 ms  648 KB/full")
+        assert_true(photo > LIMIT, string.format("the photo's wrapped row measures %.3f, the limit would not catch it", photo))
+        local w = share(worst_line)
+        assert_true(w <= LIMIT, string.format("%q takes %.3f of the text area (limit %.2f)", worst_line, w, LIMIT))
         viewer:free()
     end)
     Screen.bb = saved_bb
