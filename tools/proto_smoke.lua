@@ -628,6 +628,45 @@ local function main()
         })
     end)
 
+    check("encodings_order_quality", function()
+        local function same(a, b)
+            if #a ~= #b then return false end
+            for i = 1, #a do if a[i] ~= b[i] then return false end end
+            return true
+        end
+        local t = Encodings.order(true, { jpeg_quality = 5, compress_level = 9 })
+        if t[#t] ~= -247 or t[#t - 1] ~= -27 then
+            return nil, "tight order does not end with -27,-247"
+        end
+        if not same(Encodings.order(false, { jpeg_quality = 5 }), Encodings.ORDER_DEFAULT) then
+            return nil, "non-tight order must equal ORDER_DEFAULT"
+        end
+        if not same(Encodings.order(true), Encodings.ORDER_TIGHT) then
+            return nil, "order(true) must equal ORDER_TIGHT"
+        end
+        if not same(Encodings.order(true, { jpeg_quality = false, compress_level = false }),
+                    Encodings.ORDER_TIGHT) then
+            return nil, "false options must add nothing"
+        end
+        if Encodings.order(true) == Encodings.ORDER_TIGHT then
+            return nil, "order must return a fresh table"
+        end
+        return true
+    end)
+
+    check("encodings_quality_wire", function()
+        return encoding_case("enc_quality", "tight", "gradient", function() return nil end, {
+            encodings = Encodings.order(true, { jpeg_quality = 5, compress_level = 9 }),
+            check = false,
+            verify_log = function(log)
+                if not log_has(log, "INPUT SetEncodings 7,16,15,5,1,2,0,-223,-27,-247") then
+                    return nil, "SetEncodings mismatch:\n" .. (read_file(log) or "")
+                end
+                return true
+            end,
+        })
+    end)
+
     check("encodings_tight_quads", function()
         -- Quadrants: triggers the Tight fill subencoding and the 1-bit palette path.
         return encoding_case("enc_tight_quads", "tight", "quadrants", expect_pattern, {

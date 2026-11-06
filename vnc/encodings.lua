@@ -43,6 +43,10 @@ Encodings.TIGHT         = 7
 Encodings.TRLE          = 15
 Encodings.ZRLE          = 16
 Encodings.DESKTOP_SIZE  = -223
+-- Tight pseudo-encodings: the server reads quality/level from the offset. They never
+-- arrive as rects, so they stay out of SUPPORTED.
+Encodings.JPEG_QUALITY_0   = -32
+Encodings.COMPRESS_LEVEL_0 = -256
 
 --- Encodings we can decode (DesktopSize is a marker handled by the protocol).
 Encodings.SUPPORTED = {
@@ -64,9 +68,22 @@ Encodings.ORDER_TIGHT = { Encodings.TIGHT, Encodings.ZRLE, Encodings.TRLE,
                           Encodings.RAW, Encodings.DESKTOP_SIZE }
 
 --- @tparam boolean enable_tight
---- @treturn table encoding list to send in SetEncodings
-function Encodings.order(enable_tight)
-    return enable_tight and Encodings.ORDER_TIGHT or Encodings.ORDER_DEFAULT
+--- @tparam[opt] table opts {jpeg_quality = false|0..9, compress_level = false|0..9};
+---   only honoured with Tight, `false`/nil leaves the server default
+--- @treturn table new encoding list to send in SetEncodings
+function Encodings.order(enable_tight, opts)
+    local base = enable_tight and Encodings.ORDER_TIGHT or Encodings.ORDER_DEFAULT
+    local list = {}
+    for i = 1, #base do list[i] = base[i] end
+    if enable_tight and opts then
+        if type(opts.jpeg_quality) == "number" then
+            list[#list + 1] = Encodings.JPEG_QUALITY_0 + opts.jpeg_quality
+        end
+        if type(opts.compress_level) == "number" then
+            list[#list + 1] = Encodings.COMPRESS_LEVEL_0 + opts.compress_level
+        end
+    end
+    return list
 end
 
 Encodings.TIGHT_MIN_TO_COMPRESS = 12
