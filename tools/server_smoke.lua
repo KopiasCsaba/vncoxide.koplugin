@@ -551,6 +551,21 @@ check("encoder_output_is_byte_identical", function()
     }, "\n"), "encoder output changed:\n" .. text)
 end)
 
+--- A reset deflate stream starts over (its history gone) and keeps working.
+check("a_deflate_stream_survives_a_reset", function()
+    local ZStream = require("vnc/zstream")
+    local d = ZStream.new_deflate()
+    assert_true(d:deflate("hello hello hello"), "deflate before the reset")
+    local ok, err = pcall(d.reset, d)
+    assert_true(ok, "reset failed: " .. tostring(err))
+    local compressed = d:deflate("hello hello hello")
+    local i = ZStream.new()
+    local plain = i:inflate(compressed)
+    assert_true(plain == "hello hello hello", "a fresh inflate must read the reset stream, got " .. tostring(plain))
+    i:free()
+    d:free()
+end)
+
 check("zrle_stream_continuity", function()
     -- One encoder (and therefore one zlib stream) across several rectangles, decoded in order by
     -- one client decoder state: this is what breaks if either side mishandles Z_SYNC_FLUSH.

@@ -78,7 +78,11 @@ end
 --- Ends the stream and starts a fresh one (RFB zlib "reset stream" control bit).
 function ZStream:reset()
     if self.mode == "deflate" then
-        self:free()
+        -- not self:free(): that drops the z_stream the new deflateInit_ needs
+        if self.active then
+            libz.deflateEnd(self.strm)
+            self.active = false
+        end
         local res = libz.deflateInit_(self.strm, self.level, ZLIB_VERSION_STR, z_stream_sz)
         assert(res == Z_OK, "deflateInit_ failed: " .. tostring(res))
         self.active = true
