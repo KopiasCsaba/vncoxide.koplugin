@@ -83,8 +83,10 @@ function Help.text(mode)
 
         _("MENU (\u{22EF})"),
         table.concat({
+            "  " .. _("Status line: the connection's state."),
+            "  " .. _("Reconnect to <name>: only right after the connection dropped; connects again."),
             "  " .. _("Connections\u{2026}: switch to another connection, or create one."),
-            "  " .. _("Send text\u{2026}: type a line of text on the remote."),
+            "  " .. _("Send text\u{2026}: type text (newlines become Return)."),
             "  " .. _("Refresh: ask the remote for a full picture."),
             "  " .. _("Ctrl+Alt+Del and Lock screen: send those keys."),
             "  " .. _("Page buttons send: Page Up/Down keys or mouse-wheel notches."),

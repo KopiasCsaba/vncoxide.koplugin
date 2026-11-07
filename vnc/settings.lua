@@ -41,7 +41,7 @@ for _, key in ipairs(Settings.DATA_KEYS) do known_data_key[key] = true end
 
 --- Global settings defaults (the `settings` sub-table).
 Settings.DEFAULTS = {
-    orientation = 0,                 -- Screen.DEVICE_ROTATED_UPRIGHT, used as the app default
+    orientation = 0,                 -- Screen.DEVICE_ROTATED_UPRIGHT, the last one used; the viewer opens in it
     keyboard_always_visible = false,
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"

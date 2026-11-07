@@ -40,11 +40,14 @@ vnc/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer), the view trans
 vnc/scaler.lua      Global-coordinate sharp/smooth scaler used for partial redraws.
 vnc/app.lua         The full-screen viewer widget: canvas, gestures (Touch and Mouse pointer
                           modes), on-screen keyboard, toolbar routing, remote input.
-vnc/toolbar.lua     The floating toolbar (Close, Display, Mode, Keyboard, Rotate, optional
-                          Scroll up/down, More); a child of the viewer, not a window.
+vnc/toolbar.lua     The floating toolbar (Close, Display, Mode, Keyboard, Rotate, Scroll lock,
+                          optional Scroll up/down, More); a child of the viewer, not a window.
+vnc/icons.lua       Absolute paths of the plugin's own icons (the icons/ folder: keyboard.svg,
+                          scroll-lock.svg), which KOReader's icon folders do not hold.
 vnc/displaypanel.lua  The Display panel under the toolbar: zoom, scaling, orientation, picture
                           quality presets, pointer speed.
-vnc/cheatsheet.lua  The card listing a pointer mode's gestures, shown when the mode changes.
+vnc/help.lua        The Help page text (gesture rows per pointer mode, toolbar, key strip, menu,
+                          reconnect); shown in a TextViewer by ViewerApp:open_help.
 vnc/reconnect.lua   The reconnect loop and its box (backoff, Retry now, Close).
 vnc/menu.lua        The "More" menu (the toolbar's last button).
 vnc/keypanel.lua    The "Send keys" panel: one-shot modifier toggles and every key, for
@@ -179,7 +182,7 @@ indented below so narrow screens do not wrap columns). Apply best copies the sto
 replaces only the four picture fields with the top scored row's and calls VNC:save_profile (a full
 copy because save_profile does not keep an omitted password). Every way out returns to the
 per-connection dialog. The draw canvas is VNC:benchmark_canvas: the open viewer's canvas, else the
-screen in the viewer's default orientation without the keyboard; both fitted zoom modes are
+screen in the viewer's remembered orientation without the keyboard; both fitted zoom modes are
 measured as "fit". Tests inject a fake engine through Dialogs.Benchmark. The engine reports the
 "tiles" phase from its next tick rather than from the session's callbacks, so a cancel() from
 on_progress never disconnects a session from inside its own callback; an unexpected Lua error in a
@@ -278,9 +281,13 @@ and the viewer takes those releases anywhere on the screen, acting only on a pre
 that gains a second finger becomes a two-finger gesture in GestureDetector (Contact:handlePan with
 a buddy contact) and ends in two_finger_pan_release, never in pan_release; every two-finger handler
 therefore first ends such an action (ViewerApp:_end_pointer_action: button up, then the modifiers).
-A quick two-finger drag (two_finger_swipe) only ends the view pan; it never scrolls. Wheel notches
-come from the toolbar's optional scroll buttons (ViewerApp:scroll_wheel), the page buttons and
-nothing else, and are not modifier actions. A drag or hold whose release was eaten by the keyboard or menu is ended by the next
+A quick two-finger drag (two_finger_swipe) only ends the view pan, unless scroll lock is on.
+Scroll lock (toolbar toggle, ViewerApp.scroll_lock, off at start): onTwoFingerPan and the flick
+(onTwoFingerSwipe) turn the movement into wheel notches (_scroll_by_drag), one per tenth of the
+screen height, or width for the horizontal wheel, with the remainder carried over; the content
+follows the fingers; the notches go to the mouse pointer in Mouse mode and to the fingers in Touch
+mode; toggling mid-drag ends that drag (g.ended). Otherwise wheel notches come from the toolbar's
+optional scroll buttons (ViewerApp:scroll_wheel) and the page buttons, and are not modifier actions. A drag or hold whose release was eaten by the keyboard or menu is ended by the next
 tap/pan start/hold, any send_key, or showing the on-screen keyboard (_end_stale_pointer_action).
 Gestures off the panel never reach its buttons (KeyPanel:handleEvent): a button rebuilt since the
 last paint does not know its place yet. Replaying a recent combo is an action too: it clears the
@@ -299,7 +306,7 @@ the 250 ms re-check (_watch_keyboard_state). That is also why a toast (a Bell no
 explicitly flagged `toast = true`: it is allowed to share the screen with the keyboard.
 
 The keyboard has no gestures of its own any more: the toolbar's Keyboard button shows and hides it
-(tap), and opens the full Send keys panel (long press). KOReader's keyboard consumes swipes itself
+together with the key strip (tap), and opens the full Send keys panel (long press). KOReader's keyboard consumes swipes itself
 - every VirtualKey carries a SwipeKey ges_event over its own rectangle whose handler always returns
 true and runs the key's swipe_callback (a south swipe on `q` inserts its variant) - and
 WidgetContainer:handleEvent propagates to the children first, so a "swipe down on the keyboard to
@@ -605,7 +612,7 @@ canvas follows rotations, the keyboard neither rescales nor moves a view that do
 it, the fitted zoom modes and the keyboard-aware placement behave, the keyboard yields to popups,
 the toolbar (its buttons, the top-zone swipe toggling it, taps on it never reaching the remote), both
 pointer modes' gestures (the deferred Mouse click, double tap and move, two-finger tap, no scroll or
-rotate gesture), the cheat-sheet, the Display panel and its quality presets, the More menu, the key
+rotate gesture), the Help page and the mode tooltip, scroll lock (wheel notches per drag), the Display panel and its quality presets, the More menu, the key
 strip, the reconnect box and loop (backoff, Retry now, Close, no background retry, Wi-Fi kept on while
 retrying), platform text input is enabled exactly while the viewer is shown, typed
 text and physical keys reach the remote (through KOReader's own SDL event handler), the Send keys

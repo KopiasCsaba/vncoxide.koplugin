@@ -7,9 +7,11 @@ canvas beside and below it stays fully interactive. A swipe down in the top menu
 hides it (`ViewerApp:toggle_toolbar`).
 
 Buttons, left to right: Close (disconnect, after a confirmation), Display (the display panel),
-Mode (tap: Touch/Mouse, the label shows the current one; long press: the help), Keyboard (tap: shows or hides the on-screen
-keyboard with the key strip, or closes the "Send keys" panel; long press: that panel), Rotate,
-Scroll lock (a toggle, drawn inverted while on: a two-finger drag scrolls the remote), Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More (the menu).
+Mode (tap: Touch/Mouse, the label shows the current one; long press: the help), Keyboard (tap:
+shows or hides the on-screen keyboard with the key strip, or closes the "Send keys" panel; long
+press: that panel), Rotate, Scroll lock (a toggle, drawn inverted while on: a two-finger drag
+scrolls the remote), Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More
+(the menu).
 
 @module vnc.toolbar
 ]]

@@ -1536,7 +1536,7 @@ function ViewerApp:set_rotation_mode(mode)
     UIManager:broadcastEvent(Event:new("SetRotationMode", mode))
 end
 
---- Applies the session's default orientation, remembering the previous mode.
+--- Applies the remembered orientation (the last one used), remembering the previous mode.
 function ViewerApp:apply_default_orientation(default_mode)
     self.prev_rotation = self.prev_rotation or Screen:getRotationMode()
     if default_mode == nil then default_mode = self.settings.orientation end

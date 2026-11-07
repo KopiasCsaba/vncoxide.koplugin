@@ -455,7 +455,7 @@ end
 The canvas the picture benchmark draws into, so that its draw cost is the viewer's.
 
 With the viewer open, its current canvas. Otherwise an approximation: the whole screen in the
-viewer's default orientation (the viewer rotates to it when it opens), with the on-screen
+viewer's remembered orientation (the viewer rotates to it when it opens), with the on-screen
 keyboard not subtracted. Type: the screen's blitbuffer type. Dither: the viewer's flag (software
 dithering on a BB8 screen, see `ViewerApp:paintTo`). View: the zoom factor, or `"fit"`
 for both fitted zoom modes (so "Fit (with keyboard)" is measured as "Fit"), and the global

@@ -69,16 +69,19 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
 
 1. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
 2. **Display** opens the Display panel (below).
-3. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a card with that mode's
-   gestures; a tap anywhere closes the card and goes no further. The mode is remembered per
-   connection.
-4. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard, with the key strip on top of it; a
-   long press opens the full **Send keys** panel.
+3. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a short tooltip (*Touch mode — long
+   press for help* or *Mouse mode — long press for help*). A long press opens the **Help** page
+   (also under **⋯**). The mode is remembered per connection.
+4. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard together with the key strip (and
+   closes the **Send keys** panel if it is open); a long press opens the full **Send keys** panel.
 5. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
-   Display panel: a pinch never turns the screen.)
-6. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
+   Display panel: a pinch never turns the screen.) The viewer remembers the orientation you last
+   used and opens in it.
+6. **Scroll lock** is a toggle, drawn inverted while on; it starts off each time the viewer opens.
+   While it is on, a two-finger drag scrolls the remote instead of moving the picture (see below).
+7. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
    scroll buttons on toolbar** in **⋯**.
-7. **⋯** opens the menu (below).
+8. **⋯** opens the menu (below).
 
 | Gesture | Touch mode | Mouse mode |
 | --- | --- | --- |
@@ -86,7 +89,7 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
 | long press | right click at the finger | right click at the pointer |
 | one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed) |
 | double tap, then move | not used (a plain drag already drags) | drag with the left button held from the pointer |
-| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
+| two-finger drag | pan the view (with **scroll lock** on: scroll the remote, see below): the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
 | two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |
 | device page buttons | Page Up/Down or wheel (setting) | same |
@@ -94,9 +97,15 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
 In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
 x11vnc, `-cursor arrow`); the viewer draws none. A tap's click waits out KOReader's double-tap
 interval before it is sent, so that a double tap followed by a move can become a drag instead of a
-click and a press; two quick taps still give two clicks. Touch mode clicks are sent at once. A quick
-two-finger drag only pans; nothing here scrolls the wheel by flicking, and three-finger gestures are
-not used.
+click and a press; two quick taps still give two clicks. Touch mode clicks are sent at once. Three-finger
+gestures are not used.
+
+**Scroll lock.** With the toolbar's scroll lock on, a two-finger drag, and the quick flick that
+ends one, sends mouse-wheel notches instead of panning: one notch per tenth of the screen height
+(sideways: of the width) the fingers travel. The content follows the fingers, as on a phone:
+fingers up scroll down, fingers left scroll right (horizontal wheel). The notches go to the pointer
+in Mouse mode and to the fingers in Touch mode. Pinch still zooms and a two-finger tap still fits.
+Switching it on or off in the middle of a drag ends that drag.
 
 A tap is *always* a click on the remote, everywhere outside the bar, so there is never a dead spot
 on the screen. With a physical keyboard, the **Menu** key (F1 on KOReader's own keymap) opens the
@@ -107,8 +116,9 @@ the live state) except a rotation, which closes it. It tells:
 
 - **Zoom**: Fit screen, Fit (with keyboard), 25 %, 50 %, 75 %, 100 %, 150 %, 200 %, 400 %.
 - **Smooth / Sharp** scaling (see "Sharp scaling" below).
-- **Orientation**: Portrait, Landscape and their inverted forms, and **Use current orientation as
-  default**.
+- **Orientation**: four icon buttons, the same ones KOReader uses for screen rotation (90° counter-
+  clockwise, upright, 90° clockwise, 180°, relative to the screen as it is now); the current one is
+  highlighted. The viewer remembers the last orientation used and opens in it.
 - **Picture quality (reconnects)**: **Best**, **Balanced**, **Fast**. The preset is a set of the
   connection's picture settings:
 
@@ -130,13 +140,14 @@ and the connection list (**Connections…**, to switch or add one), **Send text�
 and send it to the remote as key presses; characters with no key are skipped and counted),
 **Refresh** (asks for a full picture and flashes the screen), **Ctrl+Alt+Del**, **Lock screen**
 (Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel), **Keyboard always visible**,
-**Show scroll buttons on toolbar** and **Leave (keep connection)**. Switches keep the menu open;
+**Show scroll buttons on toolbar**, **Help** and **Leave (keep connection)**. Switches keep the menu open;
 anything else closes it.
 
 **The key strip** sits right above the on-screen keyboard: **Ctrl**, **Shift**, **Alt**, **Super**,
-then Esc, Tab, the four arrows and Del. A modifier armed there goes with exactly one action, like
+then Esc, Tab, the four arrows, Del and **Keys…**, which opens the full **Send keys** panel (the
+keyboard and strip make way for it; it sends nothing and leaves armed modifiers armed). A modifier armed there goes with exactly one action, like
 the panel's: the next key on the on-screen keyboard or the strip, or the next tap or drag on the
-screen. A long press on **⌨** opens the full **Send keys** panel instead.
+screen. A long press on **⌨** also opens the full **Send keys** panel.
 
 **Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable) above
 it. Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns black),
