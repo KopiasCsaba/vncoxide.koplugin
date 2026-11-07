@@ -74,8 +74,8 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
    connection.
 4. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard, with the key strip on top of it; a
    long press opens the full **Send keys** panel.
-5. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button, the
-   Display panel or the menu: a pinch never turns the screen.)
+5. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
+   Display panel: a pinch never turns the screen.)
 6. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
    scroll buttons on toolbar** in **⋯**.
 7. **⋯** opens the menu (below).
