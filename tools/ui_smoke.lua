@@ -1252,6 +1252,36 @@ check("every_plugin_instance_shares_one_server", function()
     assert_true(follows, "and the server must follow the latest instance's settings")
 end)
 
+--- Connect tapped again while the first attempt is still connecting (waiting for Wi-Fi, typically)
+--- must leave that attempt alone: its "already connecting" answer used to be handled as a failed
+--- connect, which dropped the session from the plugin - and with it the only way to disconnect it.
+check("connecting_twice_keeps_the_attempt_in_progress", function()
+    local saved = plugin.sessions.good
+    local connects = 0
+    local fake = {
+        get_state = function() return "connecting" end,
+        is_connected = function() return false end,
+        set_profile = function() end,
+        connect = function(_, cb)
+            connects = connects + 1
+            if cb then cb(false, "already connecting or connected") end
+        end,
+    }
+    plugin.sessions.good = fake
+    local depth = #stack()
+    local failed = 0
+    local ok, err = pcall(function()
+        plugin:connect_profile("good", function() failed = failed + 1 end)
+        assert_true(plugin.sessions.good == fake, "the session in progress must stay the plugin's")
+        assert_true(failed == 0, "a connect still in progress is not a failure")
+        assert_true(connects == 0, "and it must not be asked to connect again")
+    end)
+    -- whatever the plugin showed about it
+    while #stack() > depth do UIManager:close(top()) end
+    plugin.sessions.good = saved
+    if not ok then error(err, 0) end
+end)
+
 check("server_autostart_starts_once_the_tick_runs", function()
     local socket = require("socket")
     local probe = assert(socket.bind("127.0.0.1", 0))
@@ -2444,7 +2474,8 @@ check("session_hands_the_profile_picture_settings_to_the_protocol", function()
     local real_new, captured = Protocol.new, nil
     local STOP = {}
     Protocol.new = function(opts) captured = opts error(STOP) end
-    local ok, err = pcall(function() session:_do_connect() end)
+    session.state = "connecting"                    -- what connect() puts it in before dialling
+    local ok, err = pcall(function() session:_do_connect(session._attempt) end)
     Protocol.new = real_new
     if session.sock then session.sock:close() end
     listener:close()
@@ -2507,7 +2538,8 @@ check("session_applies_the_global_scaling_to_its_remote", function()
     local real_new, captured = Protocol.new, nil
     local STOP = {}
     Protocol.new = function(opts) captured = opts error(STOP) end
-    local ok, err = pcall(function() session:_do_connect() end)
+    session.state = "connecting"                    -- what connect() puts it in before dialling
+    local ok, err = pcall(function() session:_do_connect(session._attempt) end)
     Protocol.new = real_new
     if session.sock then session.sock:close() end
     listener:close()

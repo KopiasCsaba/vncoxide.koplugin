@@ -342,6 +342,13 @@ function VNC:connect_profile(name, on_failure)
         self:_open_app(session)
         return
     end
+    if session:get_state() == "connecting" then
+        -- Still on its way (waiting for Wi-Fi, typically). Its own callback reports how it ends;
+        -- a second connect would only be refused, and treating that as a failure would drop the
+        -- session - and with it any way to disconnect it.
+        UIManager:show(InfoMessage:new{ text = T(_("Still connecting to %1…"), name), timeout = 3 })
+        return
+    end
 
     self._pending_connect = session
     session:connect(function(ok, err)
