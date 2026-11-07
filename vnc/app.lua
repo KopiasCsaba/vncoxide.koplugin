@@ -506,6 +506,7 @@ function ViewerApp:onCloseWidget()
     -- never leave our own menu orphaned on the window stack
     self:close_menu()
     self:close_display_panel(true)
+    self:close_cheat_sheet(true)
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
     self:_drop_key_panel()
@@ -793,6 +794,32 @@ end
 function ViewerApp:toggle_pointer_mode()
     self:set_pointer_mode(self:get_pointer_mode() == "mouse" and "touch" or "mouse")
     self:_toolbar_changed()
+    self:show_cheat_sheet()
+end
+
+--- Shows the gesture cheat-sheet for the current pointer mode (replacing one still up).
+function ViewerApp:show_cheat_sheet()
+    self:close_cheat_sheet(true)
+    local sheet
+    sheet = require("vnc/cheatsheet"):new{
+        mode = self:get_pointer_mode(),
+        on_close = function()
+            if self.cheat_sheet == sheet then self.cheat_sheet = nil end
+            self:_sync_keyboard_later()
+        end,
+    }
+    self.cheat_sheet = sheet
+    UIManager:show(sheet, "ui")
+    self:_sync_keyboard_later()
+end
+
+function ViewerApp:close_cheat_sheet(quiet)
+    local sheet = self.cheat_sheet
+    if not sheet then return end
+    self.cheat_sheet = nil
+    sheet._closed = true
+    UIManager:close(sheet, "ui")
+    if not quiet then self:_sync_keyboard_later() end
 end
 
 --- Mouse-mode cursor speed: remote pixels per screen pixel dragged.

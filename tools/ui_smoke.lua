@@ -3445,6 +3445,17 @@ local function close_viewer(app, remote)
     remote:free()
 end
 
+check("mode_switch_shows_the_cheat_sheet_and_its_tap_is_local", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "mode")
+    assert_true(app:get_pointer_mode() == "mouse" and top() == app.cheat_sheet)
+    assert_true(app.cheat_sheet.rows == require("vnc/cheatsheet").ROWS.mouse)
+    sent.pointer = {}
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 10, y = Screen:getHeight() - 10 } }
+    assert_true(app.cheat_sheet == nil and #sent.pointer == 0, "dismissed, nothing sent")
+    close_viewer(app, remote)
+end)
+
 check("more_menu_order_and_actions", function()
     local app, remote, sent = new_app()
     local log = wire_log(app)
@@ -4474,8 +4485,10 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     app:set_rotation_mode(before)
     tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "mouse", "mode switches to mouse")
+    app:close_cheat_sheet()  -- the cheat-sheet covers the toolbar until dismissed
     tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "touch", "and back to touch")
+    app:close_cheat_sheet()
     tap_toolbar(app, "keyboard"); assert_true(app.vk_wanted == true, "keyboard tap toggles the keyboard")
     hold_toolbar(app, "keyboard"); assert_true(app.key_panel ~= nil, "keyboard hold opens the key panel")
     tap_toolbar(app, "display"); assert_true(app.display_panel ~= nil, "display opens the display panel")
