@@ -1093,6 +1093,38 @@ local function event_now()
 end
 
 --[[--
+Turns a frame's contact position from the coordinates a client sees into the ones core expects from
+the touch panel.
+
+A client is served `Screen.bb`, which is the screen as it *looks* - rotated - so it clicks in those
+logical coordinates. A touch position, though, is the unrotated panel's: GestureDetector rotates
+every gesture it builds by the screen's touch rotation (`GestureDetector:adjustGesCoordinate`, after
+`Screen:getTouchRotation()`, which on some devices is offset from the screen's own rotation). This
+is the inverse of that translation, so the gesture lands where the client clicked. Frames carry the
+X and Y position together, which is what lets them be mapped as a pair.
+]]
+local function to_native(evs)
+    local ev_x, ev_y
+    for _, ev in ipairs(evs) do
+        if ev.type == C.EV_ABS then
+            if ev.code == C.ABS_MT_POSITION_X then ev_x = ev
+            elseif ev.code == C.ABS_MT_POSITION_Y then ev_y = ev end
+        end
+    end
+    if not (ev_x and ev_y) then return end
+    local x, y = ev_x.value, ev_y.value
+    local mode = Screen:getTouchRotation()
+    if mode == Screen.DEVICE_ROTATED_CLOCKWISE then
+        x, y = y, Screen:getWidth() - x
+    elseif mode == Screen.DEVICE_ROTATED_COUNTER_CLOCKWISE then
+        x, y = Screen:getHeight() - y, x
+    elseif mode == Screen.DEVICE_ROTATED_UPSIDE_DOWN then
+        x, y = Screen:getWidth() - x, Screen:getHeight() - y
+    end
+    ev_x.value, ev_y.value = x, y
+end
+
+--[[--
 Feeds Linux-input style events to KOReader and dispatches whatever gestures come out.
 
 This is the seam KOReader's own device backends use (`EV_ABS` for positions, a `SYN_REPORT` to
@@ -1108,9 +1140,13 @@ function Server:_inject(evs, at)
     local handled = {}
     -- One timestamp for the whole frame, like the kernel's SYN_REPORT carries for the real ones.
     local sec, usec = time.split_s_us(at or event_now())
+    to_native(evs)
     for _, ev in ipairs(evs) do
         ev.time = { sec = sec, usec = usec }
-        if input.eventAdjustHook then input:eventAdjustHook(ev) end
+        -- The device's hook maps *hardware* coordinates (mirrored, swapped, scaled panels) to the
+        -- screen's; a position from to_native is already the screen's, so only other events go
+        -- through it.
+        if input.eventAdjustHook and ev.type ~= C.EV_ABS then input:eventAdjustHook(ev) end
         if ev.type == C.EV_KEY then
             local one = input:handleKeyBoardEv(ev)
             if one then handled[#handled + 1] = one end

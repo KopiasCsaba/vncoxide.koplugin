@@ -2786,6 +2786,65 @@ check("client_input_reaches_a_widget", function()
     if not ok then error(err, 0) end
 end)
 
+--- A client sees the screen as Screen.bb shows it, i.e. rotated, and clicks in those (logical)
+--- coordinates. Injected touches are rotated by core again, though - GestureDetector maps the raw
+--- contact through the touch rotation (adjustGesCoordinate) - so the server has to hand it native
+--- coordinates, or every click on a rotated screen lands somewhere else (c.f., Server:_inject).
+check("a_client_tap_lands_where_it_was_made_on_a_rotated_screen", function()
+    local Server = require("vnc/server")
+    local InputContainer = require("ui/widget/container/inputcontainer")
+    local GestureRange = require("ui/gesturerange")
+    local server = Server.new{ settings = { ip = "127.0.0.1", port = 5900, password = "" } }
+    local original = Screen:getRotationMode()
+    local received
+    local widget = InputContainer:new{
+        dimen = Geom:new{ x = 0, y = 0, w = 4000, h = 4000 },
+        ges_events = {
+            Tap = { GestureRange:new{ ges = "tap", range = Geom:new{ x = 0, y = 0, w = 4000, h = 4000 } } },
+        },
+    }
+    function widget:onTap(_, ges)
+        received = { x = ges.pos.x, y = ges.pos.y }
+        return true
+    end
+    UIManager:show(widget)
+    local ok, err = pcall(function()
+        for _, mode in ipairs({ Screen.DEVICE_ROTATED_CLOCKWISE, Screen.DEVICE_ROTATED_UPSIDE_DOWN,
+                                Screen.DEVICE_ROTATED_COUNTER_CLOCKWISE, Screen.DEVICE_ROTATED_UPRIGHT }) do
+            Screen:setRotationMode(mode)
+            assert_true(Screen:getTouchRotation() == mode, "the emulator's touch rotation follows the screen")
+            received = nil
+            server:inject_pointer(120, 90, 1)
+            server:inject_pointer(120, 90, 0)
+            assert_true(received ~= nil, "rotation " .. mode .. ": the tap must reach the widget")
+            assert_true(received.x == 120 and received.y == 90, string.format(
+                "rotation %d (%dx%d): the tap must land at 120,90, got %s,%s", mode,
+                Screen:getWidth(), Screen:getHeight(), tostring(received.x), tostring(received.y)))
+        end
+        -- and a device hook that maps the *panel's* coordinates (here: mirrored) must not be
+        -- applied to positions that are already the screen's
+        local input = Device.input
+        local saved = input.eventAdjustHook
+        local max_x = Screen:getWidth() - 1
+        input:registerEventAdjustHook(function(_, ev)
+            if ev.type == ffi.C.EV_ABS and ev.code == ffi.C.ABS_MT_POSITION_X then ev.value = max_x - ev.value end
+        end)
+        received = nil
+        local hook_ok, hook_err = pcall(function()
+            server:inject_pointer(120, 90, 1)
+            server:inject_pointer(120, 90, 0)
+        end)
+        input.eventAdjustHook = saved
+        assert_true(hook_ok, tostring(hook_err))
+        assert_true(received and received.x == 120 and received.y == 90, string.format(
+            "with a mirroring device hook the tap must still land at 120,90, got %s,%s",
+            tostring(received and received.x), tostring(received and received.y)))
+    end)
+    Screen:setRotationMode(original)
+    UIManager:close(widget)
+    if not ok then error(err, 0) end
+end)
+
 check("a_client_click_over_the_wire_reaches_a_widget", function()
     -- The wire end of the chain: a PointerEvent that arrives over the socket, through the
     -- protocol's per-client state, must make a *real widget* on the window stack react.
