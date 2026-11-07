@@ -135,11 +135,15 @@ function Keysyms.codepoint(ch)
 end
 
 --- Maps one typed character to its X11 keysym (Latin-1 keysyms are the codepoint itself;
---- anything else uses the Unicode keysym range 0x01000000 + codepoint).
+--- anything else uses the Unicode keysym range 0x01000000 + codepoint). A newline (the on-screen
+--- keyboard's Enter types "\n") is Return and a tab is Tab; other control characters have no key.
 --- @treturn number|nil keysym
 function Keysyms.from_char(ch)
     local cp = Keysyms.codepoint(ch)
     if not cp then return nil end
+    if cp == 0x0A or cp == 0x0D then return 0xFF0D end
+    if cp == 0x09 then return 0xFF09 end
+    if cp < 0x20 or cp == 0x7F then return nil end
     if cp >= 0x20 and cp <= 0x7E then return cp end
     if cp >= 0xA0 and cp <= 0xFF then return cp end
     return 0x01000000 + cp

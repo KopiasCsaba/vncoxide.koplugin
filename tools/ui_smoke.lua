@@ -2628,6 +2628,16 @@ check("two_finger_pan_follows_the_cumulative_relative", function()
     remote:free()
 end)
 
+check("onscreen_keyboard_enter_and_tab_send_their_keys", function()
+    -- the on-screen keyboard's Enter types "\n" through the inputbox stub
+    local Keysyms = require("vnc/keysyms")
+    assert_true(Keysyms.from_char("\n") == 0xFF0D and Keysyms.from_char("\r") == 0xFF0D, "newline is Return")
+    assert_true(Keysyms.from_char("\t") == 0xFF09, "tab is Tab")
+    assert_true(Keysyms.from_char("\1") == nil and Keysyms.from_char("\127") == nil, "other control characters have no key")
+    assert_true(Keysyms.from_char("a") == 0x61 and Keysyms.from_char("é") == 0xE9
+        and Keysyms.from_char("ő") == 0x01000151, "printable characters are unchanged")
+end)
+
 check("viewer_menu_disconnect_returns_to_the_list", function()
     local app, remote = new_app()
     local session = app.session
