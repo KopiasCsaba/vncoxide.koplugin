@@ -682,11 +682,40 @@ end
 
 -- ---------------------------------------------------------------- canvas gestures
 
+-- A desktop only sees a double click when both clicks land within a few pixels of each other
+-- (4 px by default on Windows, about 5 on GTK), but a finger jitters 10-20 device pixels between
+-- two taps. So a Touch-mode tap that follows the previous one quickly and closely clicks at that
+-- one's remote position. The slop is 30 px at the base density (Screen:scaleBySize), the interval
+-- half a second.
+local TOUCH_DOUBLE_TAP_INTERVAL = 0.5
+
+--- Where a Touch-mode tap clicks (remote pixels); remembers the tap for the next one.
+function ViewerApp:_touch_tap_spot(ges)
+    -- the gesture's own time when it has one, else the monotonic clock
+    local now = type(ges.time) == "number" and ges.time or time.now()
+    local last = self._last_touch_tap
+    local rx, ry
+    if last and time.to_s(now - last.time) <= TOUCH_DOUBLE_TAP_INTERVAL
+            and math.abs(ges.pos.x - last.x) <= Screen:scaleBySize(30)
+            and math.abs(ges.pos.y - last.y) <= Screen:scaleBySize(30) then
+        rx, ry = last.rx, last.ry
+        -- the anchor stays the first tap, so a slow drift of taps cannot walk away
+        last.time = now
+    else
+        rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+        self._last_touch_tap = { time = now, x = ges.pos.x, y = ges.pos.y, rx = rx, ry = ry }
+    end
+    return rx, ry
+end
+
 function ViewerApp:onTap(_, ges)
     if not self:_input_target() then return nil end
-    if self:get_pointer_mode() == "mouse" then return self:_mouse_tap(ges) end
+    if self:get_pointer_mode() == "mouse" then
+        self._last_touch_tap = nil
+        return self:_mouse_tap(ges)
+    end
     self:_end_stale_pointer_action()
-    local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+    local rx, ry = self:_touch_tap_spot(ges)
     self:_press_armed()
     -- move, press, release: what a real mouse click looks like on the wire
     self:send_pointer(rx, ry, 0)
@@ -697,6 +726,7 @@ function ViewerApp:onTap(_, ges)
 end
 
 function ViewerApp:onPan(_, ges)
+    self._last_touch_tap = nil
     if not self:_input_target() then return nil end
     if self._drag_active == "mouse" or self._mouse_moving
             or (self._drag_active == nil and self:get_pointer_mode() == "mouse") then
@@ -745,6 +775,7 @@ last pointer position. The swipe itself goes on to whatever else wants it (the t
 swipe, which ends the drag itself too, as it gets the swipe first and then ignores it).
 ]]
 function ViewerApp:onSwipe(_, ges)
+    self._last_touch_tap = nil
     self:_end_quick_drag(ges)
     return nil
 end
@@ -758,6 +789,7 @@ function ViewerApp:_end_quick_drag(ges)
 end
 
 function ViewerApp:onHold(_, ges)
+    self._last_touch_tap = nil
     if not self:_input_target() then return nil end
     local mouse = self:get_pointer_mode() == "mouse"
     if mouse then self:_flush_deferred_click() end
@@ -801,6 +833,7 @@ two_finger_pan_release (Contact:handlePanRelease), not the pan_release / hold_re
 waiting for. Let go of the button and the modifiers now, before the two-finger gesture runs.
 ]]
 function ViewerApp:_end_pointer_action()
+    self._last_touch_tap = nil
     self._mouse_moving = nil
     if self._drag_active or self._hold_active then
         self._drag_active = nil

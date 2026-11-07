@@ -4750,6 +4750,42 @@ check("mouse_pointer_is_clamped_after_the_remote_shrinks", function()
     close_viewer(app, remote)
 end)
 
+check("touch_double_tap_clicks_at_one_spot", function()
+    local time = require("ui/time")
+    local app, remote, sent = new_app()
+    local c = app.canvas
+    local function tap(dx, dy, at)
+        local before = #sent.pointer
+        dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 50 + dx, y = c.y + 50 + dy }, time = time.s(at) }
+        local out = {}
+        for i = before + 1, #sent.pointer do out[#out + 1] = sent.pointer[i] end
+        assert_true(#out == 3, "a click is move, press, release")
+        assert_true(out[1].x == out[2].x and out[2].x == out[3].x and out[1].y == out[3].y, "one spot")
+        return out[2].x, out[2].y
+    end
+    local x1, y1 = tap(0, 0, 100)
+    local x2, y2 = tap(15, 10, 100.3)
+    assert_true(x1 == x2 and y1 == y2, "a quick second tap nearby clicks at the first one's spot")
+    local x3, y3 = tap(-12, 14, 100.6)
+    assert_true(x3 == x1 and y3 == y1, "a third one keeps snapping (triple click)")
+    local x4, y4 = tap(15, 0, 101.3)
+    assert_true(x4 ~= x1, "too slow: its own spot")
+    local x5 = tap(80, 0, 101.5)
+    assert_true(x5 ~= x4 and x5 ~= x1, "too far: its own spot")
+    -- another gesture in between starts over
+    local x6, y6 = tap(0, 0, 105)
+    app:onHold(nil, { pos = Geom:new{ x = c.x + 50, y = c.y + 50 } })
+    app:onHoldRelease(nil, { pos = Geom:new{ x = c.x + 50, y = c.y + 50 } })
+    local x7 = tap(15, 0, 105.2)
+    assert_true(x7 ~= x6, "a long press in between resets")
+    -- a mode switch resets too
+    local xa = tap(0, 0, 120)
+    app:set_pointer_mode("mouse"); app:set_pointer_mode("touch")
+    local xb = tap(15, 0, 120.2)
+    assert_true(xb ~= xa, "a mode switch resets")
+    close_viewer(app, remote)
+end)
+
 check("touch_tap_stays_immediate", function()
     local app, remote = new_app()
     local wire = wire_log(app)
