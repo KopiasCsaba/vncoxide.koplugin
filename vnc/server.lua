@@ -658,6 +658,10 @@ end
 function Server:_drop_client(client, why)
     if client.dropped then return end
     client.dropped = true
+    -- What the client still holds in core goes with it (c.f., Server:_release_input). Protected:
+    -- dropping a client must not fail half-way because a widget's handler did.
+    local ok, err = pcall(self._release_input, self, client.server and client.server.client)
+    if not ok then logger.warn("vnc: releasing a dropped client's input failed:", tostring(err)) end
     if client.sock then
         client.sock:close()
         client.sock = nil
@@ -1368,7 +1372,33 @@ function Server:_on_key(client, keysym, down)
         logger.info("vnc: this device has no key named", name, "- client key ignored")
         return
     end
+    -- remembered so that a client dropped with a key held can have it released (c.f.,
+    -- Server:_release_input)
+    client.keys_down = client.keys_down or {}
+    client.keys_down[code] = down or nil
     self:_inject({ key_ev(code, down and 1 or 0) })
+end
+
+--[[--
+Lifts the contact and releases the keys a client still holds in core, for a client that is going
+away: one dropped mid-drag (or with a modifier down) would otherwise leave core with a finger that
+never lifts and a key that stays pressed. A press still *buffered* (c.f., Server:_on_pointer) never
+reached core, so it is simply discarded.
+]]
+function Server:_release_input(client)
+    if not client then return end
+    if client.buffered then
+        client.buffered = nil
+    elseif (client.buttons or 0) ~= 0 then
+        self:_inject(lift_frame(client.pointer_x or 0, client.pointer_y or 0))
+    end
+    client.buttons = 0
+    client.dragging = false
+    local keys = client.keys_down
+    client.keys_down = nil
+    for code in pairs(keys or {}) do
+        self:_inject({ key_ev(code, 0) })
+    end
 end
 
 --- Finds the input code this device maps to a KOReader key name.

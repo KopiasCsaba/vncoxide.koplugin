@@ -2845,6 +2845,49 @@ check("a_client_tap_lands_where_it_was_made_on_a_rotated_screen", function()
     if not ok then error(err, 0) end
 end)
 
+--- A client that goes away with its button down (mid-drag) or a key held (a modifier, typically)
+--- must not leave core with a contact that never lifts or a key that stays pressed: dropping the
+--- client injects the lift and the key-ups it owed.
+check("a_dropped_client_lifts_its_contact_and_releases_its_keys", function()
+    local Server = require("vnc/server")
+    local server = Server.new{ settings = { ip = "127.0.0.1", port = 5900, password = "" } }
+    local frames = {}
+    local real_inject = server._inject
+    server._inject = function(self, evs, at)
+        frames[#frames + 1] = evs
+        return real_inject(self, evs, at)
+    end
+    local state = {}
+    local record = { server = { client = state } }
+    local shift = server:_keycode_for("Shift")
+    assert_true(shift ~= nil, "this device must map a Shift key for the check")
+    server:_on_key(state, 0xFFE1, true)                 -- Shift down
+    server:_on_pointer(state, 100, 100, 1)
+    server:_on_pointer(state, 140, 100, 1)              -- a drag: the contact is in core now
+    local before = #frames
+    server:_drop_client(record, "test")
+    local lifted, released = false, false
+    for i = before + 1, #frames do
+        for _, ev in ipairs(frames[i]) do
+            if ev.type == ffi.C.EV_ABS and ev.code == ffi.C.ABS_MT_TRACKING_ID and ev.value == -1 then lifted = true end
+            if ev.type == ffi.C.EV_KEY and ev.code == shift and ev.value == 0 then released = true end
+        end
+    end
+    assert_true(lifted, "the dragging contact must be lifted when its client is dropped")
+    assert_true(released, "the held Shift must be released when its client is dropped")
+    -- and nothing twice: a second drop (stop() after a failure, say) injects nothing more
+    local after = #frames
+    server:_drop_client(record, "again")
+    assert_true(#frames == after, "a client is only released once")
+    -- a press that never reached core (still buffered) has nothing to lift
+    local state2 = {}
+    server:_on_pointer(state2, 10, 10, 1)
+    local n = #frames
+    server:_drop_client({ server = { client = state2 } }, "test")
+    assert_true(#frames == n, "a buffered press is discarded, not injected, when its client goes")
+    assert_true(state2.buffered == nil, "... and its buffer is gone")
+end)
+
 check("a_client_click_over_the_wire_reaches_a_widget", function()
     -- The wire end of the chain: a PointerEvent that arrives over the socket, through the
     -- protocol's per-client state, must make a *real widget* on the window stack react.
