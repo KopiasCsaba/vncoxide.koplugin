@@ -2624,6 +2624,26 @@ check("wifi_is_turned_off_by_the_last_connection_only", function()
     assert_true(offs == 1, "the last connection turns it off")
 end)
 
+check("retry_mode_keeps_wifi_on_until_the_loop_ends", function()
+    local Session = require("vnc/session")
+    local offs, ons = 0, 0
+    local net = { isWifiOn = function() return true end, turnOffWifi = function() offs = offs + 1 end,
+                  turnOnWifiAndWaitForConnection = function() ons = ons + 1 end }
+    local s = Session.new{ profile = { name = "r", host = "127.0.0.1", port = 1 }, plugin = { sessions = {} } }
+    s._net = function() return net end
+    s.wifi_was_on = false; s:set_keep_wifi(true)
+    local results = {}
+    s:connect(function(ok) results[#results + 1] = ok end)
+    assert_true(results[1] == false and s:get_state() == "error")
+    assert_true(offs == 0 and s.wifi_was_on == false, "failure keeps Wi-Fi and the duty")
+    s:connect(function(ok) results[#results + 1] = ok end)
+    assert_true(offs == 0 and s.wifi_was_on == false)
+    s:set_keep_wifi(false)
+    assert_true(offs == 1 and s.wifi_was_on == nil, "the loop ending restores it once")
+    s.wifi_was_on = false; s:set_keep_wifi(true); s:hangup()
+    assert_true(offs == 1 and s:get_state() == "disconnected")
+end)
+
 check("hardware_keys_stay_local_under_a_popup_but_held_keys_are_released", function()
     local Key = require("device/key")
     local InfoMessage = require("ui/widget/infomessage")

@@ -196,13 +196,15 @@ function Session:connect(callback)
     local attempt = self._attempt
 
     local wifi_on = self:_net():isWifiOn()
-    self.wifi_was_on = wifi_on
+    -- While retrying, Wi-Fi we turned on earlier is still on: keep the duty to turn it off.
+    local keeps_duty = self.keep_wifi and self.wifi_was_on == false
+    if not keeps_duty then self.wifi_was_on = wifi_on end
     if not wifi_on then
         local status = self:_net():turnOnWifiAndWaitForConnection(function()
             self:_do_connect(attempt)
         end)
         if status == false then
-            self.wifi_was_on = nil
+            if not keeps_duty then self.wifi_was_on = nil end
             self:_fail("could not turn on Wi-Fi")
             return
         end
@@ -683,9 +685,27 @@ function Session:_fail(err)
     local msg = tostring(err)
     logger.warn("vnc: session failed:", msg)
     self:_teardown_connection()
-    self:_restore_wifi()
+    if not self.keep_wifi then self:_restore_wifi() end
     self:_set_state("error", msg)
     self:_finish_connect(false, msg)
+end
+
+--- Retry mode: while on, a failure or hangup leaves Wi-Fi on and the duty to turn it off with this
+--- session. Turning it off with no connection restores Wi-Fi (the last connection turns it off).
+function Session:set_keep_wifi(on)
+    on = on and true or false
+    local was = self.keep_wifi
+    self.keep_wifi = on
+    if was and not on and (self.state == "error" or self.state == "disconnected") then
+        self:_restore_wifi()
+    end
+end
+
+--- Drops the connection but keeps the plane (and, in retry mode, Wi-Fi) for a reconnect.
+function Session:hangup()
+    self:_teardown_connection()
+    if not self.keep_wifi then self:_restore_wifi() end
+    self:_set_state("disconnected")
 end
 
 --- Closes the connection for good and frees the plane.
