@@ -3087,6 +3087,40 @@ check("canvas_dithered_paint_reports_its_blit_time", function()
     target:free(); remote:free()
 end)
 
+check("canvas_dithered_partial_paint_matches_a_full_dither", function()
+    -- only the recomputed rects are re-dithered; the result must be the whole canvas dithered,
+    -- also after undithered paints changed the canvas in between
+    local bb = require("ffi/blitbuffer")
+    local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BB8)
+    local ref = bb.new(cw + 20, ch + 12, bb.TYPE_BB8)
+    local function same(what)
+        ref:fill(bb.COLOR_WHITE)
+        ref:ditherblitFrom(remote._canvas_bb, cx, cy, 0, 0, cw, ch)
+        for y = cy, cy + ch - 1 do
+            for x = cx, cx + cw - 1 do
+                assert_true(target:getPixel(x, y):getColor8().a == ref:getPixel(x, y):getColor8().a,
+                    string.format("%s: pixel %d,%d differs from a full dither", what, x, y))
+            end
+        end
+    end
+    remote:draw_to(target, cx, cy, cw, ch, true)
+    same("first paint")
+    local plane = remote:get_plane()
+    plane:paintRect(30, 20, 5, 4, bb.COLOR_WHITE)
+    remote:mark_dirty(30, 20, 5, 4)
+    remote:draw_to(target, cx, cy, cw, ch, true)
+    assert_true(remote.last_recomputed_px < cw * ch, "the update must be partial")
+    same("partial update")
+    plane:paintRect(60, 40, 7, 3, bb.COLOR_BLACK)
+    remote:mark_dirty(60, 40, 7, 3)
+    remote:draw_to(target, cx, cy, cw, ch, false)
+    plane:paintRect(10, 10, 3, 3, bb.COLOR_WHITE)
+    remote:mark_dirty(10, 10, 3, 3)
+    remote:draw_to(target, cx, cy, cw, ch, true)
+    same("dithered again after an undithered paint")
+    ref:free(); target:free(); remote:free()
+end)
+
 check("a_tap_hits_the_remote_pixel_drawn_under_it", function()
     local bb = require("ffi/blitbuffer")
     local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BBRGB32)
