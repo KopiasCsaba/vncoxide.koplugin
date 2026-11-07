@@ -590,7 +590,7 @@ local function new_app(plane_w, plane_h, opts)
     local ViewerApp = require("vnc/app")
     local Remote = require("vnc/framebuffer")
     local remote = Remote.new(plane_w or 400, plane_h or 300)
-    local sent = { pointer = {}, key = {}, input = 0, areas = {}, profile_updates = {} }
+    local sent = { pointer = {}, key = {}, input = 0, areas = {}, profile_updates = {}, full_updates = 0 }
     local profile = { name = "test", pointer_mode = opts and opts.mode or "touch" }
     local app = ViewerApp:new{
         plugin = {
@@ -617,6 +617,7 @@ local function new_app(plane_w, plane_h, opts)
             end,
             send_key = function(_, keysym, down) sent.key[#sent.key + 1] = { keysym = keysym, down = down } end,
             note_input = function() sent.input = sent.input + 1 end,
+            request_full_update = function() sent.full_updates = sent.full_updates + 1 end,
             set_view_area = function(_, rect) sent.areas[#sent.areas + 1] = rect end,
             get_state = function() return "connected" end,
             get_error = function() return nil end,
@@ -1353,12 +1354,13 @@ check("keyboard_yields_to_popups", function()
     UIManager:_checkTasks()
     assert_true(not app.vk_visible, "and it must stay hidden while the menu is open")
 
-    -- the menu's own keyboard item must describe the wish, not the state the menu just forced
-    local label
+    -- the menu's own keyboard item reports the setting, and there is no Show/Hide entry any more
+    local on
     for _, item in ipairs(app.menu.item_table) do
-        if item.text == "Hide keyboard" or item.text == "Show keyboard" then label = item.text end
+        assert_true(item.text ~= "Hide keyboard" and item.text ~= "Show keyboard", "no Show/Hide keyboard entry")
+        if item.text == "Keyboard always visible" then on = item.mandatory end
     end
-    assert_true(label == "Hide keyboard", "the item must still offer to hide it, got " .. tostring(label))
+    assert_true(on == "✓", "the always-visible item must show the setting, got " .. tostring(on))
 
     app:close_menu()
     UIManager:_checkTasks()
@@ -1423,15 +1425,18 @@ check("menu_keyboard_items_work", function()
     end
 
     assert_true(not app.vk_visible, "the keyboard starts hidden")
-    choose_menu_item("Show keyboard")
-    assert_true(app.menu == nil, "choosing an item closes the menu")
-    assert_true(app.vk_visible, "\"Show keyboard\" must leave the keyboard shown")
+    choose_menu_item("Keyboard always visible")
+    assert_true(app.menu ~= nil, "the toggle keeps the menu open")
+    app:close_menu()
+    UIManager:_checkTasks()
+    assert_true(app.vk_visible, "the setting must leave the keyboard shown once the menu is gone")
 
-    choose_menu_item("Hide keyboard")
-    assert_true(not app.vk_visible, "\"Hide keyboard\" must leave it hidden")
+    choose_menu_item("Keyboard always visible")
+    app:close_menu()
+    UIManager:_checkTasks()
+    assert_true(not app.vk_visible, "and switching it off hides it")
 
-    -- with the setting on, the keyboard survives a menu round trip. (The item is labelled
-    -- "Hide keyboard" throughout: it describes the wish, not the state the open menu forces.)
+    -- with the setting on, the keyboard survives a menu round trip. 
     app.settings.keyboard_always_visible = true
     app:set_keyboard_visible(true)
     app:open_menu()
@@ -1776,9 +1781,10 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
 
     -- items that need the canvas still close it
     menu = app:open_menu()
-    tap(find_item(menu.item_table, "Send keys…"))
-    assert_true(app.menu == nil and app.key_panel ~= nil, "Send keys… closes the menu and opens the panel")
-    app:close_key_panel()
+    tap(find_item(menu.item_table, "Send text…"))
+    local dialog = top()
+    assert_true(app.menu == nil and dialog.title == "Send text", "Send text… closes the menu and opens the dialog")
+    UIManager:close(dialog)
 
     app:onCloseWidget()
     remote:free()
@@ -3436,6 +3442,75 @@ local function close_viewer(app, remote)
     app:onCloseWidget()
     remote:free()
 end
+
+check("more_menu_order_and_actions", function()
+    local app, remote, sent = new_app()
+    local log = wire_log(app)
+    local menu = app:open_menu()
+    assert_true(menu.item_table[1].select_enabled == false and menu.item_table[1].text:find("^Connected to test"))
+    for _, t in ipairs{ "Send keys…", "Disconnect", "Show keyboard", "Hide keyboard", "Zoom…" } do
+        for _, item in ipairs(menu.item_table) do assert_true(item.text ~= t, t .. " moved out") end
+    end
+    local order = {}
+    for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text:gsub("^Connected to.*", "status") end
+    assert_true(table.concat(order, "|") == "status|Connections…|Send text…|Refresh|Ctrl+Alt+Del|Lock screen|"
+        .. "Page buttons send|Keyboard always visible|Show scroll buttons on toolbar|Leave (keep connection)",
+        table.concat(order, "|"))
+    app:close_menu()
+    assert_true(app:send_text("a\nb\1") == 1)
+    assert_true(log() == "+0x61,-0x61,+0xFF0D,-0xFF0D,+0x62,-0x62", "send_text")
+    app:send_combo{ 0xFFE3, 0xFFE9, 0xFFFF }
+    assert_true(log() == "+0xFFE3,+0xFFE9,+0xFFFF,-0xFFFF,-0xFFE9,-0xFFE3", "send_combo")
+
+    local function choose(text)
+        menu = app:open_menu()
+        menu:onMenuSelect(find_item(menu.item_table, text))
+        UIManager:_checkTasks()
+    end
+    choose("Ctrl+Alt+Del")
+    assert_true(app.menu == nil and log() == "+0xFFE3,+0xFFE9,+0xFFFF,-0xFFFF,-0xFFE9,-0xFFE3", "Ctrl+Alt+Del")
+    choose("Lock screen")
+    assert_true(app.menu == nil and log() == "+0xFFEB,+0x6C,-0x6C,-0xFFEB", "Lock screen")
+
+    local dirty = {}
+    local real_dirty = UIManager.setDirty
+    UIManager.setDirty = function(self_, w, mode, ...)
+        if w == app then dirty[#dirty + 1] = mode end
+        return real_dirty(self_, w, mode, ...)
+    end
+    choose("Refresh")
+    UIManager.setDirty = real_dirty
+    local full = false
+    for _, m in ipairs(dirty) do if m == "full" then full = true end end
+    assert_true(sent.full_updates == 1 and full and app.menu == nil, "Refresh asks for a full update and repaint")
+
+    -- the scroll buttons toggle stays open and rebuilds the toolbar
+    menu = app:open_menu()
+    local item = find_item(menu.item_table, "Show scroll buttons on toolbar")
+    assert_true(item.mandatory == "-" and app.toolbar.button_by_id.scroll_up == nil)
+    menu:onMenuSelect(item)
+    UIManager:_checkTasks()
+    assert_true(app.menu == menu and app.settings.toolbar_scroll_buttons == true and item.mandatory == "✓")
+    assert_true(app.toolbar.button_by_id.scroll_up ~= nil, "scroll buttons appear")
+    menu:onMenuSelect(item)
+    UIManager:_checkTasks()
+    assert_true(app.settings.toolbar_scroll_buttons == false and app.toolbar.button_by_id.scroll_up == nil, "and go")
+    app:close_menu()
+
+    -- Send text…: dialog, Send closes it and types
+    menu = app:open_menu()
+    menu:onMenuSelect(find_item(menu.item_table, "Send text…"))
+    UIManager:_checkTasks()
+    local dialog = top()
+    assert_true(dialog.title == "Send text", "Send text dialog is on top")
+    dialog:setInputText("hi\1")
+    local btn = find_button(dialog, "Send")
+    find_button(dialog, "Cancel")
+    btn.callback()
+    UIManager:_checkTasks()
+    assert_true(top() ~= dialog and log() == "+0x68,-0x68,+0x69,-0x69", "Send types the text and closes")
+    close_viewer(app, remote)
+end)
 
 check("set_pointer_mode_persists_through_the_plugin", function()
     local app, remote, sent = new_app()

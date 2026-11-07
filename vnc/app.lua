@@ -1191,6 +1191,35 @@ function ViewerApp:onTextInput(text)
     return true
 end
 
+--- Types `text` on the remote, one key down/up per character ("\n" becomes Return). Characters
+--- with no keysym are skipped.
+--- @treturn number how many were skipped
+function ViewerApp:send_text(text)
+    local skipped = 0
+    for _, ch in ipairs(Util.split_chars(text)) do
+        local keysym = Keysyms.from_char(ch)
+        if keysym then
+            self:send_key(keysym, true)
+            self:send_key(keysym, false)
+        else
+            skipped = skipped + 1
+        end
+    end
+    return skipped
+end
+
+--- Presses `keysyms` together: downs in order, ups in reverse.
+function ViewerApp:send_combo(keysyms)
+    for i = 1, #keysyms do self:send_key(keysyms[i], true) end
+    for i = #keysyms, 1, -1 do self:send_key(keysyms[i], false) end
+end
+
+--- Asks the server for the whole picture again and repaints the viewer in full.
+function ViewerApp:refresh_remote()
+    self.session:request_full_update()
+    UIManager:setDirty(self, "full")
+end
+
 -- ---------------------------------------------------------------- keyboard
 
 --- What the user asked for: the "keyboard always visible" setting, or their last manual choice.

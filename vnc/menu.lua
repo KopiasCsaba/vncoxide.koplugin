@@ -11,10 +11,13 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local InfoMessage = require("ui/widget/infomessage")
+local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
+local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 
 local Dialogs = require("vnc/dialogs")
+local Keysyms = require("vnc/keysyms")
 
 local MenuBuilder = {}
 
@@ -84,8 +87,55 @@ function MenuBuilder.open(app)
         end
         return item
     end
+    -- Types a line of text on the remote; the menu is closed by now, the dialog is the only popup.
+    local function send_text_dialog()
+        local dialog
+        dialog = InputDialog:new{
+            title = _("Send text"),
+            input_hint = _("Text to type on the remote"),
+            buttons = { {
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(dialog)
+                        app:reassert_text_input()
+                        app:_sync_keyboard_later()
+                    end,
+                },
+                {
+                    text = _("Send"),
+                    is_enter_default = true,
+                    callback = function()
+                        local text = dialog:getInputValue()
+                        UIManager:close(dialog)
+                        local skipped = app:send_text(text)
+                        if skipped > 0 then
+                            UIManager:show(Notification:new{ text = T(_("%1 character(s) skipped"), skipped) })
+                        end
+                        app:reassert_text_input()
+                        app:_sync_keyboard_later()
+                    end,
+                },
+            } },
+        }
+        UIManager:show(dialog)
+    end
     -- A failed attempt must come back to a menu, not leave the user staring at the canvas.
     local function back_into_menu() app:open_menu() end
+
+    -- ---- status (not selectable)
+    local status
+    if not profile then
+        status = _("No active session")
+    elseif session:get_state() == "error" then
+        status = T(_("Connection lost: %1"), tostring(session:get_error()))
+    elseif session:get_state() == "connected" and remote then
+        status = T(_("Connected to %1 (%2×%3)"), profile.name, remote:get_size())
+    else
+        status = T(_("Not connected (%1)"), session:get_state())
+    end
+    item_table[#item_table + 1] = { text = status, select_enabled = false }
 
     -- ---- a lost / failed connection: offer a retry right at the top
     if profile and session:get_state() == "error" then
@@ -111,33 +161,22 @@ function MenuBuilder.open(app)
     }
     item_table[#item_table + 1] = { text = _("Connections…"), sub_item_table = connections }
 
-    -- ---- status (not selectable)
-    local status
-    if not profile then
-        status = _("No active session")
-    elseif session:get_state() == "error" then
-        status = T(_("Connection lost: %1"), tostring(session:get_error()))
-    elseif session:get_state() == "connected" and remote then
-        status = T(_("Connected to %1 (%2×%3)"), profile.name, remote:get_size())
-    else
-        status = T(_("Not connected (%1)"), session:get_state())
-    end
-    item_table[#item_table + 1] = { text = status, select_enabled = false }
-
-    -- ---- keyboard
-    item_table[#item_table + 1] = stays_open({
-        text = _("Keyboard always visible"),
-        callback = function()
-            settings.keyboard_always_visible = not settings.keyboard_always_visible
-            plugin.settings:flush()
-            app:evaluate_keyboard()
-        end,
-    }, function(item) item.mandatory = settings.keyboard_always_visible and "✓" or "-" end)
+    -- ---- things to send or ask for
     item_table[#item_table + 1] = {
-        -- Driven by the wish, not by the current state: while this very menu is open the
-        -- keyboard is hidden, but the item must still describe what tapping it does.
-        text = app:is_keyboard_wanted() and _("Hide keyboard") or _("Show keyboard"),
-        callback = action(function() app:toggle_keyboard() end),
+        text = _("Send text…"),
+        callback = action(function() send_text_dialog() end),
+    }
+    item_table[#item_table + 1] = {
+        text = _("Refresh"),
+        callback = action(function() app:refresh_remote() end),
+    }
+    item_table[#item_table + 1] = {
+        text = _("Ctrl+Alt+Del"),
+        callback = action(function() app:send_combo{ Keysyms.x11.Control_L, Keysyms.x11.Alt_L, Keysyms.x11.Delete } end),
+    }
+    item_table[#item_table + 1] = {
+        text = _("Lock screen"),
+        callback = action(function() app:send_combo{ Keysyms.x11.Super_L, 0x6C } end),
     }
 
     -- ---- page buttons: read on every key press, so this applies at once
@@ -164,12 +203,25 @@ function MenuBuilder.open(app)
         item.mandatory = settings.page_buttons == "wheel" and _("Mouse wheel") or _("Page Up/Down keys")
     end)
 
-    -- ---- any key or hotkey the on-screen keyboard cannot send
-    item_table[#item_table + 1] = {
-        text = _("Send keys…"),
-        help_text = _("A panel at the bottom of the screen with Ctrl, Shift, Alt and Super, special and function keys, letters and symbols. Tap a modifier to use it once: with the next key from the panel, or with the next tap, long press or drag on the screen."),
-        callback = action(function() app:open_key_panel() end),
-    }
+    -- ---- keyboard
+    item_table[#item_table + 1] = stays_open({
+        text = _("Keyboard always visible"),
+        callback = function()
+            settings.keyboard_always_visible = not settings.keyboard_always_visible
+            plugin.settings:flush()
+            app:evaluate_keyboard()
+        end,
+    }, function(item) item.mandatory = settings.keyboard_always_visible and "✓" or "-" end)
+
+    -- ---- the toolbar's scroll buttons: the bar is rebuilt and the area it covered repainted
+    item_table[#item_table + 1] = stays_open({
+        text = _("Show scroll buttons on toolbar"),
+        callback = function()
+            settings.toolbar_scroll_buttons = not settings.toolbar_scroll_buttons
+            plugin.settings:flush()
+            app:_toolbar_changed()
+        end,
+    }, function(item) item.mandatory = settings.toolbar_scroll_buttons and "✓" or "-" end)
 
     -- ---- session
     item_table[#item_table + 1] = {
