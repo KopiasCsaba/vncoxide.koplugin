@@ -133,6 +133,8 @@ local function conv(fmt)
         bl = PxFmt.channel_lut(fmt.blue_max),
         rm = fmt.red_max, gm = fmt.green_max, bm = fmt.blue_max,
         rs = fmt.red_shift, gs = fmt.green_shift, bs = fmt.blue_shift,
+        -- 8/16 bpp: one table maps a whole wire value to its RGB24 (3 bytes per value)
+        plut = (fmt.bytes or 4) <= 2 and PxFmt.pixel_lut(fmt, fmt.bytes) or nil,
     }
     fmt._conv = cv
     return cv
@@ -142,7 +144,18 @@ end
 local function wire_rgb(cv, p, size)
     if cv.rgb then return p[0], p[1], p[2] end
     local v
-    if size == 1 then
+    if size <= 2 and cv.plut then
+        local q
+        if size == 1 then
+            q = p[0] * 3
+        elseif cv.big then
+            q = (p[0] * 256 + p[1]) * 3
+        else
+            q = (p[1] * 256 + p[0]) * 3
+        end
+        local lut = cv.plut
+        return lut[q], lut[q + 1], lut[q + 2]
+    elseif size == 1 then
         v = p[0]
     elseif size == 2 then
         if cv.big then v = bor(lshift(p[0], 8), p[1]) else v = bor(lshift(p[1], 8), p[0]) end
@@ -325,6 +338,36 @@ local function read_run_length(r)
     end
 end
 
+--[[--
+Writes `n` (>= 1) copies of the RGB24 pixel `r, g, b` at byte offset `o` of `buf`.
+
+A run is one store for a single pixel, one memset when it is grey (most of what an e-reader is
+shown), and otherwise the first pixels stored one by one, then copied over in doubling blocks.
+]]
+local function fill_px(buf, o, n, r, g, b)
+    if n == 1 then
+        buf[o], buf[o + 1], buf[o + 2] = r, g, b
+    elseif r == g and g == b then
+        ffi.fill(buf + o, n * 3, r)
+    elseif n <= 8 then
+        for k = o, o + (n - 1) * 3, 3 do
+            buf[k], buf[k + 1], buf[k + 2] = r, g, b
+        end
+    else
+        for k = o, o + 21, 3 do
+            buf[k], buf[k + 1], buf[k + 2] = r, g, b
+        end
+        local have, total = 24, n * 3
+        while have < total do
+            local c = total - have
+            if c > have then c = have end
+            ffi.copy(buf + o + have, buf + o, c)
+            have = have + c
+        end
+    end
+end
+Encodings._fill_px = fill_px
+
 -- A ZRLE tile is at most 64 x 64 pixels; TRLE's are 16 x 16.
 local MAX_TILE = 64
 
@@ -414,6 +457,63 @@ local function decode_tile(state, cv, fmt, vp, r, dx, dy, tw, th)
                 o = o + 3
             end
         end
+    elseif r.p then
+        -- run-length encoded, straight off a memory reader (ZRLE's inflated stream): the bytes
+        -- are read through a local pointer and position, with the reader's own bounds checks
+        -- (and errors, via r:u8() at the end of the data) at every byte
+        local rp, pos, plen = r.p, r.pos, r.len
+        local plain = sub == 128
+        local done = 0
+        while done < npix do
+            local cr, cg, cbl
+            if plain then
+                if pos + cb > plen then r.pos = pos; r:ptr(cb) end
+                cr, cg, cbl = wire_rgb(cv, rp + pos, cb)
+                pos = pos + cb
+            end
+            if pos >= plen then r.pos = pos; r:u8() end
+            local b = rp[pos]
+            pos = pos + 1
+            local length = 1
+            if not plain then
+                if b >= 128 then
+                    b = b - 128
+                else
+                    length = 0
+                end
+                if b >= palette_size then
+                    r.pos = pos
+                    return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d)",
+                        b, palette_size, dx, dy)
+                end
+                local q = b * 3
+                cr, cg, cbl = pal[q], pal[q + 1], pal[q + 2]
+                if length == 0 then
+                    length = 1
+                else
+                    if pos >= plen then r.pos = pos; r:u8() end
+                    b = rp[pos]
+                    pos = pos + 1
+                    length = 1 + b
+                end
+            else
+                length = 1 + b
+            end
+            while b == 255 and length > 1 do
+                if pos >= plen then r.pos = pos; r:u8() end
+                b = rp[pos]
+                pos = pos + 1
+                length = length + b
+            end
+            if done + length > npix then
+                r.pos = pos
+                return nil, string.format("TRLE: run of %d overflows tile (%d/%d pixels) at tile (%d,%d)",
+                    length, done, npix, dx, dy)
+            end
+            fill_px(tb, done * 3, length, cr, cg, cbl)
+            done = done + length
+        end
+        r.pos = pos
     else
         -- run-length encoded (plain RLE or palette RLE), runs may span rows
         local done = 0
@@ -441,9 +541,7 @@ local function decode_tile(state, cv, fmt, vp, r, dx, dy, tw, th)
                 return nil, string.format("TRLE: run of %d overflows tile (%d/%d pixels) at tile (%d,%d)",
                     length, done, npix, dx, dy)
             end
-            for o = done * 3, (done + length - 1) * 3, 3 do
-                tb[o], tb[o + 1], tb[o + 2] = cr, cg, cbl
-            end
+            fill_px(tb, done * 3, length, cr, cg, cbl)
             done = done + length
         end
     end

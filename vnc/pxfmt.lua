@@ -100,6 +100,7 @@ local function pixel_lut(fmt, size)
     end
     return lut
 end
+PxFmt.pixel_lut = pixel_lut
 
 local function is_rgb_bytes(fmt)
     return fmt.big_endian == 0 and fmt.red_shift == 0 and fmt.green_shift == 8
