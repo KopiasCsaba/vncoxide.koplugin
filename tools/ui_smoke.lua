@@ -586,11 +586,12 @@ end)
 --- Builds a shown viewer app with a fake session and plugin (no network involved).
 --- @tparam[opt] number plane_w, plane_h the remote plane's size (400x300 by default)
 --- @treturn table, table, table the app, its remote plane and a record of what it sent
-local function new_app(plane_w, plane_h)
+local function new_app(plane_w, plane_h, opts)
     local ViewerApp = require("vnc/app")
     local Remote = require("vnc/framebuffer")
     local remote = Remote.new(plane_w or 400, plane_h or 300)
-    local sent = { pointer = {}, key = {}, input = 0, areas = {} }
+    local sent = { pointer = {}, key = {}, input = 0, areas = {}, profile_updates = {} }
+    local profile = { name = "test", pointer_mode = opts and opts.mode or "touch" }
     local app = ViewerApp:new{
         plugin = {
             settings = {
@@ -602,8 +603,14 @@ local function new_app(plane_w, plane_h)
             leave_app = function() end,
             disconnect_session = function() end,
             connect_profile = function() end,
+            update_profile_fields = function(_, name, fields)
+                sent.profile_updates[#sent.profile_updates + 1] = { name = name, fields = fields }
+                for k, v in pairs(fields) do profile[k] = v end
+                return true
+            end,
         },
         session = {
+            set_profile = function() end,
             get_remote = function() return remote end,
             send_pointer = function(_, x, y, mask)
                 sent.pointer[#sent.pointer + 1] = { x = x, y = y, mask = mask }
@@ -613,7 +620,7 @@ local function new_app(plane_w, plane_h)
             set_view_area = function(_, rect) sent.areas[#sent.areas + 1] = rect end,
             get_state = function() return "connected" end,
             get_error = function() return nil end,
-            get_profile = function() return { name = "test" } end,
+            get_profile = function() return profile end,
         },
     }
     -- Shown the way main.lua shows it: a full-screen widget asks for its own refresh.
@@ -621,6 +628,18 @@ local function new_app(plane_w, plane_h)
     return app, remote, sent
 end
 
+check("pointer_mode_is_cleaned_and_kept_per_profile", function()
+    local Settings = require("vnc/settings")
+    local path = data_dir .. "/ui_smoke_pointer_mode.lua"; os.remove(path)
+    local s = Settings.open(path)
+    s:save_profile{ name = "m", host = "h", port = 1, pointer_mode = "mouse" }
+    s:save_profile{ name = "j", host = "h", port = 1, pointer_mode = "joystick" }
+    assert_true(s:get_profile("m").pointer_mode == "mouse")
+    assert_true(s:get_profile("j").pointer_mode == "touch", "junk cleans to touch")
+    s:save_profile({ name = "m", host = "h2", port = 1 }, "m")
+    assert_true(s:get_profile("m").pointer_mode == "mouse", "an edit without the field keeps it")
+    assert_true(s.data.settings.pointer_speed == "normal" and s.data.settings.toolbar_scroll_buttons == false)
+end)
 check("canvas_covers_the_screen", function()
     local app, remote = new_app()
     local size = Screen:getSize()
@@ -3366,6 +3385,15 @@ local function close_viewer(app, remote)
     app:onCloseWidget()
     remote:free()
 end
+
+check("set_pointer_mode_persists_through_the_plugin", function()
+    local app, remote, sent = new_app()
+    assert_true(app:get_pointer_mode() == "touch")
+    app:set_pointer_mode("mouse")
+    assert_true(app:get_pointer_mode() == "mouse")
+    assert_true(#sent.profile_updates == 1 and sent.profile_updates[1].fields.pointer_mode == "mouse")
+    close_viewer(app, remote)
+end)
 
 check("key_panel_opens_from_the_menu_and_leaves_the_canvas_usable", function()
     local app, remote, sent = new_app()

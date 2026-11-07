@@ -34,6 +34,7 @@ local time = require("ui/time")
 
 local Keyboard = require("vnc/keyboard")
 local Keysyms = require("vnc/keysyms")
+local Settings = require("vnc/settings")
 local Util = require("vnc/util")
 
 local Screen = Device.screen
@@ -656,6 +657,30 @@ function ViewerApp:_end_pointer_action()
     end
     self:_release_action_mods()
     self:_pointer_action_changed()
+end
+
+--- The profile's pointer mode: "touch" (a tap clicks where it lands) or "mouse" (a drag moves a
+--- cursor).
+function ViewerApp:get_pointer_mode()
+    local profile = self.session:get_profile()
+    return profile and profile.pointer_mode == "mouse" and "mouse" or "touch"
+end
+
+--- Switches the pointer mode and stores it in the profile.
+function ViewerApp:set_pointer_mode(mode)
+    self:_end_pointer_action()
+    local profile = self.session:get_profile()
+    local stored = self.plugin:update_profile_fields(profile.name, { pointer_mode = mode })
+    if not stored then
+        -- the plugin did not (or could not) keep it: at least the live session follows
+        profile.pointer_mode = mode
+        self.session:set_profile(profile)
+    end
+end
+
+--- Mouse-mode cursor speed: remote pixels per screen pixel dragged.
+function ViewerApp:pointer_speed()
+    return Settings.POINTER_SPEEDS[self.settings.pointer_speed] or 1.25
 end
 
 --- Whether a canvas action still holds something down on the remote: a drag's or long press's

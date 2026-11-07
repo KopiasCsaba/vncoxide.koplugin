@@ -437,6 +437,17 @@ function VNC:save_profile(profile, existing_name)
     return true
 end
 
+--- Merges `fields` into the stored profile `name` and saves it; the live session follows.
+--- @treturn boolean whether the profile existed and was saved
+function VNC:update_profile_fields(name, fields)
+    local stored = self.settings:get_profile(name)
+    if not stored then return false end
+    local merged = {}
+    for k, v in pairs(stored) do merged[k] = v end
+    for k, v in pairs(fields) do merged[k] = v end
+    return self:save_profile(merged, name)
+end
+
 --[[--
 The canvas the picture benchmark draws into, so that its draw cost is the viewer's.
 

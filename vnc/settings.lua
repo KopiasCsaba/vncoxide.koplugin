@@ -22,6 +22,7 @@ Settings.__index = Settings
 --- Profile field names.
 Settings.PROFILE_FIELDS = {
     "name", "host", "port", "password", "autoconnect",
+    "pointer_mode",                  -- how the screen drives the pointer: "touch" or "mouse"
     -- Picture: read once per connection, so a change applies on the next one (see NOTES.txt,
     -- "Pixel format").
     "color_depth",                   -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
@@ -43,9 +44,14 @@ Settings.DEFAULTS = {
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
     scaling = "smooth",              -- viewer scaling: "smooth" (blended) or "sharp" (nearest neighbour)
+    pointer_speed = "normal",        -- mouse-mode cursor speed: a key of @{Settings.POINTER_SPEEDS}
+    toolbar_scroll_buttons = false,  -- the toolbar shows scroll up/down buttons
     -- the "Send keys" panel's last combos, most recent first: { mods = {"Ctrl", ...}, keysym, label }
     recent_combos = {},
 }
+
+--- Mouse-mode cursor speed presets: remote pixels moved per screen pixel dragged.
+Settings.POINTER_SPEEDS = { slow = 0.75, normal = 1.25, fast = 2.0 }
 
 --- How many combos the "Send keys" panel remembers.
 Settings.RECENT_COMBOS_MAX = 4
@@ -93,6 +99,10 @@ local SETTING_CHECKS = {
     scaling = function(value)
         if value == "sharp" then return value end
         return Settings.DEFAULTS.scaling
+    end,
+    pointer_speed = function(value)
+        if Settings.POINTER_SPEEDS[value] then return value end
+        return Settings.DEFAULTS.pointer_speed
     end,
     recent_combos = function(value)
         local list = {}
@@ -243,6 +253,7 @@ local function clean_profile(p, tight_default)
         password = type(p.password) == "string" and p.password or "",
         -- Only the boolean true counts: a hand-edited `"yes"` (or anything else) means "no".
         autoconnect = p.autoconnect == true,
+        pointer_mode = p.pointer_mode == "mouse" and "mouse" or "touch",
         color_depth = (p.color_depth == 16 or p.color_depth == 8) and p.color_depth or 24,
         enable_tight = (p.enable_tight == nil and tight_default or p.enable_tight) == true,
         jpeg_quality = level_or_off(p.jpeg_quality),
@@ -415,6 +426,7 @@ function Settings:save_profile(p, existing_name)
     local cleaned = clean_profile({
         name = name, host = p.host, port = port, password = p.password,
         autoconnect = given_or_kept("autoconnect"),
+        pointer_mode = given_or_kept("pointer_mode"),
         color_depth = given_or_kept("color_depth"),
         enable_tight = given_or_kept("enable_tight"),
         jpeg_quality = given_or_kept("jpeg_quality"),
