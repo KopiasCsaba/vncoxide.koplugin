@@ -93,6 +93,8 @@ function Session.new(opts)
         tx = {},           -- pending outgoing bytes (array of strings)
         rx = "",           -- received bytes; the unconsumed ones start at `rx_pos`
         rx_pos = 1,
+        rx_parts = {},     -- pieces received towards a read larger than `rx` holds, joined once
+        rx_parts_len = 0,  -- complete (appending each piece to `rx` would copy it over and over)
         bulk = false,      -- true once the socket is non-blocking: receive whatever has arrived
         fast_reads = 0,    -- reads the protocol may still take from `rx` without yielding
         fast_budget = 0,   -- bytes it may still take that way in this tick
@@ -471,17 +473,23 @@ function Session:_pump(stop_connected)
                 budget = budget - need
                 resume = true
             else
-                -- drop the consumed bytes before appending, so the buffer never grows unbounded
+                -- drop the consumed bytes first, so the buffer never grows unbounded
                 if pos > 1 then
                     self.rx, self.rx_pos = self.rx:sub(pos), 1
                 end
-                local want = need - #self.rx
+                local want = need - #self.rx - self.rx_parts_len
                 if self.bulk and want < Session.RECV_CHUNK then want = Session.RECV_CHUNK end
                 local got, rerr, partial = self.sock:receive(want)
                 got = got or partial
                 if got and #got > 0 then
-                    self.rx = self.rx .. got
+                    local parts = self.rx_parts
+                    parts[#parts + 1] = got
+                    self.rx_parts_len = self.rx_parts_len + #got
                     budget = budget - #got
+                    if #self.rx + self.rx_parts_len >= need then
+                        self.rx = self.rx .. table.concat(parts)
+                        self.rx_parts, self.rx_parts_len = {}, 0
+                    end
                 end
                 if rerr == "closed" then
                     self:_fail("connection closed by server")
@@ -607,6 +615,7 @@ function Session:_teardown_connection()
         self.proto = nil
     end
     self.tx, self.rx, self.rx_pos, self.need, self.done = {}, "", 1, nil, false
+    self.rx_parts, self.rx_parts_len = {}, 0
     self.bulk, self.in_update, self.fast_reads, self.fast_budget = false, false, 0, 0
     -- An update cut short by the teardown must not leave its timing state for the next connection.
     self.tm = nil
