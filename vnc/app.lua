@@ -75,6 +75,7 @@ function ViewerApp:init()
     self._keyboard_watch_pending = false
     self.vk = Keyboard.new(self.session, function() self:on_keyboard_height_changed() end,
         function(keysym) self:send_osk_key(keysym) end)
+    self:_keep_drag_ends_from(self.vk)
     self._drag_active = nil
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
@@ -88,6 +89,8 @@ function ViewerApp:init()
     -- Mouse mode: a tap's click waits out the double-tap interval (see `_mouse_tap`)
     self._deferred_click = nil
     self._deferred_click_task = function() self:_deferred_click_due() end
+    -- ends a drag or long press whose end went to a widget above us (see `_watch_release`)
+    self._release_watch_task = function() self:_release_watch_tick() end
     -- shown on open, so it is discoverable; a swipe down in the top zone hides it
     self.toolbar = Toolbar:new{ app = self }
     self.toolbar_visible = true
@@ -550,7 +553,9 @@ function ViewerApp:onCloseWidget()
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
     self:_drop_key_panel()
     self:_drop_key_strip()
-    self:_end_pointer_action()
+    self:_end_pointer_action("close")
+    UIManager:unschedule(self._release_watch_task)
+    self._release_watched = nil
     -- a click still waiting for a possible second tap is not worth sending any more
     self:_drop_deferred_click()
     if self._text_input_asserted then
@@ -629,8 +634,14 @@ end
 --- Wheel notches sent per page-button press (wheel mode).
 ViewerApp.WHEEL_NOTCHES = 3
 
-function ViewerApp:send_pointer(x, y, mask)
+--- Sends a pointer event. A change of the buttons held is logged, with `reason` (what the caller
+--- is doing), so a button left down on the remote can be traced; plain moves are not.
+function ViewerApp:send_pointer(x, y, mask, reason)
     self._pointer_x, self._pointer_y = x, y
+    if mask ~= (self._sent_mask or 0) then
+        self._sent_mask = mask
+        logger.dbg("vnc-pointer:", mask, x, y, reason or "?")
+    end
     self.session:send_pointer(x, y, mask)
 end
 
@@ -644,9 +655,34 @@ end
 
 --- Ends a drag or long press whose release never reached us (see `_end_pointer_action`); no-op
 --- when none is pending.
-function ViewerApp:_end_stale_pointer_action()
+function ViewerApp:_end_stale_pointer_action(reason)
     if self._drag_active or self._hold_active then
-        self:_end_pointer_action()
+        self:_end_pointer_action(reason or "stale")
+    end
+end
+
+-- What continues or ends a one-finger drag or long press (see `_keep_drag_ends_from`).
+local DRAG_CONTINUATION = { pan = true, pan_release = true, swipe = true, hold_pan = true, hold_release = true }
+
+--[[--
+The on-screen keyboard is above us and its keys take a pan_release, swipe or hold_release that
+lands on them: the end of a canvas drag or long press lifting there would type that key, or, on a
+key that types nothing (Shift, the symbol switch), never reach us and leave the button down on the
+remote. While one of ours is under way, such a gesture skips the keyboard and comes to us.
+]]
+function ViewerApp:_keep_drag_ends_from(widget)
+    local handle = widget.handleEvent
+    widget.handleEvent = function(w, event)
+        if event.handler == "onGesture" and (self._drag_active or self._hold_active or self._mouse_moving) then
+            local ges = event.args and event.args[1]
+            local kind = ges and ges.ges
+            if DRAG_CONTINUATION[kind] then return nil end
+            -- a new gesture of the keyboard's own: whatever of ours is left is stale
+            if (kind == "tap" or kind == "hold") and w.dimen and ges.pos and w.dimen:contains(ges.pos) then
+                self:_end_pointer_action("keyboard gesture")
+            end
+        end
+        return handle(w, event)
     end
 end
 
@@ -721,8 +757,8 @@ function ViewerApp:onTap(_, ges)
     self:_press_armed()
     -- move, press, release: what a real mouse click looks like on the wire
     self:send_pointer(rx, ry, 0)
-    self:send_pointer(rx, ry, 1)
-    self:send_pointer(rx, ry, 0)
+    self:send_pointer(rx, ry, 1, "tap")
+    self:send_pointer(rx, ry, 0, "tap")
     self:_release_action_mods()
     return true
 end
@@ -742,7 +778,7 @@ function ViewerApp:onPan(_, ges)
         local rx, ry = self:_to_remote(ges.pos.x - rel.x, ges.pos.y - rel.y)
         -- armed modifiers stay down for the whole drag (Shift+drag selects, Alt+drag moves)
         self:_press_armed()
-        self:send_pointer(rx, ry, 1)
+        self:send_pointer(rx, ry, 1, "drag start")
         self._drag_active = true
         self:_pointer_action_changed()
     end
@@ -754,7 +790,8 @@ end
 function ViewerApp:onPanRelease(_, ges)
     if self._mouse_moving then
         self._mouse_moving = nil
-        return true
+        -- (a button drag is never a pointer move as well; should it be, the button still goes)
+        if self._drag_active == nil then return true end
     end
     if self._drag_active == nil then return nil end
     local rx, ry
@@ -764,7 +801,7 @@ function ViewerApp:onPanRelease(_, ges)
         rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     end
     self._drag_active = nil
-    self:send_pointer(rx, ry, 0)
+    self:send_pointer(rx, ry, 0, "drag end")
     self:_release_action_mods()
     self:_pointer_action_changed()
     return true
@@ -786,7 +823,7 @@ end
 function ViewerApp:_end_quick_drag(ges)
     if ges and ges.ges == "swipe" then
         self._mouse_moving = nil
-        if self._drag_active then self:_end_pointer_action() end
+        if self._drag_active then self:_end_pointer_action("swipe end") end
     end
 end
 
@@ -807,7 +844,7 @@ function ViewerApp:onHold(_, ges)
     end
     -- a long press is a right click: the armed modifiers go with it, like with a tap
     self:_press_armed()
-    self:send_pointer(rx, ry, 4)
+    self:send_pointer(rx, ry, 4, "hold start")
     self._hold_active = mouse and "mouse" or true
     self:_pointer_action_changed()
     return true
@@ -823,7 +860,7 @@ function ViewerApp:_mouse_hold_drag()
     self:_end_stale_pointer_action()
     self:_press_armed()
     local x, y = self:_mouse_pointer_px()
-    self:send_pointer(x, y, 1)
+    self:send_pointer(x, y, 1, "hold drag start")
     self._hold_active = "mouse_drag"
     self._mouse_rel = { x = 0, y = 0 }
     self:_pointer_action_changed()
@@ -848,8 +885,9 @@ function ViewerApp:onHoldRelease(_, ges)
     else
         rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     end
+    local reason = self._hold_active == "mouse_drag" and "hold drag end" or "hold end"
     self._hold_active = nil
-    self:send_pointer(rx, ry, 0)
+    self:send_pointer(rx, ry, 0, reason)
     self:_release_action_mods()
     self:_pointer_action_changed()
     return true
@@ -861,14 +899,14 @@ contact into a two-finger gesture (Contact:handlePan with a buddy contact), and 
 two_finger_pan_release (Contact:handlePanRelease), not the pan_release / hold_release the drag is
 waiting for. Let go of the button and the modifiers now, before the two-finger gesture runs.
 ]]
-function ViewerApp:_end_pointer_action()
+function ViewerApp:_end_pointer_action(reason)
     self._last_touch_tap = nil
     self._mouse_moving = nil
     if self._drag_active or self._hold_active then
         self._drag_active = nil
         self._hold_active = nil
         if self._pointer_x then
-            self:send_pointer(self._pointer_x, self._pointer_y, 0)
+            self:send_pointer(self._pointer_x, self._pointer_y, 0, reason or "end_pointer_action")
         end
     end
     self:_release_action_mods()
@@ -885,7 +923,7 @@ end
 --- Switches the pointer mode and stores it in the profile.
 function ViewerApp:set_pointer_mode(mode)
     self:_flush_deferred_click()
-    self:_end_pointer_action()
+    self:_end_pointer_action("mode switch")
     local profile = self.session:get_profile()
     local stored = self.plugin:update_profile_fields(profile.name, { pointer_mode = mode })
     if not stored then
@@ -907,6 +945,8 @@ end
 --- Shows the help page (the current pointer mode's gestures first), replacing one still up.
 function ViewerApp:open_help()
     self:close_help(true)
+    self:_flush_deferred_click()
+    self:_end_stale_pointer_action("help") -- (it could take the drag's release)
     local viewer
     viewer = TextViewer:new{
         title = _("VNC viewer help"),
@@ -1015,8 +1055,8 @@ function ViewerApp:_mouse_click(n)
     self:_press_armed()
     for _i = 1, n do
         self:send_pointer(x, y, 0)
-        self:send_pointer(x, y, 1)
-        self:send_pointer(x, y, 0)
+        self:send_pointer(x, y, 1, "click")
+        self:send_pointer(x, y, 0, "click")
     end
     self:_release_action_mods()
 end
@@ -1094,12 +1134,13 @@ function ViewerApp:_mouse_pan(ges)
             -- armed modifiers stay down for the whole drag, as in Touch mode
             self:_press_armed()
             local x, y = self:_mouse_pointer_px()
-            self:send_pointer(x, y, 1)
+            self:send_pointer(x, y, 1, "drag start")
             self._drag_active = "mouse"
             self:_pointer_action_changed()
         else
             self:_flush_deferred_click()
             self._mouse_moving = true
+            self:_watch_release()
         end
         self._mouse_start = start
         self._mouse_rel = { x = 0, y = 0 }
@@ -1130,6 +1171,38 @@ end
 --- A drag or long press began or ended: the key panel's "Release all" follows.
 function ViewerApp:_pointer_action_changed()
     if self.key_panel then self.key_panel:pointer_action_changed() end
+    self:_watch_release()
+end
+
+--- Seconds between two looks at whether the finger of a drag or long press is still down.
+ViewerApp.RELEASE_WATCH_INTERVAL = 0.25
+
+--[[--
+Watches a drag, long press or pointer move under way: its end (pan_release, swipe, hold_release)
+can be taken by a widget above us - an on-screen keyboard key under the lifting finger, a menu
+that came up meanwhile - and then never reaches us, leaving the button down on the remote. While
+one is under way, GestureDetector's fingers are looked at every RELEASE_WATCH_INTERVAL: once none
+is down any more, the action is ended here. Only started when a finger is seen down at its start:
+when GestureDetector does not tell, nothing changes.
+]]
+function ViewerApp:_watch_release()
+    if self._release_watched then return end
+    if not (self._drag_active or self._hold_active or self._mouse_moving) then return end
+    if each_finger_down(function() return true end) ~= true then return end
+    self._release_watched = true
+    UIManager:scheduleIn(self.RELEASE_WATCH_INTERVAL, self._release_watch_task)
+end
+
+function ViewerApp:_release_watch_tick()
+    self._release_watched = nil
+    if not (self._drag_active or self._hold_active or self._mouse_moving) then return end
+    if each_finger_down(function() return true end) == false then
+        logger.dbg("vnc: the finger lifted, its release never reached us")
+        self:_end_pointer_action("finger up, release lost")
+        return
+    end
+    self._release_watched = true
+    UIManager:scheduleIn(self.RELEASE_WATCH_INTERVAL, self._release_watch_task)
 end
 
 --[[--
@@ -1185,7 +1258,7 @@ function ViewerApp:_scroll_by_drag(dx, dy, pos)
 end
 
 function ViewerApp:onTwoFingerPan(_, ges)
-    self:_end_pointer_action()
+    self:_end_pointer_action("two-finger gesture")
     if not self:_input_target() then return nil end
     local dx, dy = self:_two_finger_move(ges.start_pos, ges.relative)
     if not dx then return true end
@@ -1202,7 +1275,7 @@ function ViewerApp:onTwoFingerPan(_, ges)
 end
 
 function ViewerApp:onTwoFingerPanRelease(_, ges)
-    self:_end_pointer_action()
+    self:_end_pointer_action("two-finger gesture")
     local g = self._two_finger_pan
     self._two_finger_pan = nil
     -- a scroll moved nothing here, and an early-ended pan was settled when it ended
@@ -1230,7 +1303,7 @@ function ViewerApp:toggle_scroll_lock()
 end
 
 function ViewerApp:_live_zoom(ges)
-    self:_end_pointer_action()
+    self:_end_pointer_action("zoom")
     if not self:_input_target() then return nil end
     local span = ges.span or 0
     local start_span = ges.start_span or 0
@@ -1255,7 +1328,7 @@ function ViewerApp:onInwardPan(_, ges) return self:_live_zoom(ges) end
 function ViewerApp:onOutwardPan(_, ges) return self:_live_zoom(ges) end
 
 function ViewerApp:onPinch()
-    self:_end_pointer_action()
+    self:_end_pointer_action("zoom")
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
@@ -1266,7 +1339,7 @@ function ViewerApp:onPinch()
 end
 
 function ViewerApp:onSpread()
-    self:_end_pointer_action()
+    self:_end_pointer_action("zoom")
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
@@ -1299,7 +1372,7 @@ function ViewerApp:fit_to_screen()
 end
 
 function ViewerApp:onTwoFingerTap(_, ges)
-    self:_end_pointer_action()
+    self:_end_pointer_action("two-finger gesture")
     if not self:_input_target() then return nil end
     self:fit_to_screen()
     return true
@@ -1422,8 +1495,8 @@ function ViewerApp:scroll_wheel(direction, notches, horizontal, x, y)
     local mask = WHEEL_MASK[horizontal and true or false][direction > 0 and 1 or -1]
     self.session:note_input("wheel")
     for _ = 1, notches or ViewerApp.WHEEL_NOTCHES do
-        self:send_pointer(x, y, mask)
-        self:send_pointer(x, y, 0)
+        self:send_pointer(x, y, mask, "wheel")
+        self:send_pointer(x, y, 0, "wheel")
     end
 end
 
@@ -1723,8 +1796,10 @@ end
 
 function ViewerApp:open_menu()
     if self.menu then return self.menu end
-    -- a pending Mouse-mode click belongs to the remote, before the menu covers it
+    -- a pending Mouse-mode click belongs to the remote, before the menu covers it, and a drag
+    -- ends: the menu may take its release (a swipe turns its pages)
     self:_flush_deferred_click()
+    self:_end_stale_pointer_action("menu")
     self.menu = require("vnc/menu").open(self)
     -- The menu is on the window stack now: it owns the screen, so the keyboard gets out of the
     -- way (it is part of the framebuffer view, not of the menu).
@@ -1749,6 +1824,8 @@ end
 --- Opens the display panel (see @{vnc.displaypanel}), or returns the one already open.
 function ViewerApp:open_display_panel()
     if self.display_panel then return self.display_panel end
+    self:_flush_deferred_click()
+    self:_end_stale_pointer_action("display panel") -- (it could take the drag's release)
     self.display_panel = require("vnc/displaypanel").open(self)
     self:_sync_keyboard_later()
     return self.display_panel
@@ -1892,7 +1969,7 @@ attempt of the running loop lands here too, and changes nothing.
 ]]
 function ViewerApp:on_session_error(_err)
     if self.reconnect:is_running() then return end
-    self:_end_pointer_action()
+    self:_end_pointer_action("session error")
     self:_drop_deferred_click()
     local armed = self:_armed_source()
     if armed then armed:take_armed() end

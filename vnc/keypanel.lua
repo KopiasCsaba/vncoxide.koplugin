@@ -276,7 +276,7 @@ end
 --- holds (its button, then its modifiers).
 function KeyPanel:release_all()
     self.mods = {}
-    self.app:_end_pointer_action()
+    self.app:_end_pointer_action("release all")
     self:_update()
 end
 

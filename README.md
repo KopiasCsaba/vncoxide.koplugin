@@ -104,6 +104,12 @@ waiting (up to 1.5 seconds after the tap) until it turns into a tap, a drag or a
 slow second touch still drags. Touch mode clicks are sent at once. Three-finger
 gestures are not used.
 
+The end of a drag or long press is the viewer's wherever the finger lifts: over the toolbar, the
+**Send keys** panel or the on-screen keyboard (no key is typed then). Should that end still not
+arrive, the button is let go as soon as KOReader sees no finger on the screen any more, and opening
+the menu, the display panel or the help ends a drag first. Every button press and release sent is
+written to KOReader's debug log (`vnc-pointer: <buttons> <x> <y> <reason>`).
+
 **Scroll lock.** With the toolbar's scroll lock on, a two-finger drag, and the quick flick that
 ends one, sends mouse-wheel notches instead of panning: one notch per tenth of the screen height
 (sideways: of the width) the fingers travel. The content follows the fingers, as on a phone:
