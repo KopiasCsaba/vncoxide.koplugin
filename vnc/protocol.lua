@@ -92,8 +92,11 @@ function Protocol.new(opts)
         server_name = nil,
         server_pixel_format = nil,
     }, Protocol)
+    -- The transport's read may serve buffered bytes without yielding (see `Session:_read`);
+    -- without one, every read yields `("need", n)` to whoever drives the coroutine.
+    local io_read = opts.io and opts.io.read
     self.reader = Util.reader({
-        read = function(n)
+        read = io_read or function(n)
             return coroutine.yield("need", n)
         end,
     })

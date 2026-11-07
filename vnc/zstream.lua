@@ -126,6 +126,10 @@ function ZStream:inflate_ptr(data, limit)
     local strm = self.strm[0]
     strm.next_in = data and ffi.cast("const uint8_t*", data) or nil
     strm.avail_in = data and #data or 0
+    -- give back a buffer one big rect grew far beyond what the stream now needs
+    if (self.out_cap or 0) > 1048576 and (self.last_total or 0) * 4 < self.out_cap then
+        self.out, self.out_cap = nil, nil
+    end
     grow(self, 65536, 0)
     local total = 0
     local iterations = 0
@@ -157,6 +161,7 @@ function ZStream:inflate_ptr(data, limit)
             break
         end
     end
+    self.last_total = total
     return self.out, total
 end
 

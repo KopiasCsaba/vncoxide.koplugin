@@ -289,7 +289,10 @@ function Session:_do_connect(attempt)
             on_update_start = function()
                 self_ref.in_update = true
                 if Util.timing_enabled() or self_ref.on_update then
-                    self_ref.tm = { t0 = Session._now(), cpu = 0, bytes = 1, rects = 0, px = 0 }
+                    -- c_from: CPU clock at the start, for when it began inside a step already
+                    -- running (reads served from the buffer do not yield between updates)
+                    self_ref.tm = { t0 = Session._now(), cpu = 0, bytes = 1, rects = 0, px = 0,
+                        c_from = os.clock() }
                 end
             end,
             on_update_done = function()
@@ -389,13 +392,14 @@ end
 --- Resumes the protocol, remembering what it asked for.
 --- @treturn boolean false when the session failed
 function Session:_resume(data)
-    local c0 = self.tm and os.clock()
+    local c0 = os.clock()
     if self.tm and data then self.tm.bytes = self.tm.bytes + #data end
     local a, b = self.proto:step(data)
     local tm = self.tm
     if tm then
         -- A tick may end mid-update, so the CPU time of every tick that touched it is summed.
-        tm.cpu = tm.cpu + (os.clock() - (c0 or os.clock()))
+        tm.cpu = tm.cpu + (os.clock() - math.max(c0, tm.c_from or c0))
+        tm.c_from = nil
         if tm.finished then
             self.tm = nil
             if Util.timing_enabled() then

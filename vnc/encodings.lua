@@ -386,7 +386,12 @@ local function decode_tile(state, cv, fmt, vp, r, dx, dy, tw, th)
         state.palette_size = palette_size
     end
 
-    local tb = scratch("tile", "uint8_t", MAX_TILE * MAX_TILE * 3)
+    -- per connection: a paused decode (a detached session) must not share it with another one
+    local tb = state.tile
+    if not tb then
+        tb = ffi.new("uint8_t[?]", MAX_TILE * MAX_TILE * 3)
+        state.tile = tb
+    end
     local npix = tw * th
     if not rle then
         -- packed palette: rows of 1/2/4-bit indices, each row padded to a byte
@@ -762,7 +767,12 @@ function Encodings.decode_tight(ctx)
         if num_colors < 2 then
             return nil, "Tight: palette with fewer than 2 colours"
         end
-        pal = scratch("tight_pal", "uint8_t", 256 * 3)
+        -- per connection, like the tile buffer: the payload read below may pause the decode
+        pal = ctx.streams.tight_pal
+        if not pal then
+            pal = ffi.new("uint8_t[?]", 256 * 3)
+            ctx.streams.tight_pal = pal
+        end
         local p = r:ptr(num_colors * cb)
         for i = 0, num_colors - 1 do
             pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2] = wire_rgb(cv, p + i * cb, cb)
