@@ -838,6 +838,15 @@ function Encodings.decode_tight(ctx)
     end
     ctl = rshift(ctl, 4)
 
+    -- The "no zlib" bits (0x0A) can be combined with an explicit filter (0x04, and a stream id
+    -- in the low bits, ignored): libvncserver sends 0x0E for mono and indexed rects when the
+    -- compression level is 0 (libvncclient strips them the same way).
+    local uncompressed = false
+    if band(ctl, Encodings.TIGHT_NO_ZLIB) == Encodings.TIGHT_NO_ZLIB then
+        uncompressed = true
+        ctl = band(ctl, bit.bnot(Encodings.TIGHT_NO_ZLIB))
+    end
+
     if ctl == Encodings.TIGHT_FILL then
         local cr, cg, cbl = read_cpixel(r, cv)
         PxFmt.fill_rect(vp, 0, 0, w, h, cr, cg, cbl)
@@ -845,14 +854,14 @@ function Encodings.decode_tight(ctx)
     elseif ctl == Encodings.TIGHT_JPEG then
         local len = read_compact_len(r)
         return tight_jpeg(ctx, r:bytes(len))
-    elseif ctl > Encodings.TIGHT_NO_ZLIB then
-        return nil, string.format("unsupported Tight subencoding 0x%02X", ctl)
+    elseif ctl > Encodings.TIGHT_JPEG then
+        return nil, string.format("unsupported Tight subencoding 0x%02X",
+            uncompressed and bor(ctl, Encodings.TIGHT_NO_ZLIB) or ctl)
     end
 
-    local uncompressed = ctl == Encodings.TIGHT_NO_ZLIB
     local stream_id = band(ctl, 0x03)
     local filter = 0
-    if not uncompressed and band(ctl, 0x04) ~= 0 then
+    if band(ctl, 0x04) ~= 0 then
         filter = r:u8()
     end
 
@@ -907,7 +916,7 @@ function Encodings.decode_tight(ctx)
     end
     data = ffi.cast(const_u8p, data)
 
-    if filter == 0 or uncompressed then
+    if filter == 0 then
         return tight_copy(cv, fmt, vp, data, len, w, h)
     elseif filter == 1 then
         return tight_palette(vp, data, len, w, h, pal, num_colors)

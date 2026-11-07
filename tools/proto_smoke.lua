@@ -951,6 +951,39 @@ local function main()
         })
     end)
 
+    check("encodings_tight_no_zlib_with_explicit_filter", function()
+        -- libvncserver at compression level 0 sends mono/indexed rects as control 0x0E: "no zlib"
+        -- plus an explicit (palette) filter; small data comes inline, larger with a compact length
+        local Util = require("vnc/util")
+        local pal = "\255\0\0" .. "\0\0\255" -- red, blue (24-bit TPIXELs)
+        for _, c in ipairs({
+            { w = 8, h = 2, data = "\240\015", bits = "\240\015" },     -- 2 bytes: inline
+            { w = 16, h = 8, data = "\016" .. string.rep("\240\015", 8),  -- 16 bytes: length 16
+              bits = string.rep("\240\015", 8) },
+        }) do
+            local plane = BB.new(c.w, c.h, BB.TYPE_BBRGB24)
+            local bytes = "\224\001\001" .. pal .. c.data -- 0xE0, filter 1, 2 colours
+            local r = Util.mem_reader(bytes)
+            local ok, err = Encodings.decode({ x = 0, y = 0, w = c.w, h = c.h, encoding = Encodings.TIGHT,
+                r = r, plane = plane, vp = plane:viewport(0, 0, c.w, c.h), streams = Encodings.new_streams() })
+            if not ok then plane:free(); return nil, err end
+            if r:remaining() ~= 0 then plane:free(); return nil, "left " .. r:remaining() .. " bytes unread" end
+            for y = 0, c.h - 1 do
+                for x = 0, c.w - 1 do
+                    local p = plane:getPixel(x, y)
+                    -- a set bit is palette entry 1 (blue); rows are padded to whole bytes
+                    local byte = c.bits:byte(y * math.ceil(c.w / 8) + math.floor(x / 8) + 1)
+                    local red = math.floor(byte / 2 ^ (7 - x % 8)) % 2 == 0
+                    if (red and (p:getR() ~= 255 or p:getB() ~= 0)) or (not red and (p:getR() ~= 0 or p:getB() ~= 255)) then
+                        plane:free(); return nil, string.format("%dx%d: pixel %d,%d wrong", c.w, c.h, x, y)
+                    end
+                end
+            end
+            plane:free()
+        end
+        return true
+    end)
+
     check("encodings_tight_quads", function()
         -- Quadrants: triggers the Tight fill subencoding and the 1-bit palette path.
         return encoding_case("enc_tight_quads", "tight", "quadrants", expect_pattern, {
