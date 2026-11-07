@@ -106,6 +106,12 @@ end
 function Reconnect:_run_attempt()
     if not self.box then return end
     UIManager:unschedule(self._retry_task)
+    -- connected meanwhile by another route: a second connect would only be refused
+    if self.app.session:is_connected() then
+        self._in_flight = nil
+        self:_succeeded()
+        return
+    end
     self.attempt = self.attempt + 1
     local token = {}
     self._in_flight = token

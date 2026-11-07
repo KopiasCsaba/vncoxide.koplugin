@@ -1,7 +1,8 @@
 --[[--
 The gesture cheat-sheet: a centred card listing what each gesture does in the pointer mode just
-switched to. Shown by `ViewerApp:toggle_pointer_mode`; a tap anywhere closes it and goes no further
-(it is a window of its own, not a viewer overlay, so the viewer sends nothing while it is up).
+switched to. Shown by `ViewerApp:toggle_pointer_mode`; a tap anywhere (or Back) closes it and goes
+no further (it is a window of its own, not a viewer overlay, so the viewer sends nothing while it
+is up).
 
 @module vnc.cheatsheet
 ]]
@@ -93,6 +94,9 @@ function CheatSheet:init()
     self.ges_events = {
         Tap = { GestureRange:new{ ges = "tap", range = self.dimen } },
     }
+    if Device:hasKeys() then
+        self.key_events = { Close = { { Device.input.group.Back } } }
+    end
 end
 
 function CheatSheet:onShow()
@@ -100,6 +104,11 @@ function CheatSheet:onShow()
 end
 
 function CheatSheet:onTap()
+    self:close()
+    return true
+end
+
+function CheatSheet:onClose()
     self:close()
     return true
 end

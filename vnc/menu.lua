@@ -123,6 +123,15 @@ function MenuBuilder.open(app)
     end
     -- A failed attempt must come back to a menu, not leave the user staring at the canvas.
     local function back_into_menu() app:open_menu() end
+    -- While the reconnect loop runs, connecting to the session's own profile is the loop's next
+    -- attempt: a connect beside it would leave the box up over a live link.
+    local function connect_to(name)
+        if profile and name == profile.name and app.reconnect:is_running() then
+            app.reconnect:retry_now()
+        else
+            plugin:connect_profile(name, back_into_menu)
+        end
+    end
 
     -- ---- status (not selectable)
     local status
@@ -141,7 +150,7 @@ function MenuBuilder.open(app)
     if profile and session:get_state() == "error" then
         item_table[#item_table + 1] = {
             text = T(_("Reconnect to %1"), profile.name),
-            callback = action(function() plugin:connect_profile(profile.name, back_into_menu) end),
+            callback = action(function() connect_to(profile.name) end),
         }
     end
 
@@ -151,7 +160,7 @@ function MenuBuilder.open(app)
         connections[#connections + 1] = {
             text = p.name,
             mandatory = string.format("%s:%d", p.host, p.port),
-            callback = action(function() plugin:connect_profile(p.name, back_into_menu) end),
+            callback = action(function() connect_to(p.name) end),
         }
     end
     connections[#connections + 1] = {

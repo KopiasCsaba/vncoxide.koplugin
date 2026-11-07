@@ -175,13 +175,15 @@ end
 local MULTI_FINGER = { pinch = true, spread = true, inward_pan = true, outward_pan = true }
 
 --[[--
-True when gesture `ges` belongs to the toolbar: it is up and the gesture started on it. Never
+True when gesture `ges` belongs to the toolbar: it is up, nothing but our overlays is above us
+(`_input_target`: under a popup the bar is covered, not live) and the gesture started on it. Never
 while a drag or long press of ours is under way (its end is ours wherever the finger lifts), and
 never for a swipe (the top-zone toggle, the end of a quick drag) or a multi-finger gesture: a pinch
 or spread zooms the canvas wherever it is made.
 ]]
 function ViewerApp:_toolbar_owns(ges)
     if not (self.toolbar_visible and self.toolbar and ges and ges.pos) then return false end
+    if not self:_input_target() then return false end
     if self._drag_active or self._hold_active or self._mouse_moving then return false end
     local kind = ges.ges or ""
     if kind == "swipe" or kind:sub(1, 11) == "two_finger_" or MULTI_FINGER[kind] then return false end
@@ -1256,9 +1258,6 @@ function ViewerApp:onTextInput(text)
     return true
 end
 
---- Types `text` on the remote, one key down/up per character ("\n" becomes Return). Characters
---- with no keysym are skipped.
---- @treturn number how many were skipped
 --- A key from the on-screen keyboard: with the modifiers armed on the key strip around it (and
 --- them disarmed), like a strip key; else just its down and up.
 function ViewerApp:send_osk_key(keysym)
@@ -1271,6 +1270,9 @@ function ViewerApp:send_osk_key(keysym)
     self:send_key(keysym, false)
 end
 
+--- Types `text` on the remote, one key down/up per character ("\n" becomes Return). Characters
+--- with no keysym are skipped.
+--- @treturn number how many were skipped
 function ViewerApp:send_text(text)
     local skipped = 0
     for _, ch in ipairs(Util.split_chars(text)) do

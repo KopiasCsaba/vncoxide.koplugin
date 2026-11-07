@@ -640,10 +640,17 @@ local function new_app(plane_w, plane_h, opts)
             state = opts and opts.state or "connected",
             get_state = function(s_) return s_.state end,
             is_connected = function(s_) return s_.state == "connected" end,
-            connect = function(_, cb) sent.connects[#sent.connects + 1] = cb end,
+            -- like Session:connect, a live connection refuses a second one
+            connect = function(s_, cb)
+                if s_.state == "connected" then
+                    cb(false, "already connecting or connected")
+                    return
+                end
+                sent.connects[#sent.connects + 1] = cb
+            end,
             attach = function() sent.attaches = sent.attaches + 1 end,
             set_keep_wifi = function(_, on) sent.keep_wifi = on end,
-            hangup = function() sent.hangups = sent.hangups + 1 end,
+            hangup = function(s_) sent.hangups = sent.hangups + 1; s_.state = "disconnected" end,
             get_error = function() return nil end,
             get_profile = function() return profile end,
         },
@@ -3519,6 +3526,18 @@ check("mode_switch_shows_the_cheat_sheet_and_its_tap_is_local", function()
     close_viewer(app, remote)
 end)
 
+check("back_closes_the_cheat_sheet_like_a_tap", function()
+    local Key = require("device/key")
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "mode")
+    assert_true(top() == app.cheat_sheet, "the sheet is up: " .. stack_desc())
+    sent.pointer, sent.key = {}, {}
+    UIManager:sendEvent(Event:new("KeyPress", Key:new("Back", {})))
+    assert_true(app.cheat_sheet == nil and top() == app, "Back closed it: " .. stack_desc())
+    assert_true(#sent.pointer == 0 and #sent.key == 0, "nothing sent")
+    close_viewer(app, remote)
+end)
+
 check("more_menu_order_and_actions", function()
     local app, remote, sent = new_app()
     local log = wire_log(app)
@@ -4906,6 +4925,96 @@ check("a_drop_mid_drag_ends_it_and_reconnect_sends_nothing_stale", function()
     run_scheduled(app.reconnect._retry_task)
     last_connect(sent)(true)
     assert_true(log() == "", "nothing stale sent after the reconnect")
+    close_viewer(app, remote)
+end)
+
+--- Taps and long-presses every visible toolbar button where it sits, its actions replaced by a
+--- recorder; `before_each` runs before each button's gestures. Returns the ids that fired.
+local function toolbar_actions_fired(app, before_each)
+    local fired = {}
+    for _, id in ipairs(require("vnc/toolbar").IDS) do
+        local b = app.toolbar.button_by_id[id]
+        if b then
+            local pos = toolbar_button_centre(app, id)
+            before_each()
+            local cb, hold = b.callback, b.hold_callback
+            b.callback = function() fired[#fired + 1] = id end
+            b.hold_callback = function() fired[#fired + 1] = id .. "(hold)" end
+            dispatch_gesture{ ges = "tap", pos = pos }
+            dispatch_gesture{ ges = "hold", pos = pos }
+            dispatch_gesture{ ges = "hold_release", pos = pos }
+            b.callback, b.hold_callback = cb, hold
+        end
+    end
+    return table.concat(fired, ",")
+end
+
+check("toolbar_is_inert_under_the_menu", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local log = wire_log(app)
+    local fired = toolbar_actions_fired(app, function() if not app.menu then app:open_menu() end end)
+    assert_true(fired == "", "toolbar actions fired under the menu: " .. fired)
+    assert_true(log() == "", "nothing sent")
+    app:close_menu()
+    close_viewer(app, remote)
+end)
+
+check("toolbar_is_inert_under_the_reconnect_box", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local r = app.reconnect
+    local log = wire_log(app)
+    app.session.state = "error"
+    app:on_session_error("x")
+    assert_true(r:is_running() and top() == r.box, "the box is up")
+    local fired = toolbar_actions_fired(app, function() end)
+    assert_true(fired == "", "toolbar actions fired under the box: " .. fired)
+    -- and for real: ⋯ opens no menu, Mode keeps the mode and the live profile
+    local live, mode = app.session:get_profile(), app:get_pointer_mode()
+    tap_toolbar(app, "more")
+    tap_toolbar(app, "mode")
+    assert_true(app.menu == nil and top() == r.box, "no menu over the box: " .. stack_desc())
+    assert_true(app:get_pointer_mode() == mode and app.session:get_profile() == live, "mode and profile kept")
+    assert_true(#sent.profile_updates == 0 and log() == "", "nothing saved or sent")
+    r:stop()
+    close_viewer(app, remote)
+end)
+
+check("menu_reconnect_while_the_loop_runs_is_a_retry_now", function()
+    local app, remote, sent = new_app()
+    local r = app.reconnect
+    local direct = {}
+    app.plugin.connect_profile = function(_, name) direct[#direct + 1] = name end
+    app.plugin.settings.profiles = function()
+        return { { name = "test", host = "h", port = 1 }, { name = "other", host = "h", port = 2 } }
+    end
+    app.session.state = "error"
+    app:on_session_error("x")
+    find_item(app:open_menu().item_table, "Reconnect to test").callback()
+    assert_true(#direct == 0, "no connect beside the loop")
+    assert_true(#sent.connects == 1 and r:is_running()
+        and r.box.title == "Connection lost — reconnecting… (attempt 1)", "the loop's attempt runs now")
+    last_connect(sent)(false, "refused")
+    local conns = find_item(app:open_menu().item_table, "Connections…").sub_item_table
+    find_item(conns, "test").callback()
+    assert_true(#direct == 0 and #sent.connects == 2, "the current profile's entry retries too")
+    find_item(conns, "other").callback()
+    assert_true(#direct == 1 and direct[1] == "other", "another profile connects as before")
+    r:stop()
+    close_viewer(app, remote)
+end)
+
+check("reconnect_attempt_on_a_live_session_succeeds", function()
+    local app, remote, sent = new_app()
+    local r = app.reconnect
+    app.session.state = "error"
+    app:on_session_error("x")
+    -- connected meanwhile by some other route
+    app.session.state = "connected"
+    run_scheduled(r._retry_task)
+    assert_true(not r:is_running() and r.box == nil, "the box closed: " .. stack_desc())
+    assert_true(#sent.connects == 0 and sent.attaches == 1 and sent.keep_wifi == false,
+        "no second connect, attached, Wi-Fi duty handed back")
+    assert_true(scheduled_delay(r._retry_task) == nil, "nothing left scheduled")
     close_viewer(app, remote)
 end)
 
