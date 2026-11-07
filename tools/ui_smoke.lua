@@ -2606,6 +2606,28 @@ check("opening_another_connection_replaces_the_viewer", function()
     old_remote:free(); other_remote:free()
 end)
 
+check("two_finger_pan_follows_the_cumulative_relative", function()
+    -- GestureDetector's two_finger_pan carries the offset from the gesture's start on every move
+    local app, remote = new_app(2000, 1500)
+    app:zoom_to(2)
+    local start = { x = 300, y = 400 }
+    local x0, y0 = remote.view_x, remote.view_y
+    app:onTwoFingerPan(nil, { relative = { x = -10, y = 0 }, start_pos = start })
+    app:onTwoFingerPan(nil, { relative = { x = -20, y = -6 }, start_pos = start })
+    local s = remote:get_scale()
+    assert_true(math.abs((remote.view_x - x0) * s + 20) < 1e-6 and math.abs((remote.view_y - y0) * s + 6) < 1e-6,
+        string.format("two events at 10 then 20 px must pan 20 px, panned %.1f, %.1f",
+            (remote.view_x - x0) * s, (remote.view_y - y0) * s))
+    -- a new gesture (another start point) starts from zero again
+    x0 = remote.view_x
+    app:onTwoFingerPan(nil, { relative = { x = -5, y = 0 }, start_pos = { x = 10, y = 10 } })
+    assert_true(math.abs((remote.view_x - x0) * s + 5) < 1e-6, "a new gesture pans by its own offset")
+    app:onTwoFingerPanRelease(nil, {})
+    app:onCloseWidget()
+    UIManager:close(app)
+    remote:free()
+end)
+
 check("viewer_menu_disconnect_returns_to_the_list", function()
     local app, remote = new_app()
     local session = app.session

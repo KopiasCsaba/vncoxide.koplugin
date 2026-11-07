@@ -686,8 +686,19 @@ end
 function ViewerApp:onTwoFingerPan(_, ges)
     self:_end_pointer_action()
     if not self:_input_target() then return nil end
+    -- GestureDetector reports `relative` from where the gesture began, on every move: pan by what
+    -- changed since the previous event of the same gesture (a new start point is a new gesture)
     local rel = ges.relative or { x = 0, y = 0 }
-    if self.remote:pan_by(-rel.x, -rel.y) then
+    local sp = ges.start_pos
+    local sx, sy = sp and sp.x, sp and sp.y
+    local last = self._two_finger_pan
+    if not last or last.sx ~= sx or last.sy ~= sy then
+        last = { sx = sx, sy = sy, x = 0, y = 0 }
+        self._two_finger_pan = last
+    end
+    local dx, dy = rel.x - last.x, rel.y - last.y
+    last.x, last.y = rel.x, rel.y
+    if self.remote:pan_by(-dx, -dy) then
         -- this two-finger gesture moved the view: if it ends as a flick, that flick only pans
         self._two_finger_moved_view = true
     end
@@ -699,6 +710,7 @@ end
 function ViewerApp:onTwoFingerPanRelease(_, ges)
     self:_end_pointer_action()
     self._two_finger_moved_view = nil
+    self._two_finger_pan = nil
     self:_view_settled()
     -- swipe up from the bottom still needs to be able to mean "show keyboard"
     UIManager:setDirty(self, "ui")
