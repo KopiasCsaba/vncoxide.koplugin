@@ -221,6 +221,16 @@ function MenuBuilder.open(app)
         end,
     }, function(item) item.mandatory = settings.keyboard_always_visible and "✓" or "-" end)
 
+    -- ---- keep the device awake while the viewer is up
+    item_table[#item_table + 1] = stays_open({
+        text = _("Keep screen on"),
+        callback = function()
+            settings.keep_screen_on = not settings.keep_screen_on
+            plugin.settings:flush()
+            app:_apply_keep_screen_on()
+        end,
+    }, function(item) item.mandatory = settings.keep_screen_on and "✓" or "-" end)
+
     -- ---- the toolbar's scroll buttons: the bar is rebuilt and the area it covered repainted
     item_table[#item_table + 1] = stays_open({
         text = _("Show scroll buttons on toolbar"),

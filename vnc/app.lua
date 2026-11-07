@@ -540,6 +540,7 @@ end
 function ViewerApp:onCloseWidget()
     -- never leave our own menu orphaned on the window stack
     self:close_menu()
+    self:_apply_keep_screen_on(true)
     -- the reconnect loop lives with the open viewer only
     self.reconnect:stop()
     self:close_display_panel(true)
@@ -1245,7 +1246,24 @@ function ViewerApp:reassert_text_input()
     self:_ensure_text_input()
 end
 
+--- Hold off (or give back) KOReader's auto-suspend: AutoSuspend only sees input events, and the
+--- remote screen changing is not one. Idempotent; the flag's previous value is restored, and only
+--- if we were the one who set it (another owner, e.g. Keep-alive, keeps its pause).
+function ViewerApp:_apply_keep_screen_on(closing)
+    local share = require("pluginshare")
+    local want = not closing and self.settings.keep_screen_on and true or false
+    if want and not self._pause_taken then
+        self._pause_prev = share.pause_auto_suspend
+        self._pause_taken = true
+        share.pause_auto_suspend = true
+    elseif not want and self._pause_taken then
+        share.pause_auto_suspend = self._pause_prev
+        self._pause_taken, self._pause_prev = nil, nil
+    end
+end
+
 function ViewerApp:onShow()
+    self:_apply_keep_screen_on()
     self:_ensure_text_input()
     self:evaluate_keyboard()
     self:_watch_keyboard_state()

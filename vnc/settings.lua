@@ -43,6 +43,7 @@ for _, key in ipairs(Settings.DATA_KEYS) do known_data_key[key] = true end
 Settings.DEFAULTS = {
     orientation = 0,                 -- Screen.DEVICE_ROTATED_UPRIGHT, the last one used; the viewer opens in it
     keyboard_always_visible = false,
+    keep_screen_on = true,           -- hold off the device's auto-suspend while the viewer is shown
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
     scaling = "smooth",              -- viewer scaling: "smooth" (blended) or "sharp" (nearest neighbour)

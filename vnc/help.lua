@@ -91,6 +91,7 @@ function Help.text(mode)
             "  " .. _("Ctrl+Alt+Del and Lock screen: send those keys."),
             "  " .. _("Page buttons send: Page Up/Down keys or mouse-wheel notches."),
             "  " .. _("Keyboard always visible: keep the keyboard up."),
+            "  " .. _("Keep screen on: stop the device from going to sleep while the viewer is open."),
             "  " .. _("Show scroll buttons on toolbar: the scroll up / down buttons."),
             "  " .. _("Help: this page."),
             "  " .. _("Leave (keep connection): close the viewer, the connection stays up."),

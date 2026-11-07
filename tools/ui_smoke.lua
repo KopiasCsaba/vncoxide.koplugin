@@ -613,7 +613,7 @@ local function new_app(plane_w, plane_h, opts)
         plugin = {
             settings = {
                 data = { settings = { orientation = 0, keyboard_always_visible = false,
-                                      zoom_mode = "fit" } },
+                                      keep_screen_on = true, zoom_mode = "fit" } },
                 profiles = function() return {} end,
                 get_profile = function() return stored end,
                 flush = function() end,
@@ -1775,6 +1775,46 @@ check("display_panel_anchors_and_closes_by_tap_outside", function()
     assert_true(app.display_panel == nil, "close_display_panel closes it")
     app:onCloseWidget()
     remote:free()
+end)
+
+check("keep_screen_on_pauses_auto_suspend_while_shown", function()
+    local share = require("pluginshare")
+    local saved = share.pause_auto_suspend
+    -- previous false: set while shown, back to false after close
+    share.pause_auto_suspend = false
+    local app, remote = new_app()
+    assert_true(share.pause_auto_suspend == true, "shown with the setting on pauses auto-suspend")
+    app:onCloseWidget()
+    assert_true(share.pause_auto_suspend == false, "closing gives back the previous value")
+    remote:free()
+    -- someone else's pause stays
+    share.pause_auto_suspend = true
+    app, remote = new_app()
+    app:onCloseWidget()
+    assert_true(share.pause_auto_suspend == true, "another owner's pause survives our close")
+    remote:free()
+    -- the menu entry
+    share.pause_auto_suspend = false
+    app, remote = new_app()
+    local flushed = 0
+    app.plugin.settings.flush = function() flushed = flushed + 1 end
+    local function toggle()
+        local menu = app:open_menu()
+        menu:onMenuSelect(find_item(menu.item_table, "Keep screen on"))
+        UIManager:_checkTasks()
+        app:close_menu()
+    end
+    toggle()
+    assert_true(app.settings.keep_screen_on == false and flushed == 1, "toggled off and persisted")
+    assert_true(share.pause_auto_suspend == false, "off clears the pause at once")
+    toggle()
+    assert_true(app.settings.keep_screen_on == true and flushed == 2, "toggled on and persisted")
+    assert_true(share.pause_auto_suspend == true, "on sets the pause at once")
+    app:onCloseWidget()
+    app:onCloseWidget()
+    assert_true(share.pause_auto_suspend == false, "release is idempotent")
+    remote:free()
+    share.pause_auto_suspend = saved
 end)
 
 check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
@@ -3596,7 +3636,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text:gsub("^Connected to.*", "status") end
     assert_true(table.concat(order, "|") == "status|Connections…|Send text…|Refresh|Ctrl+Alt+Del|Lock screen|"
-        .. "Page buttons send|Keyboard always visible|Show scroll buttons on toolbar|Help|Leave (keep connection)",
+        .. "Page buttons send|Keyboard always visible|Keep screen on|Show scroll buttons on toolbar|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app:send_text("a\nb\1") == 1)
