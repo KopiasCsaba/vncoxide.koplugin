@@ -1425,7 +1425,15 @@ function ViewerApp:zoom_to(mode)
 end
 
 function ViewerApp:rotate(delta)
-    self:set_rotation_mode(band(Screen:getRotationMode() + delta, 3))
+    self:choose_rotation(band(Screen:getRotationMode() + delta, 3))
+end
+
+--- A rotation the user asked for while the viewer is up: applied, and remembered as the
+--- orientation the viewer opens in next time.
+function ViewerApp:choose_rotation(mode)
+    self:set_rotation_mode(mode)
+    self.settings.orientation = mode
+    self.plugin.settings:flush()
 end
 
 --- Asks for a new rotation mode, through KOReader's generic API, so that every widget

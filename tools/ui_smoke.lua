@@ -1823,22 +1823,43 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
     remote:free()
 end)
 
-check("display_panel_orientation_choice_closes_it", function()
+check("display_panel_orientation_buttons_are_icons_and_remembered", function()
     local app, remote = new_app()
-    app.plugin.settings.flush = function() end
-    local panel = app:open_display_panel()
+    local flushes = 0
+    app.plugin.settings.flush = function() flushes = flushes + 1 end
     local start = Screen:getRotationMode()
-    local target = (start + 1) % 4
-    local labels = { [0] = "Portrait", "Landscape", "Portrait inverted", "Landscape inverted" }
-    find_button(panel, labels[target]).callback()
+    app:set_rotation_mode(0)
+    local panel = app:open_display_panel()
+    local row
+    for _, r in ipairs(panel.buttons) do
+        if r[1].icon and r[1].icon:find("^rotation%.") then row = r end
+    end
+    assert_true(row and #row == 4, "four rotation icon buttons")
+    local names = {}
+    for i, b in ipairs(row) do names[i] = b.icon; assert_true(b.text == nil, "icon only") end
+    assert_true(table.concat(names, ",") == "rotation.P.90CCW,rotation.P.0UR,rotation.P.90CW,rotation.P.180UD", table.concat(names, ","))
+    assert_true(row[2].selected and not row[1].selected and not row[3].selected and not row[4].selected, "upright marked")
+    for _, r in ipairs(panel.buttons) do
+        for _, b in ipairs(r) do
+            assert_true(b.text ~= "Use current orientation as default", "no default-orientation button")
+        end
+    end
+    local before = flushes
+    row[3].callback()
     UIManager:_checkTasks()
-    assert_true(Screen:getRotationMode() == target, "the viewer rotated")
+    assert_true(Screen:getRotationMode() == 1, "90 CW rotates to mode 1")
     assert_true(app.display_panel == nil, "the panel closed on an orientation choice")
+    assert_true(app.settings.orientation == 1 and flushes > before, "orientation stored and flushed")
+    -- landscape: the L icon set, current one marked
     panel = app:open_display_panel()
-    find_button(panel, "✓ " .. labels[target])
-    find_button(panel, "Use current orientation as default").callback()
-    assert_true(app.settings.orientation == target and app.display_panel ~= nil, "default stored, panel re-opened")
+    for _, r in ipairs(panel.buttons) do
+        if r[1].icon and r[1].icon:find("^rotation%.") then row = r end
+    end
+    assert_true(row[3].icon == "rotation.L.90CW" and row[3].selected, "landscape set, mode 1 marked")
     app:close_display_panel()
+    -- the toolbar's rotate button remembers it too
+    app:rotate(1)
+    assert_true(app.settings.orientation == 2, "rotate button stores the orientation")
     app:set_rotation_mode(start)
     app:onCloseWidget()
     remote:free()

@@ -1,5 +1,5 @@
 --[[--
-The display panel: zoom, scaling, orientation and pointer speed.
+The display panel: zoom, scaling, orientation (icon buttons) and pointer speed.
 
 A ButtonDialog that hangs under the toolbar (or from the top of the screen without one). Built
 fresh on every open and re-opened in place after a choice, so the checkmarks always show the live
@@ -10,6 +10,7 @@ state. Only a rotation closes it: the dialog is laid out for the old orientation
 
 local _ = require("gettext")
 
+local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local Device = require("device")
 local Geom = require("ui/geometry")
@@ -32,11 +33,14 @@ DisplayPanel.ZOOM_CHOICES = {
     { label = "400%", value = 4 },
 }
 
-DisplayPanel.ROTATIONS = {
-    { label = _("Portrait"), mode = 0 },
-    { label = _("Landscape"), mode = 1 },
-    { label = _("Portrait inverted"), mode = 2 },
-    { label = _("Landscape inverted"), mode = 3 },
+-- Mirrors KOReader's `rotation_mode` config option: the four buttons stand for these modes, in this
+-- order (90 CCW, upright, 90 CW, 180), and the icon set (portrait or landscape) follows the screen.
+DisplayPanel.ROTATION_MODES = { 3, 0, 1, 2 }
+local ROTATION_ICONS = {
+    [0] = { "rotation.P.90CCW", "rotation.P.0UR", "rotation.P.90CW", "rotation.P.180UD" },
+    [2] = { "rotation.P.90CW", "rotation.P.180UD", "rotation.P.90CCW", "rotation.P.0UR" },
+    [1] = { "rotation.L.90CCW", "rotation.L.0UR", "rotation.L.90CW", "rotation.L.180UD" },
+    [3] = { "rotation.L.90CW", "rotation.L.180UD", "rotation.L.90CCW", "rotation.L.0UR" },
 }
 
 local SPEEDS = {
@@ -106,22 +110,22 @@ function DisplayPanel.open(app)
 
     local current_rotation = Screen:getRotationMode()
     local rotation_buttons = {}
-    for _i, rotation in ipairs(DisplayPanel.ROTATIONS) do
+    for i, icon in ipairs(ROTATION_ICONS[current_rotation]) do
+        local mode = DisplayPanel.ROTATION_MODES[i]
+        local selected = current_rotation == mode
         -- Closes the panel: it only relayouts on a broadcast ScreenResize, which a rotation does not
         -- send, so an open panel would stay laid out for the old orientation.
         rotation_buttons[#rotation_buttons + 1] = {
-            text = mark(rotation.label, current_rotation == rotation.mode),
+            icon = icon,
+            selected = selected,
+            background = selected and Blitbuffer.COLOR_LIGHT_GRAY or nil,
             callback = function()
                 app:close_display_panel()
-                app:set_rotation_mode(rotation.mode)
+                app:choose_rotation(mode)
             end,
         }
     end
-    for _i, row in ipairs(rows_of(rotation_buttons, 2)) do buttons[#buttons + 1] = row end
-    buttons[#buttons + 1] = {{
-        text = _("Use current orientation as default"),
-        callback = stays(function() settings.orientation = Screen:getRotationMode() end),
-    }}
+    buttons[#buttons + 1] = rotation_buttons
 
     -- Quality: the mark follows the stored profile (the live one only differs during a preset attempt)
     local session_profile = app.session:get_profile()
