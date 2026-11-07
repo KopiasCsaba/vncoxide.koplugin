@@ -643,7 +643,8 @@ local function scaler_checks()
 
     for _, t in ipairs(SC_TYPES) do
         check("scaler_smooth_half_is_the_rounded_2x2_mean_" .. t[1], function()
-            -- the RGB channels are averaged (rounding halves up); BB8 is the grey of that average
+            -- the RGB channels are averaged (rounding halves up); BB8 averages the grey values
+            -- (77r + 150g + 29b) and floors the result, i.e. the grey of the exact mean
             local W, H = floor(PW / 2), floor(PH / 2)
             local A = BB.new(W, H, t[2])
             Scaler.render(A, plane, { x = 0, y = 0, scale = 0.5 }, { x = 0, y = 0, w = W, h = H }, "smooth")
@@ -657,7 +658,7 @@ local function scaler_checks()
                     local r, g, b = floor((sum[1] + 2) / 4), floor((sum[2] + 2) / 4), floor((sum[3] + 2) / 4)
                     local c, ok = A:getPixel(x, y)
                     if t[2] == BB.TYPE_BB8 then
-                        ok = c:getColor8().a == floor((r * 77 + g * 150 + b * 29) / 256)
+                        ok = c:getColor8().a == floor((sum[1] * 77 + sum[2] * 150 + sum[3] * 29) / 1024)
                     else
                         c = c:getColorRGB32()
                         ok = c.r == r and c.g == g and c.b == b

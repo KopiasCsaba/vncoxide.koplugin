@@ -13,7 +13,9 @@ Modes:
 
 * `"sharp"`: nearest neighbour, `src = floor(view + (c + 0.5) / s)`.
 * `"smooth"`: bilinear for `s >= 1`, area average (box filter over the footprint
-  `[view + c / s, view + (c + 1) / s)`) for `s < 1`.
+  `[view + c / s, view + (c + 1) / s)`) for `s < 1`. Into `TYPE_BB8` the area average is taken
+  of the grey values (one channel instead of three), so it is the floored grey of the exact
+  colour mean.
 
 At `s == 1` with an integral view offset both modes are a plain copy. Canvas pixels whose
 centre lies outside the plane are black.
@@ -103,7 +105,8 @@ local function axis_bilinear(slot, n, v, s, len)
 end
 
 --- Box filter: canvas c averages source [first[c], first[c] + count[c]) with weights
---- wt[off[c] + k] (overlap in 1/256 of a pixel), summing to tot[c].
+--- wt[off[c] + k] (overlap in 1/256 of a pixel), summing to tot[c]. The weights past count[c]
+--- are zero (at least 3 slots per position), and maxc is the largest count.
 local function axis_box(slot, n, v, s, len)
     local a = cached(slot, "box", n, v, s, len)
     if a then return a end
@@ -114,6 +117,7 @@ local function axis_box(slot, n, v, s, len)
     local tot = ffi.new("int32_t[?]", max(n, 1))
     local wt = ffi.new("int32_t[?]", max(n * per, 1))
     local lo, hi = valid_range(n, v, s, len)
+    local maxc = 0
     for c = 0, n - 1 do
         off[c] = c * per
         if c >= lo and c < hi then
@@ -128,10 +132,11 @@ local function axis_box(slot, n, v, s, len)
                 sum = sum + wi
             end
             first[c], count[c], tot[c] = i0, i1 - i0 + 1, sum
+            if i1 - i0 + 1 > maxc then maxc = i1 - i0 + 1 end
         end
     end
     a = { kind = "box", n = n, v = v, s = s, len = len, first = first, count = count,
-          off = off, tot = tot, wt = wt, lo = lo, hi = hi }
+          off = off, tot = tot, wt = wt, lo = lo, hi = hi, maxc = maxc }
     axis_cache[slot] = a
     return a
 end
@@ -233,6 +238,19 @@ local function grey_row(buf, r, sa, sb)
     end
 end
 
+--- One source row interpolated horizontally (x256) for canvas columns [xa, xb), 3 per column.
+local function hlerp_row(buf, r, xi0, xi1, xw, xa, xb)
+    for x = xa, xb - 1 do
+        local a, b, wx, d = xi0[x] * 3, xi1[x] * 3, xw[x], x * 3
+        local p = r[a]
+        buf[d] = p * 256 + (r[b] - p) * wx
+        p = r[a + 1]
+        buf[d + 1] = p * 256 + (r[b + 1] - p) * wx
+        p = r[a + 2]
+        buf[d + 2] = p * 256 + (r[b + 2] - p) * wx
+    end
+end
+
 local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
     local xi0, xi1, xw = ax.i0, ax.i1, ax.w
     local yi0, yi1, yw = ay.i0, ay.i1, ay.w
@@ -263,37 +281,111 @@ local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
             end
         end
     else
+        -- the two source rows interpolated horizontally once, reused while they repeat (an
+        -- upscale shows each source row pair in several canvas rows)
+        local ha = scratch_buf("hlerpA", "int32_t", xb * 3)
+        local hb = scratch_buf("hlerpB", "int32_t", xb * 3)
+        local ta, tb = -1, -1
         for y = ya, yb - 1 do
-            local r0, r1, wy = sp + yi0[y] * ss, sp + yi1[y] * ss, yw[y]
+            local j, j1, wy = yi0[y], yi1[y], yw[y]
+            if j ~= ta then
+                if j == tb then
+                    ha, hb, ta, tb = hb, ha, tb, ta
+                else
+                    hlerp_row(ha, sp + j * ss, xi0, xi1, xw, xa, xb); ta = j
+                end
+            end
+            if j1 ~= tb then hlerp_row(hb, sp + j1 * ss, xi0, xi1, xw, xa, xb); tb = j1 end
             local out = dp + y * ds
             for x = xa, xb - 1 do
-                local a, b, wx, d = xi0[x] * 3, xi1[x] * 3, xw[x], x * bpp
-                for k = 0, 2 do
-                    local p00, p10 = r0[a + k], r1[a + k]
-                    local top = p00 * 256 + (r0[b + k] - p00) * wx
-                    local bot = p10 * 256 + (r1[b + k] - p10) * wx
-                    out[d + k] = (top * 256 + (bot - top) * wy) / 65536
-                end
+                local c, d = x * 3, x * bpp
+                local top, bot = ha[c], hb[c]
+                out[d] = (top * 256 + (bot - top) * wy) / 65536
+                top, bot = ha[c + 1], hb[c + 1]
+                out[d + 1] = (top * 256 + (bot - top) * wy) / 65536
+                top, bot = ha[c + 2], hb[c + 2]
+                out[d + 2] = (top * 256 + (bot - top) * wy) / 65536
                 if bpp == 4 then out[d + 3] = 255 end
             end
         end
     end
 end
 
-local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
+-- Box filter. Both passes run over whole spans with the per-pixel weights from the axis tables;
+-- the horizontal pass reads a fixed three taps (the weights past a position's count are zero, and
+-- the accumulators have room past the span) whenever no footprint is wider, so it has no inner
+-- loop. A non-negative double stored into a uint8_t is truncated, which is the floor wanted.
+
+--- Into TYPE_BB8: the area average of the (x256) grey values, one accumulator per column.
+local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb)
     local xf, xc, xo, xt, xwt = ax.first, ax.count, ax.off, ax.tot, ax.wt
     local yf, yc, yo, yt, ywt = ay.first, ay.count, ay.off, ay.tot, ay.wt
     local sa, sb = xf[xa], xf[xb - 1] + xc[xb - 1] - 1
-    local ar = scratch_buf("accR", "int32_t", sb + 1)
-    local ag = scratch_buf("accG", "int32_t", sb + 1)
-    local ab = scratch_buf("accB", "int32_t", sb + 1)
+    -- at most 65280 * 256 * 21 (scale 0.05) per column: fits int32
+    local acc = scratch_buf("accY", "int32_t", sb + 3)
+    local three = ax.maxc <= 3
     for y = ya, yb - 1 do
         -- vertical pass: weighted sum of the footprint's source rows, per source column
-        for i = sa, sb do ar[i], ag[i], ab[i] = 0, 0, 0 end
-        local j0, oy = yf[y], yo[y]
-        for k = 0, yc[y] - 1 do
-            local wy = ywt[oy + k]
-            local r = sp + (j0 + k) * ss
+        local j0, oy, n = yf[y], yo[y], yc[y]
+        local wy = ywt[oy]
+        local r = sp + j0 * ss
+        for i = sa, sb do
+            local o = i * 3
+            acc[i] = (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+        end
+        for k = 1, n - 1 do
+            wy = ywt[oy + k]
+            r = sp + (j0 + k) * ss
+            for i = sa, sb do
+                local o = i * 3
+                acc[i] = acc[i] + (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+            end
+        end
+        -- horizontal pass
+        local ty = yt[y] * 256
+        local out = dp + y * ds
+        if three then
+            for x = xa, xb - 1 do
+                local i0, ox = xf[x], xo[x]
+                out[x] = (acc[i0] * xwt[ox] + acc[i0 + 1] * xwt[ox + 1] + acc[i0 + 2] * xwt[ox + 2])
+                    / (xt[x] * ty)
+            end
+        else
+            for x = xa, xb - 1 do
+                local i0, ox = xf[x], xo[x]
+                local sum = 0
+                for k = 0, xc[x] - 1 do
+                    sum = sum + acc[i0 + k] * xwt[ox + k]
+                end
+                out[x] = sum / (xt[x] * ty)
+            end
+        end
+    end
+end
+
+--- Into TYPE_BBRGB24/32: the area average of each channel, rounded half up.
+local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
+    if bpp == 1 then
+        return box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb)
+    end
+    local xf, xc, xo, xt, xwt = ax.first, ax.count, ax.off, ax.tot, ax.wt
+    local yf, yc, yo, yt, ywt = ay.first, ay.count, ay.off, ay.tot, ay.wt
+    local sa, sb = xf[xa], xf[xb - 1] + xc[xb - 1] - 1
+    local ar = scratch_buf("accR", "int32_t", sb + 3)
+    local ag = scratch_buf("accG", "int32_t", sb + 3)
+    local ab = scratch_buf("accB", "int32_t", sb + 3)
+    local three = ax.maxc <= 3
+    for y = ya, yb - 1 do
+        local j0, oy, n = yf[y], yo[y], yc[y]
+        local wy = ywt[oy]
+        local r = sp + j0 * ss
+        for i = sa, sb do
+            local o = i * 3
+            ar[i], ag[i], ab[i] = r[o] * wy, r[o + 1] * wy, r[o + 2] * wy
+        end
+        for k = 1, n - 1 do
+            wy = ywt[oy + k]
+            r = sp + (j0 + k) * ss
             for i = sa, sb do
                 local o = i * 3
                 ar[i] = ar[i] + r[o] * wy
@@ -301,28 +393,30 @@ local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
                 ab[i] = ab[i] + r[o + 2] * wy
             end
         end
-        -- horizontal pass
         local ty = yt[y]
         local out = dp + y * ds
         for x = xa, xb - 1 do
             local i0, ox = xf[x], xo[x]
-            local sr, sg, sbl = 0, 0, 0
-            for k = 0, xc[x] - 1 do
-                local wx = xwt[ox + k]
-                sr = sr + ar[i0 + k] * wx
-                sg = sg + ag[i0 + k] * wx
-                sbl = sbl + ab[i0 + k] * wx
+            local sr, sg, sbl
+            if three then
+                local w0, w1, w2 = xwt[ox], xwt[ox + 1], xwt[ox + 2]
+                sr = ar[i0] * w0 + ar[i0 + 1] * w1 + ar[i0 + 2] * w2
+                sg = ag[i0] * w0 + ag[i0 + 1] * w1 + ag[i0 + 2] * w2
+                sbl = ab[i0] * w0 + ab[i0 + 1] * w1 + ab[i0 + 2] * w2
+            else
+                sr, sg, sbl = 0, 0, 0
+                for k = 0, xc[x] - 1 do
+                    local wx = xwt[ox + k]
+                    sr = sr + ar[i0 + k] * wx
+                    sg = sg + ag[i0 + k] * wx
+                    sbl = sbl + ab[i0 + k] * wx
+                end
             end
             local t = xt[x] * ty
-            local h = floor(t / 2)
-            local r, g, b = floor((sr + h) / t), floor((sg + h) / t), floor((sbl + h) / t)
-            if bpp == 1 then
-                out[x] = rshift(r * 77 + g * 150 + b * 29, 8)
-            else
-                local d = x * bpp
-                out[d], out[d + 1], out[d + 2] = r, g, b
-                if bpp == 4 then out[d + 3] = 255 end
-            end
+            local h = rshift(t, 1)
+            local d = x * bpp
+            out[d], out[d + 1], out[d + 2] = (sr + h) / t, (sg + h) / t, (sbl + h) / t
+            if bpp == 4 then out[d + 3] = 255 end
         end
     end
 end
