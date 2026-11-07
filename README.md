@@ -65,8 +65,8 @@ There is no permanent toolbar: the remote desktop owns the whole screen.
 | tap | left click |
 | long press | right click |
 | one-finger drag | drag with the left button held; a quick drag (the finger lifts right after moving) ends the same way |
-| two-finger drag | pan the view: the picture follows the fingers (does not move the remote pointer) |
-| two-finger flick up / down | scroll the remote wheel down / up at the last pointer position, 1 to 10 notches by flick length (a tenth of the screen height each); armed key-panel modifiers are not used or consumed. A quick two-finger drag counts as a flick: it scrolls only if it did not move the view (fit mode, or the view is already at that edge); zoomed in, a flick that moved the view only pans |
+| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer); "Fit" centres it again |
+| two-finger flick up / down | scroll the remote wheel down / up at the last pointer position, 1 to 10 notches by flick length (a tenth of the screen height each); armed key-panel modifiers are not used or consumed. A quick two-finger drag counts as a flick: in the fitted zoom modes it always scrolls (the view stays put); zoomed in, it scrolls only if it could not move the view (already at that edge), otherwise it only pans |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed |
 | two-finger rotate | change the screen orientation |
 | swipe up from the bottom strip | show the on-screen keyboard |

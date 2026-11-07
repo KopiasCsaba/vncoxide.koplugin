@@ -2680,6 +2680,31 @@ check("hardware_keys_stay_local_under_a_popup_but_held_keys_are_released", funct
     remote:free()
 end)
 
+check("two_finger_pan_moves_the_picture_past_its_edges", function()
+    -- fitted (the whole picture on screen), a drag still moves it: up to its corner reaching the
+    -- canvas centre, no further
+    local app, remote = new_app(400, 300)
+    app.settings.zoom_mode = "fit"
+    app:_reflow()
+    local s = remote:get_scale()
+    local x0 = remote.view_x
+    assert_true(math.abs(x0 - (400 - remote.cw / s) / 2) < 1e-6, "fit centres the picture")
+    local start = { x = 300, y = 300 }
+    app:onTwoFingerPan(nil, { relative = { x = -100, y = 0 }, start_pos = start })
+    assert_true(math.abs((remote.view_x - x0) * s - 100) < 1e-6, "fitted, the picture moves with the fingers")
+    app:onTwoFingerPan(nil, { relative = { x = -100000, y = -100000 }, start_pos = start })
+    assert_true(math.abs(remote.view_x - (400 - remote.cw / s / 2)) < 1e-6
+        and math.abs(remote.view_y - (300 - remote.ch / s / 2)) < 1e-6,
+        "dragged far, the picture's bottom-right corner stops at the canvas centre")
+    app:onTwoFingerPan(nil, { relative = { x = 100000, y = 100000 }, start_pos = { x = 1, y = 1 } })
+    assert_true(math.abs(remote.view_x + remote.cw / s / 2) < 1e-6 and math.abs(remote.view_y + remote.ch / s / 2) < 1e-6,
+        "and its top-left corner the other way")
+    app:onTwoFingerPanRelease(nil, {})
+    app:onCloseWidget()
+    UIManager:close(app)
+    remote:free()
+end)
+
 check("viewer_menu_disconnect_returns_to_the_list", function()
     local app, remote = new_app()
     local session = app.session

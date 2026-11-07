@@ -693,7 +693,8 @@ function ViewerApp:onTwoFingerPan(_, ges)
     local sx, sy = sp and sp.x, sp and sp.y
     local last = self._two_finger_pan
     if not last or last.sx ~= sx or last.sy ~= sy then
-        last = { sx = sx, sy = sy, x = 0, y = 0 }
+        -- (vx, vy: where the view was, for a fit-mode flick to put it back)
+        last = { sx = sx, sy = sy, x = 0, y = 0, vx = self.remote.view_x, vy = self.remote.view_y }
         self._two_finger_pan = last
     end
     local dx, dy = rel.x - last.x, rel.y - last.y
@@ -786,6 +787,14 @@ against an edge, the flick scrolls; zoomed in, a flick that moved the view only 
 ]]
 function ViewerApp:onTwoFingerSwipe(_, ges)
     local moved_view = self._two_finger_moved_view
+    local pan = self._two_finger_pan
+    local fitted = self.settings.zoom_mode == "fit" or self.settings.zoom_mode == "fit_with_keyboard"
+    if moved_view and fitted and pan and pan.vx
+            and (ges and (ges.direction == "north" or ges.direction == "south")) then
+        -- fitted, a flick is the wheel: the pan its first moves did is taken back
+        self.remote.view_x, self.remote.view_y = pan.vx, pan.vy
+        moved_view = false
+    end
     self:onTwoFingerPanRelease(nil, ges)
     if moved_view then return true end
     local direction = ges and ges.direction

@@ -52,6 +52,7 @@ function Remote.new(width, height)
         _filled = nil,      -- what _canvas_bb was last fully computed for (view, size, mode)
         _stale = {},        -- remote rects changed since _canvas_bb was last updated
         _all_stale = true,  -- the whole buffer must be recomputed
+        _unplaced = true,   -- not yet placed in a canvas: the first one centres it
         last_recomputed_px = 0, -- canvas pixels the last draw_to rescaled
         last_blit_ms = nil,     -- the last draw_to's blit time, when it dithered
     }, Remote)
@@ -159,6 +160,7 @@ function Remote:resize(w, h)
         self:fit_view(self.cw, self.ch)
     else
         self.scale, self.view_x, self.view_y = 1, 0, 0
+        self._unplaced = true
     end
 end
 
@@ -171,7 +173,12 @@ a rotation), so that the view is placed - and clamped - against the space it act
 ]=]
 function Remote:set_canvas(cw, ch)
     self.cw, self.ch = cw, ch
-    self:_clamp()
+    if self._unplaced then
+        self._unplaced = false
+        self:_centre()
+    else
+        self:_clamp()
+    end
 end
 
 --- Frees the plane and the canvas buffer.
@@ -183,21 +190,22 @@ function Remote:free()
     end
 end
 
---- Keeps the view inside the plane (centring it when the plane is smaller than the canvas).
+--[[--
+Keeps the view within reach of the plane: any plane point can be brought to the canvas centre,
+and no further, so the plane can be panned past its edges (e.g. a corner moved to the middle of
+the screen) but at least a quarter of the canvas still shows it.
+]]
 function Remote:_clamp()
-    local cw, ch = self.cw, self.ch
-    local span_x = cw / self.scale
-    local span_y = ch / self.scale
-    if self.w <= span_x then
-        self.view_x = (self.w - span_x) / 2
-    else
-        self.view_x = math.max(0, math.min(self.view_x, self.w - span_x))
-    end
-    if self.h <= span_y then
-        self.view_y = (self.h - span_y) / 2
-    else
-        self.view_y = math.max(0, math.min(self.view_y, self.h - span_y))
-    end
+    local hx = self.cw / self.scale / 2
+    local hy = self.ch / self.scale / 2
+    self.view_x = math.max(-hx, math.min(self.view_x, self.w - hx))
+    self.view_y = math.max(-hy, math.min(self.view_y, self.h - hy))
+end
+
+--- Centres the plane in the canvas.
+function Remote:_centre()
+    self.view_x = (self.w - self.cw / self.scale) / 2
+    self.view_y = (self.h - self.ch / self.scale) / 2
 end
 
 local function clamp_scale(s)
@@ -210,7 +218,8 @@ Scales the plane so the whole thing is visible in `cw` x `ch` and centres it.
 function Remote:fit_view(cw, ch)
     self.cw, self.ch = cw, ch
     self.scale = clamp_scale(math.min(cw / self.w, ch / self.h))
-    self:_clamp()
+    self._unplaced = false
+    self:_centre()
 end
 
 --[[--
@@ -223,7 +232,12 @@ function Remote:set_scale(s)
     self.scale = ns
     self.view_x = cx - self.cw / (2 * ns)
     self.view_y = cy - self.ch / (2 * ns)
-    self:_clamp()
+    if self._unplaced then
+        self._unplaced = false
+        self:_centre()
+    else
+        self:_clamp()
+    end
 end
 
 --[[--
