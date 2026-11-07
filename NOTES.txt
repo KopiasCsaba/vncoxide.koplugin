@@ -38,11 +38,18 @@ vnc/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer), the view trans
                           (fit / zoom / pan / draw) and the persistent canvas buffer that
                           holds the scaled view between draws.
 vnc/scaler.lua      Global-coordinate sharp/smooth scaler used for partial redraws.
-vnc/app.lua         The full-screen viewer widget: canvas, gestures, on-screen keyboard,
-                          menu wiring, remote input.
-vnc/menu.lua        The in-app menu.
+vnc/app.lua         The full-screen viewer widget: canvas, gestures (Touch and Mouse pointer
+                          modes), on-screen keyboard, toolbar routing, remote input.
+vnc/toolbar.lua     The floating toolbar (Close, Display, Mode, Keyboard, Rotate, optional
+                          Scroll up/down, More); a child of the viewer, not a window.
+vnc/displaypanel.lua  The Display panel under the toolbar: zoom, scaling, orientation, picture
+                          quality presets, pointer speed.
+vnc/cheatsheet.lua  The card listing a pointer mode's gestures, shown when the mode changes.
+vnc/reconnect.lua   The reconnect loop and its box (backoff, Retry now, Close).
+vnc/menu.lua        The "More" menu (the toolbar's last button).
 vnc/keypanel.lua    The "Send keys" panel: one-shot modifier toggles and every key, for
-                          any hotkey; owned by the viewer (ViewerApp:open_key_panel).
+                          any hotkey; owned by the viewer (ViewerApp:open_key_panel). Its
+                          variant = "strip" is the one-row key strip above the on-screen keyboard.
 vnc/dialogs.lua     Connection list, per-connection actions, profile editor (with its picture
                     settings).
 vnc/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via a stub inputbox.
@@ -206,10 +213,34 @@ to everyday small updates. The "tiles" progress is reported one tick before the 
 requested, so the e-ink refresh of the progress title is not measured, and the draw uses the
 viewer's dither flag (canvas.dither, BB8 screen plus Screen.sw_dithering).
 
-Taps always click the remote. The plugin ignores KOReader's "activate menu on tap" preference and
-opens the menu on a swipe down in KOReader's menu zone instead; under "tap only" the menu would be
-unreachable, and intercepting taps would put a dead spot on the remote desktop. See
-ViewerApp:init_menu_zones().
+Taps always click the remote (outside the toolbar). The plugin ignores KOReader's "activate menu on
+tap" preference and shows/hides the toolbar on a swipe down in KOReader's menu zone instead; under
+"tap only" the toolbar would be unreachable, and intercepting taps would put a dead spot on the
+remote desktop. See ViewerApp:init_menu_zones().
+
+The toolbar is a child of the viewer, not a window of its own (vnc/toolbar.lua). The viewer paints
+it after the canvas and its handleEvent hands the toolbar every gesture that started on it
+(ViewerApp:_toolbar_owns), so a tap on the bar never reaches the remote and the canvas around it
+stays live; a window of its own would take the screen's input and hide the viewer from UIManager.
+Not owned by the bar: swipes (the top-zone toggle, the end of a quick drag), multi-finger gestures
+(a pinch zooms wherever it is made) and anything while a drag or long press of ours is under way
+(its end is ours wherever the finger lifts). Every bar button first flushes the deferred click
+below, since a pending click belongs to where the user tapped before reaching for the bar. The
+bar only ever asks for partial "ui" refreshes of its own rectangle. The Display panel is a
+ButtonDialog anchored under the bar, rebuilt in place after each choice so the check marks show the
+live state; only a rotation closes it. Quality presets (Settings.QUALITY_PRESETS) are sets of the
+four picture fields of the profile; Settings.preset_of() names the match or "custom".
+
+Pointer modes (Settings: profile field pointer_mode, "touch" or "mouse"; pointer_speed in the global
+settings, Settings.POINTER_SPEEDS 0.75 / 1.25 / 2.0). Touch mode acts at the finger. In Mouse mode the
+viewer keeps a remote pointer position, a one-finger drag moves it by the drag delta taken through
+the zoom and times the speed, and a tap clicks at the pointer. The click is *deferred* by KOReader's
+double-tap interval (ges_double_tap_interval): a pan that starts within it, near the tap, drops the
+click and becomes a left-button drag ("double tap and move"); a second tap sends the first click at
+once and then its own. Everything is built from GestureDetector's tap / hold / pan, no raw touch
+handling. The deferred click is sent or dropped (ViewerApp:_flush_deferred_click /
+_drop_deferred_click) before anything that could reorder it: a toolbar button, a later pointer
+action, key presses and closing the viewer. Touch mode clicks are never deferred.
 
 Physical keyboard. Printable characters arrive as TextInput events, not as key events, and
 SDL 3 only delivers those after Device:startTextInput() ("Text input events are not received by
@@ -248,10 +279,9 @@ and the viewer takes those releases anywhere on the screen, acting only on a pre
 that gains a second finger becomes a two-finger gesture in GestureDetector (Contact:handlePan with
 a buddy contact) and ends in two_finger_pan_release, never in pan_release; every two-finger handler
 therefore first ends such an action (ViewerApp:_end_pointer_action: button up, then the modifiers).
-A two-finger flick (two_finger_swipe, north/south only) scrolls the remote wheel at the last
-pointer position (north = wheel down, mask 16; south = mask 8; notches = clamp(round(distance /
-(screen height / 10)), 1, 10)). It is not a modifier action: armed modifiers are neither sent nor
-consumed. A drag or hold whose release was eaten by the keyboard or menu is ended by the next
+A quick two-finger drag (two_finger_swipe) only ends the view pan; it never scrolls. Wheel notches
+come from the toolbar's optional scroll buttons (ViewerApp:scroll_wheel), the page buttons and
+nothing else, and are not modifier actions. A drag or hold whose release was eaten by the keyboard or menu is ended by the next
 tap/pan start/hold, any send_key, or showing the on-screen keyboard (_end_stale_pointer_action).
 Gestures off the panel never reach its buttons (KeyPanel:handleEvent): a button rebuilt since the
 last paint does not know its place yet. Replaying a recent combo is an action too: it clears the
@@ -269,36 +299,41 @@ the topmost full-screen widget, so a widget appearing *above* the viewer never r
 the 250 ms re-check (_watch_keyboard_state). That is also why a toast (a Bell notification) is
 explicitly flagged `toast = true`: it is allowed to share the screen with the keyboard.
 
-Keyboard gestures, and why the keyboard's own rectangle cannot host one. ViewerApp:init_gestures()
-declares the two keyboard swipes in `ges_events`: a swipe *north* starting in the canvas' bottom
-strip (`bottom_strip`, the bottom 15 % of the canvas, recomputed from `canvas_geom()` at match time
-so it follows a rotation and a keyboard height change) shows the keyboard, and a swipe *south* in
-the canvas above it hides it again. A tap, or an ordinary drag, never matches: a swipe has to finish
-within KOReader's `ges_swipe_interval` (900 ms) or the detector reports a pan instead. The viewer is
-registered `is_always_active` (c.f. ViewerApp's prototype), which is what makes this reachable:
-`UIManager:sendEvent` offers a gesture to the topmost widget first and then to the always-active
-ones, so the on-screen keyboard does not hide the canvas from the gesture machinery - and
-`_input_target()` likewise ignores the viewer's own keyboard, so canvas gestures keep working
-underneath it.
+The keyboard has no gestures of its own any more: the toolbar's Keyboard button shows and hides it
+(tap), and opens the full Send keys panel (long press). KOReader's keyboard consumes swipes itself
+- every VirtualKey carries a SwipeKey ges_event over its own rectangle whose handler always returns
+true and runs the key's swipe_callback (a south swipe on `q` inserts its variant) - and
+WidgetContainer:handleEvent propagates to the children first, so a "swipe down on the keyboard to
+put it away" would mean overriding the keys' own gesture handling. Deliberately not done; that is
+why the earlier swipe-up/swipe-down keyboard zones are gone. The viewer is registered
+`is_always_active` (c.f. ViewerApp's prototype): UIManager:sendEvent offers a gesture to the
+topmost widget first and then to the always-active ones, so canvas gestures keep working
+underneath the on-screen keyboard (`_input_target()` ignores the viewer's own keyboard).
 
-That offer order is what blocks a "swipe down over the keyboard to put it away". KOReader's keyboard
-consumes swipes itself: every `VirtualKey` carries a `SwipeKey` ges_event over its own rectangle
-whose handler (`VirtualKey:onSwipeKey`) always returns true and runs the key's core
-`swipe_callback` - the per-key swipe characters (a south swipe on `q` inserts its variant `q̃`) and,
-on the layout key, the layout switch. `WidgetContainer:handleEvent` propagates to the *children*
-first, so a touch zone (`registerTouchZones` with `overrides`) or a ges_event on the VirtualKeyboard
-we construct can only run *after* the keys declined; zone priority does not reach into a child.
-Hiding the keyboard on a south swipe that begins on a key therefore means overriding the keys' own
-gesture handling (their `swipe_callback`/ges_events, the keyboard's event dispatch, or input at the
-UIManager level). Deliberately not done. Widening the viewer's hiding range instead would only cover
-the keyboard frame's padding between keys: it would insert a character where the swipe lands on a
-key and hide the keyboard where it lands in a gap.
+The key strip (KeyPanel with variant = "strip") sits on top of the on-screen keyboard, bottom_offset
+pixels above the screen bottom (the keyboard's height, kept in step by KeyPanel:set_bottom_offset).
+Its modifiers arm and are taken like the panel's; what it sends is not added to recent_combos, and
+while a modifier is armed the viewer hands it the on-screen keyboard's keys too
+(ViewerApp:send_osk_key). It has no Release all and no Back/Menu handling: it is part of the keyboard.
 
 A swipe reaches the viewer *after* the pans that led up to it and *instead of* a pan_release
-(`Contact:panState`), so a swipe-driven menu or keyboard action also sends the leading press+drag to
-the remote and leaves `_drag_active` set; the button is released by the next pointer event with a
-zero mask (e.g. the next tap). Not changed: withholding the press until a gesture is known not to be
-a swipe would delay every canvas drag.
+(`Contact:panState`), so a quick drag ends as a swipe: ViewerApp:onSwipe lets go of the button and
+the modifiers at the last pointer position, and the top-zone toolbar swipe ends the drag itself
+too. Withholding the press until a gesture is known not to be a swipe would delay every canvas drag.
+
+Reconnect (vnc/reconnect.lua). ViewerApp:on_session_error opens a box over the last picture
+(ButtonDialog: Retry now, Close; Back = Close) and retries with Reconnect.BACKOFF 2, 4, 8, 15, then
+30 s forever; every attempt is Session:connect on the same session, which keeps the app and the
+plane, and there is one loop per session. The loop lives with the open viewer only: a session that
+drops while the viewer is closed stays in "error" (the toast), and reopening the viewer
+(ViewerApp:onShow) shows the box with no automatic retries until Retry. Leaving the viewer stops the
+loop and cancels its timer; ViewerApp:onResume retries at once when the loop is running. Keep-Wi-Fi
+mode (Session:set_keep_wifi): Session:_fail and Session:hangup normally restore Wi-Fi when this
+plugin turned it on, so a retry loop would turn it off and on again for every attempt; while
+keep_wifi is on they leave it up, and the duty to turn it off stays with the session. Turning it off
+with no connection restores Wi-Fi; the last connection to end still turns it off. A quality preset
+change uses the same box ("Reconnecting...") through Session:hangup plus a connect with the new
+picture fields, and writes them to the stored profile only after that connect succeeds.
 
 Refreshes, and why a full-screen widget has to ask for them. UIManager:show/close only queue the
 refresh the *caller* passed; with no refreshtype they queue nothing at all (`_refresh(nil, ...)`
@@ -557,18 +592,23 @@ UI plumbing (headless, no KOReader process, no server):
 
     PLUGIN=~/.config/koreader/plugins/vnc.koplugin
     cd /usr/lib/koreader && \
-      KO_HOME=/tmp/vncv_ui_home \
+      rm -rf /tmp/vncv_ui_home && KO_HOME=/tmp/vncv_ui_home \
       LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
       ./luajit "$PLUGIN/tools/ui_smoke.lua"
+
+The ui suite is not idempotent: a reused KO_HOME keeps the "fresh profile" settings of an earlier run
+and fails two checks, so it needs a fresh (wiped) KO_HOME every time.
 
 It builds the real plugin, its dialogs and a real viewer widget against KOReader's widget stack and
 checks the flows that are hard to reach by hand: every menu/dialog returns to where it came from,
 a failed connection returns to the connection list with exactly one dismissable message, the
 canvas follows rotations, the keyboard neither rescales nor moves a view that does not fit above
 it, the fitted zoom modes and the keyboard-aware placement behave, the keyboard yields to popups,
-the keyboard swipes behave (a swipe up from the bottom strip shows the keyboard - after a rotation
-and a keyboard height change too - a swipe down above it hides it again, and the always-visible
-setting wins over both), platform text input is enabled exactly while the viewer is shown, typed
+the toolbar (its buttons, the top-zone swipe toggling it, taps on it never reaching the remote), both
+pointer modes' gestures (the deferred Mouse click, double tap and move, two-finger tap, no scroll or
+rotate gesture), the cheat-sheet, the Display panel and its quality presets, the More menu, the key
+strip, the reconnect box and loop (backoff, Retry now, Close, no background retry, Wi-Fi kept on while
+retrying), platform text input is enabled exactly while the viewer is shown, typed
 text and physical keys reach the remote (through KOReader's own SDL event handler), the Send keys
 panel's combos, one-shot modifiers on keys and canvas actions, recent list, close paths and per-tab
 keysyms behave (with taps on its buttons delivered through the real widget stack), and the settings
@@ -646,10 +686,10 @@ back-flows.
 
 Not verified, and where to look first if something is wrong:
 
-- The gesture *detector*: multi-touch gestures (pinch/spread/rotate/two-finger drag) cannot be
+- The gesture *detector*: multi-touch gestures (pinch/spread/two-finger drag/two-finger tap) cannot be
   synthesised on this box (no ydotool/wtype, /dev/uinput is not writable, no bare X server, and
   Xwayland ignores XTest keys for an unfocused window), so the handlers are tested but the wiring
-  from real fingers is not. Same for a real tap in the menu zone.
+  from real fingers is not. Same for a real swipe in the toolbar zone and for the Mouse-mode double tap and move timing.
 - Tight compression: exercised against the mock only. It is not RFC 6143 and servers differ in how
   they read its control byte (0x0A is "uncompressed" in libvncclient, "PNG" in TurboVNC/noVNC);
   the implementation follows libvncclient, cross-checked against noVNC. Flip the profile
@@ -670,7 +710,8 @@ Not verified, and where to look first if something is wrong:
   yet: visible-area requests against a real server and panel, the menu staying open, and the
   benchmark's 5 ms poll and tile scoring. The benchmark was run headless against a real x11vnc only.
 - Suspend: while KOReader is suspended the poll task simply does not run and the single
-  outstanding update request is buffered by the kernel. If a connection turns out to die across
-  suspend, re-requesting a full update on resume is the fix - not implemented.
+  outstanding update request is buffered by the kernel. A connection that dies across suspend
+  shows the reconnect box; the retry on resume (ViewerApp:onResume) only applies while that loop is
+  running. Re-requesting a full update on resume for a connection that survived is not implemented.
 - TLS/VeNCrypt/SASL servers, and security types other than None/VNC Authentication: unsupported by
   design (the handshake reports them as unsupported).

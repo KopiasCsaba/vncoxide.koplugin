@@ -2364,7 +2364,7 @@ check("editor_picture_settings_save_and_cancel", function()
     assert_true(not editor:isKeyboardVisible(), "the keyboard stays hidden while the viewer is open")
     assert_true(viewer.text:find("Its main advantage is JPEG", 1, true) and viewer.text:find("next connection", 1, true),
         "the full explanation, got " .. viewer.text)
-    -- Sharp scaling is a viewer-menu setting: only the closing advice may point to it, not a setting paragraph.
+    -- Sharp scaling is a Display-panel setting: only the closing advice may point to it, not a setting paragraph.
     local settings_part = viewer.text:sub(1, (viewer.text:find("next connection", 1, true)))
     assert_true(not settings_part:find("Sharp", 1, true) and not settings_part:find("sharp", 1, true),
         "no setting paragraph mentions sharp scaling")

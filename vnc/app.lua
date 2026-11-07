@@ -3,11 +3,15 @@ The full-screen viewer widget.
 
 The remote framebuffer owns the whole screen; the on-screen keyboard is drawn *over* it
 (KOReader stacks it above us), so showing the keyboard never rescales the view — pan it if part
-of the remote desktop ends up behind the keyboard. The menu is opened by a **swipe down** in
-KOReader's own top screen zone (the `DTAP_ZONE_MENU` area); taps are *never* taken away from the
-remote desktop, so a single tap means "click over there" everywhere on the screen. Rotations and
-screen resizes go through KOReader's generic `SetRotationMode` / `ScreenResize` events, so that
-the keyboard is re-laid out for the new dimensions as well.
+of the remote desktop ends up behind the keyboard. A compact toolbar (`vnc.toolbar`) floats at the
+top; a **swipe down** in KOReader's own top screen zone (the `DTAP_ZONE_MENU` area) shows or hides
+it, and a tap on the bar never reaches the remote. Everywhere else taps are *never* taken away from
+the remote desktop. What a tap, a long press and a one-finger drag do depends on the pointer mode:
+Touch acts at the finger, Mouse moves a pointer relatively (a tap's click is deferred by the
+double-tap interval so a double-tap-and-move can drag); two-finger drag, pinch/spread and
+two-finger tap behave the same in both. Rotations and screen resizes go through KOReader's generic
+`SetRotationMode` / `ScreenResize` events, so that the keyboard is re-laid out for the new
+dimensions as well.
 
 It is a plain (non-modal) full-screen `InputContainer` flagged `is_always_active`, so that it
 keeps receiving gestures even while one of its own popups is on top — hence the

@@ -14,16 +14,20 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
 - The remote framebuffer on the whole screen, scaled to fit, with zoom presets (fit screen, fit
   with the on-screen keyboard, or a fixed 25 % … 400 %) and panning for the rest. Zoomed in, only
   the visible part (plus a margin) is requested from the server, so less is sent and decoded.
-- Touch control: taps, long presses and drags drive the remote pointer, and two-finger gestures
-  pan, zoom and rotate the view.
+- Two ways to drive the pointer: **Touch** mode acts where your finger is, **Mouse** mode moves a
+  pointer like a laptop trackpad. Two-finger gestures pan and zoom the view.
+- A small toolbar over the picture for the things you reach for most, with the rest one tap away
+  behind **⋯**.
 - An on-screen keyboard that types into the remote session, plus a physical keyboard with
   modifiers, arrows, function keys and auto-repeat.
-- A **Send keys** panel for any key or hotkey the on-screen keyboard cannot type (Ctrl+Alt+T,
+- A key strip above the on-screen keyboard (modifiers, Esc, Tab, arrows, Del) and a **Send keys**
+  panel for any key or hotkey the on-screen keyboard cannot type (Ctrl+Alt+T,
   Super, F5, Print Screen, ...), with the last four combos one tap away.
 - Connection profiles (name, host, port, password) you can add, edit and delete from KOReader.
 - One connection can be flagged to connect by itself at KOReader's start (and to appear as
   **VNC auto connect** in KOReader's **Start with** menu).
 - Wi-Fi is turned on when a connection needs it.
+- A dropped connection is retried by itself, with Wi-Fi kept on meanwhile.
 - **Leave** the viewer and the connection survives; only **Disconnect** closes the session (and
   returns you to the connection list).
 
@@ -58,37 +62,81 @@ plugins — so with **VNC auto connect** selected the file browser appears for a
 viewer opens over it. If the connection cannot be made, the failure is reported exactly as a manual
 connect's is, and you are left in the normal KOReader UI; there is no retry.
 
-There is no permanent toolbar: the remote desktop owns the whole screen.
+**The toolbar** is a small bar at the top centre of the screen, over the remote picture; the picture
+stays visible and clickable beside and below it. It is shown when a connection opens. A **swipe down
+in the top strip of the screen** (KOReader's menu zone) hides it and shows it again; nothing else
+hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
 
-| Gesture | Effect |
-| --- | --- |
-| tap | left click |
-| long press | right click |
-| one-finger drag | drag with the left button held; a quick drag (the finger lifts right after moving) ends the same way |
-| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer); "Fit" centres it again |
-| two-finger flick up / down | scroll the remote wheel down / up at the last pointer position, 1 to 10 notches by flick length (a tenth of the screen height each); armed key-panel modifiers are not used or consumed. A quick two-finger drag counts as a flick: in the fitted zoom modes it always scrolls (the view stays put); zoomed in, it scrolls only if it could not move the view (already at that edge), otherwise it only pans |
-| pinch / spread | zoom the view, keeping the point between the fingers fixed |
-| two-finger rotate | change the screen orientation |
-| swipe up from the bottom strip | show the on-screen keyboard |
-| swipe down above the keyboard | hide it again |
-| swipe down in the top menu zone | open the menu |
+1. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
+2. **Display** opens the Display panel (below).
+3. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a card with that mode's
+   gestures; a tap anywhere closes the card and goes no further. The mode is remembered per
+   connection.
+4. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard, with the key strip on top of it; a
+   long press opens the full **Send keys** panel.
+5. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button, the
+   Display panel or the menu: a pinch never turns the screen.)
+6. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
+   scroll buttons on toolbar** in **⋯**.
+7. **⋯** opens the menu (below).
 
-The two keyboard swipes have to start outside the keys: a swipe that begins on a key belongs to
-KOReader's keyboard, where it inserts one of the key's alternate characters — so there is no "swipe
-down on the keyboard to put it away". The menu's **Hide keyboard** entry does that from anywhere,
-and **keyboard always visible** keeps the keyboard up regardless of either swipe.
+| Gesture | Touch mode | Mouse mode |
+| --- | --- | --- |
+| tap | left click at the finger | left click at the pointer |
+| long press | right click at the finger | right click at the pointer |
+| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed) |
+| double tap, then move | not used (a plain drag already drags) | drag with the left button held from the pointer |
+| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
+| pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
+| two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |
+| device page buttons | Page Up/Down or wheel (setting) | same |
 
-A tap is *always* a click on the remote — including in the top menu zone — so there is never a
-dead spot on the screen. That is why the menu opens on a **swipe down** there; with a physical
-keyboard, the **Menu** key (F1 on KOReader's own keymap) toggles it too.
+In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
+x11vnc, `-cursor arrow`); the viewer draws none. A tap's click waits out KOReader's double-tap
+interval before it is sent, so that a double tap followed by a move can become a drag instead of a
+click and a press; two quick taps still give two clicks. Touch mode clicks are sent at once. A quick
+two-finger drag only pans; nothing here scrolls the wheel by flicking, and three-finger gestures are
+not used.
 
-**The menu** offers the connection list, a status line, the zoom presets, a "keyboard always
-visible" toggle, show/hide keyboard, the screen orientation (including rotations), "use current
-orientation as default", what the page buttons send, **Send keys…** (see below),
-**Disconnect** (with a confirmation) and **Leave (keep connection)**. If the connection has just
-dropped, it leads with **Reconnect to …**. Settings toggles keep the menu open; anything that
-rotates the screen (the orientation choices, Rotate screen), changes the zoom or opens the Send
-keys panel closes it ("use current orientation as default" does not rotate, so it stays).
+A tap is *always* a click on the remote, everywhere outside the bar, so there is never a dead spot
+on the screen. With a physical keyboard, the **Menu** key (F1 on KOReader's own keymap) opens the
+menu and **Back** closes whatever is open on top.
+
+**The Display panel** hangs under the toolbar. A choice stays in the panel (the check marks follow
+the live state) except a rotation, which closes it. It tells:
+
+- **Zoom**: Fit screen, Fit (with keyboard), 25 %, 50 %, 75 %, 100 %, 150 %, 200 %, 400 %.
+- **Smooth / Sharp** scaling (see "Sharp scaling" below).
+- **Orientation**: Portrait, Landscape and their inverted forms, and **Use current orientation as
+  default**.
+- **Picture quality (reconnects)**: **Best**, **Balanced**, **Fast**. The preset is a set of the
+  connection's picture settings:
+
+  | Preset | Colour depth | Tight | JPEG quality | Compression level |
+  | --- | --- | --- | --- | --- |
+  | Best | 24-bit | off | server default | server default |
+  | Balanced | 16-bit | on | 6 | 6 |
+  | Fast | 8-bit | on | 3 | 9 |
+
+  Choosing another preset reconnects with it, and saves it into the connection only once that
+  connection has succeeded; closing or leaving first keeps the old values. A connection whose picture
+  settings match no preset is shown as **Custom**. The settings themselves are described under
+  "Lower bandwidth" below.
+- **Pointer speed (mouse mode)**: Slow (0.75), Normal (1.25), Fast (2.0): a multiplier on how far
+  the pointer moves for a given drag.
+
+**The ⋯ menu** holds the rest: a status line, **Reconnect to …** when the connection has just dropped
+and the connection list (**Connections…**, to switch or add one), **Send text…** (type a line locally
+and send it to the remote as key presses; characters with no key are skipped and counted),
+**Refresh** (asks for a full picture and flashes the screen), **Ctrl+Alt+Del**, **Lock screen**
+(Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel), **Keyboard always visible**,
+**Show scroll buttons on toolbar** and **Leave (keep connection)**. Switches keep the menu open;
+anything else closes it.
+
+**The key strip** sits right above the on-screen keyboard: **Ctrl**, **Shift**, **Alt**, **Super**,
+then Esc, Tab, the four arrows and Del. A modifier armed there goes with exactly one action, like
+the panel's: the next key on the on-screen keyboard or the strip, or the next tap or drag on the
+screen. A long press on **⌨** opens the full **Send keys** panel instead.
 
 **Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable) above
 it. Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns black),
@@ -113,9 +161,20 @@ the whole screen (pan with two fingers to reach what the keys cover), while a vi
 that space is moved into it instead of hiding behind the keys. The keyboard gets out of the way
 whenever a menu or dialog is open, and comes back when it closes.
 
+**Losing the connection.** When the connection drops while the viewer is open, the last picture
+stays and a box appears over it: *Connection lost — reconnecting…* with the attempt number and the
+seconds to the next one, and **Retry now** and **Close**. Attempts follow 2, 4, 8 and 15 seconds,
+then every 30 seconds, and go on until one succeeds or you choose **Close** (Back does the same).
+On success the box goes, a full picture is requested, and the toolbar, mode and zoom are as they
+were. Wi-Fi stays on while it retries; it is turned off again (if the plugin had turned it on) only
+when the retrying ends without a connection. A retry that is under way is also repeated at once when the device wakes up.
+There is no retrying in the background: if the connection drops while you have left the viewer, it
+stays down, and reopening the viewer shows *Connection lost* with **Retry** and **Close** and
+retries only after you tap **Retry**. Closing the viewer stops everything.
+
 **Leave (keep connection)** closes the viewer but keeps the session, the remote framebuffer and
-Wi-Fi up, so reopening it is instant and the picture is resynchronised. **Disconnect** closes the
-connection and restores Wi-Fi if the plugin turned it on.
+Wi-Fi up, so reopening it is instant and the picture is resynchronised. **Close** on the toolbar
+(Disconnect) closes the connection and restores Wi-Fi if the plugin turned it on.
 
 ## Sharing this screen (VNC server)
 
@@ -215,14 +274,17 @@ return {
                 ["color_depth"] = 24,      -- 24, 16 or 8: fewer bits = less bandwidth, fewer colours
                 ["enable_tight"] = false,  -- opt-in Tight encoding, see below
                 ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
-                ["compress_level"] = false }, -- Tight compression level 0..9 (false = server default)
+                ["compress_level"] = false,   -- Tight compression level 0..9 (false = server default)
+                ["pointer_mode"] = "touch" }, -- "touch" or "mouse" (the toolbar's Mode button)
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)
         ["keyboard_always_visible"] = false,
         ["zoom_mode"] = "fit",             -- "fit", "fit_with_keyboard" or 0.25 .. 4
         ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
-        ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the viewer menu's switch)
+        ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the Display panel's switch)
+        ["pointer_speed"] = "normal",      -- Mouse mode: "slow" (0.75), "normal" (1.25) or "fast" (2.0)
+        ["toolbar_scroll_buttons"] = false, -- show the toolbar's scroll up/down buttons
     },
     ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface
         ["ip"] = "0.0.0.0",
@@ -293,11 +355,11 @@ the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logg
   ranking; a combination that fails in either try is listed as failed ("failed in pass N: ..."). **Apply best** saves
   the winner's four picture settings to the connection (nothing else; it takes effect on the next
   connection); **Cancel** or **Close** save nothing.
-- **Sharp scaling (faster)**: a switch in the viewer menu, next to **Page buttons send**. It scales
+- **Sharp scaling (faster)**: **Sharp** in the Display panel (toolbar ▸ **Display**). It scales
   by repeating pixels instead of blending them: much faster redraws when the zoom is not 100% and
   crisper text, but uneven at non-whole zoom levels. It is one global setting (not per connection)
   and applies immediately to the live view.
-- **Page buttons**: the menu's **Page buttons send** chooses what a device's page-turn buttons do.
+- **Page buttons**: **Page buttons send** under **⋯** chooses what a device's page-turn buttons do.
   The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
   scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also
   works on a window that is not focused. It applies immediately, no reconnect needed.
@@ -340,7 +402,7 @@ tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; e
   neighbouring pixels (no over- or undershoot at edges, unlike bicubic). The start-up line shows the frame size the viewer will get, e.g.
   `-s 632x840 -z 2` gives 1264x1680 for a 1264x1680 screen. Set the viewer zoom to 100% then: the
   reader does no scaling and draws fastest, at the price of zoom² times the pixels to transfer and
-  decode. The viewer menu's "Sharp scaling" is the client-side alternative that keeps the bandwidth
+  decode. The Display panel's **Sharp** scaling is the client-side alternative that keeps the bandwidth
   low.
 - With `-z` the script does not use x11vnc but its own small RFB server (`tools/vnc_zoom.py`), because
   x11vnc's `-clip` + `-scale` clamps the arrow it draws to the unscaled size, so on the reader the

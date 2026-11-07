@@ -161,7 +161,7 @@ function Session:set_profile(profile)
     self.profile = profile
 end
 
---- Hands the global scaling mode (the viewer menu's "Sharp scaling") to the remote, if there is one yet.
+--- Hands the global scaling mode (the Display panel's "Sharp" scaling) to the remote, if there is one yet.
 function Session:_apply_scaling()
     if self.remote then
         local settings = self.plugin and self.plugin.settings and self.plugin.settings.data.settings

@@ -227,8 +227,9 @@ end
 
 -- ---------------------------------------------------------------- sessions
 
---- Reports session transitions. Errors are shown even when the app is open, except while a
---- connect attempt is in flight: that attempt's own callback reports the failure, and saying it
+--- Reports session transitions. An error in the open viewer goes to its reconnect box
+--- (`ViewerApp:on_session_error`); any other error (a background drop) is a toast. A first
+--- connect attempt in flight is skipped: its own callback reports the failure, and saying it
 --- twice would stack two messages on screen.
 function VNC:on_session_state(session, state, err)
     if state ~= "error" then return end
