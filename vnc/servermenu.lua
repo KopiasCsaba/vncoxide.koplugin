@@ -64,10 +64,13 @@ function ServerMenu.register(plugin, menu_items)
         return plugin.settings:server()
     end
 
+    --- Re-binds a running server with the settings just changed. A stop first: start() on a
+    --- running server returns at once, keeping the old socket and the old password.
     local function restart_if_running()
         local server = plugin.server
         if server and server:is_running() then
-            local ok, err = server:start()      -- start() re-binds with the new settings
+            server:stop()
+            local ok, err = server:start()
             if not ok then report(err) end
         end
     end

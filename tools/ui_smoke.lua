@@ -1030,6 +1030,59 @@ check("server_menu_offers_autostart", function()
     assert_true(persisted.server.autostart == false, "which is flushed too")
 end)
 
+--- An IP address or password changed while the server runs takes effect at once: the server is
+--- stopped and started again (a start() on a running server is a no-op, so calling only that left
+--- the old socket bound and the old password in force).
+check("server_menu_rebinds_on_an_ip_or_password_change", function()
+    local menu_items = {}
+    plugin:addToMainMenu(menu_items)
+    local calls = {}
+    local fake = {
+        running = true,
+        is_running = function(self) return self.running end,
+        start = function(self)
+            calls[#calls + 1] = "start"
+            if self.running then return true end
+            self.running = true
+            return true
+        end,
+        stop = function(self) calls[#calls + 1] = "stop" self.running = false end,
+        client_count = function() return 0 end,
+        status_text = function() return "" end,
+    }
+    local real_server, real_show = plugin.server, UIManager.show
+    local saved_ip, saved_password = store.data.server.ip, store.data.server.password
+    local shown
+    plugin.server = fake
+    UIManager.show = function(mgr, widget, ...)
+        shown = widget
+        return real_show(mgr, widget, ...)
+    end
+    local ok, err = pcall(function()
+        for _, case in ipairs({ { "IP address", "127.0.0.1" }, { "Password", "secret" } }) do
+            local item
+            for _, it in ipairs(menu_items.vnc_server.sub_item_table) do
+                local label = it.text or (it.text_func and it.text_func())
+                if type(label) == "string" and label:find(case[1], 1, true) == 1 then item = it end
+            end
+            assert_true(item ~= nil, "no " .. case[1] .. " entry")
+            calls, shown = {}, nil
+            item.callback({ updateItems = function() end })
+            assert_true(shown and shown.buttons, case[1] .. ": an input dialog must be shown")
+            shown.getInputValue = function() return case[2] end
+            shown.buttons[1][2].callback()
+            assert_true(table.concat(calls, ",") == "stop,start",
+                case[1] .. ": a running server must be stopped and started, got " .. table.concat(calls, ","))
+            assert_true(fake.running, case[1] .. ": and it is running again")
+        end
+    end)
+    UIManager.show = real_show
+    plugin.server = real_server
+    store.data.server.ip, store.data.server.password = saved_ip, saved_password
+    plugin.settings:flush()
+    if not ok then error(err, 0) end
+end)
+
 check("server_environment_rules", function()
     -- The parsing seam: a lookup function stands in for os.getenv, so every documented rule can be
     -- exercised without touching the real environment.
