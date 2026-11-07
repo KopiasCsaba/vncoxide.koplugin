@@ -289,12 +289,17 @@ Fits the view for the zoom modes that are computed from the screen.
 so it follows the keyboard exactly like the viewer did before the keyboard stopped reflowing the
 view. The fixed ratios are absolute and are left alone, so their scale never changes here (nor
 with the keyboard).
+
+Once the user has pinched or panned the view (`_user_view`), the fit is not re-applied: the
+keyboard coming and going must not throw their zoom and pan away. That state lasts for the session
+only (it is not stored) and ends with the next fit (`zoom_to`, `fit_to_screen`, a reflow).
 --- @treturn boolean whether the current mode is one of the fitted ones
 ]]
 function ViewerApp:_fit_zoom_mode()
     if not self.remote then return false end
     local size = self.dimen or Screen:getSize()
     local mode = self.settings.zoom_mode
+    if self._user_view and (mode == "fit" or mode == "fit_with_keyboard") then return true end
     if mode == "fit" then
         self.remote:fit_view(size.w, size.h)
         return true
@@ -323,6 +328,7 @@ end
 --- Recomputes the canvas and re-applies the fitted zoom modes.
 function ViewerApp:_reflow()
     self.dimen = Screen:getSize()
+    self._user_view = nil
     self:_fit_zoom_mode()
     self:update_canvas()
 end
@@ -1055,6 +1061,7 @@ function ViewerApp:onTwoFingerPan(_, ges)
     end
     -- the picture follows the fingers, like any touch scroll
     self.remote:pan_by(dx, dy)
+    self._user_view = true
     self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
@@ -1104,6 +1111,7 @@ function ViewerApp:_live_zoom(ges)
     self._last_pinch_factor = factor
     if step <= 0 then return nil end
     self.remote:zoom_at(ges.pos.x - self:canvas_geom().x, ges.pos.y - self:canvas_geom().y, step)
+    self._user_view = true
     self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
@@ -1514,6 +1522,7 @@ end
 -- ---------------------------------------------------------------- zoom / orientation
 
 function ViewerApp:zoom_to(mode)
+    self._user_view = nil
     self.settings.zoom_mode = mode
     if not self:_fit_zoom_mode() then
         self.remote:set_scale(mode)

@@ -4212,6 +4212,47 @@ end)
 --- The strip's bottom edge: right on top of the on-screen keyboard.
 local function strip_bottom(strip) return strip.dimen.y + strip.dimen.h end
 
+check("keyboard_toggle_keeps_a_pinched_zoom_and_pan", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local fit_scale = remote:get_scale()
+    -- spread to a bigger scale, then pan with two fingers
+    app:_live_zoom({ pos = { x = 100, y = 100 }, span = 300, start_span = 100 })
+    app:onSpread()
+    app:onTwoFingerPan(nil, { relative = { x = -30, y = -20 }, start_pos = Geom:new{ x = 100, y = 100 } })
+    local scale, vx, vy = remote:get_scale(), remote.view_x, remote.view_y
+    assert_true(scale > fit_scale * 1.5, "the spread zoomed in")
+    tap_toolbar(app, "keyboard")
+    assert_true(app.vk_visible, "keyboard up")
+    assert_true(remote:get_scale() == scale and remote.view_x == vx and remote.view_y == vy,
+        "keyboard show keeps scale and pan")
+    app:on_keyboard_height_changed()
+    assert_true(remote:get_scale() == scale and remote.view_x == vx and remote.view_y == vy,
+        "a keyboard height change keeps them")
+    tap_toolbar(app, "keyboard")
+    assert_true(not app.vk_visible, "keyboard down")
+    assert_true(remote:get_scale() == scale and remote.view_x == vx and remote.view_y == vy,
+        "keyboard hide keeps them")
+    assert_true(app.settings.zoom_mode == "fit", "the pinched scale is not stored")
+    -- a pan alone (no pinch) is kept as well
+    app:fit_to_screen()
+    assert_true(math.abs(remote:get_scale() - fit_scale) < 1e-9, "fit_to_screen fits again")
+    tap_toolbar(app, "keyboard")
+    local fitted_kb = remote:get_scale()
+    tap_toolbar(app, "keyboard")
+    assert_true(math.abs(remote:get_scale() - fit_scale) < 1e-9, "fitted behaviour: toggling re-fits")
+    -- the Display panel's zoom choice fits again too
+    app:_live_zoom({ pos = { x = 100, y = 100 }, span = 300, start_span = 100 })
+    app:onSpread()
+    app:zoom_to("fit")
+    assert_true(math.abs(remote:get_scale() - fit_scale) < 1e-9, "zoom_to fits again")
+    -- a rotation/resize re-fits
+    app:_live_zoom({ pos = { x = 100, y = 100 }, span = 300, start_span = 100 })
+    app:onSpread()
+    app:_reflow()
+    assert_true(math.abs(remote:get_scale() - fit_scale) < 1e-9, "a reflow fits again")
+    close_viewer(app, remote)
+end)
+
 check("key_strip_comes_and_goes_with_the_keyboard", function()
     local app, remote = new_app(400, 300, { toolbar = true })
     -- the strip's own show/close refreshes: partial "ui" ones only

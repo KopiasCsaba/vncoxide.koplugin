@@ -89,7 +89,7 @@ function DisplayPanel.open(app)
     local zoom_buttons = {}
     for _i, choice in ipairs(DisplayPanel.ZOOM_CHOICES) do
         zoom_buttons[#zoom_buttons + 1] = {
-            text = mark(choice.label, settings.zoom_mode == choice.value),
+            text = mark(choice.label, settings.zoom_mode == choice.value and not app._user_view),
             callback = stays(function() app:zoom_to(choice.value) end),
         }
     end
