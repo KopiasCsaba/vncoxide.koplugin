@@ -27,6 +27,11 @@ local ServerMenu = require("vnc/servermenu")
 local Settings = require("vnc/settings")
 local ViewerApp = require("vnc/app")
 
+--- The one VNC server of this KOReader run. KOReader instantiates the plugin once per FileManager
+--- and once per ReaderUI, but the server outlives them: a second one would find the port taken by
+--- the first, which would keep running unseen (hooked into UIManager) with no menu to stop it.
+local shared_server = nil
+
 local VNC = WidgetContainer:extend{
     name = "vnc",
     is_doc_only = false,
@@ -52,11 +57,19 @@ function VNC:init()
     -- The VNC server (serving KOReader's own screen). It is off until the user starts it from
     -- the Network menu or the autostart below asks for it; nothing here listens on its own.
     -- `server_for_run()` is the stored settings with the environment overrides merged in for this
-    -- run (the overrides never reach the settings file).
-    self.server = Server.new{
-        settings = self.settings:server_for_run(),
-        name = "KOReader" .. (Device.model and (" on " .. Device.model) or ""),
-    }
+    -- run (the overrides never reach the settings file). One per run (c.f., `shared_server`): a
+    -- later instance takes it over, with its own settings store - the one its menu edits - which
+    -- the server reads on its next start.
+    local first = shared_server == nil
+    if first then
+        shared_server = Server.new{
+            settings = self.settings:server_for_run(),
+            name = "KOReader" .. (Device.model and (" on " .. Device.model) or ""),
+        }
+    else
+        shared_server.settings = self.settings:server_for_run()
+    end
+    self.server = shared_server
 
     -- File manager only (we have nothing to show inside a document).
     if self.ui and self.ui.menu and not self.ui.document then
@@ -64,8 +77,9 @@ function VNC:init()
     end
 
     -- Not started here: at init() the screen and input may not be ready, and starting the server
-    -- hooks UIManager. Defer it to the next UI loop turn, once.
-    self:schedule_autostart()
+    -- hooks UIManager. Defer it to the next UI loop turn, once per run: a later instance (a book
+    -- being opened) must not undo a manual stop.
+    if first then self:schedule_autostart() end
 
     -- The client's own boot start, on the same terms: the flagged profile (if any) is connected
     -- once, from the first UI loop turn, never re-armed. Nothing is dialled at init().

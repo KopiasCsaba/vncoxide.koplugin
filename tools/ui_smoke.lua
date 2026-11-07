@@ -1238,6 +1238,20 @@ check("server_environment_is_not_persisted", function()
         "the file still holds the stored values")
 end)
 
+--- KOReader instantiates the plugin once per FileManager and once per ReaderUI, so a server made per
+--- instance left the first one running (listening, hooked into UIManager) while the menu of the next
+--- instance showed a fresh one as "Not running" - and starting that failed with the port in use.
+--- There is one server per KOReader run, and it follows the settings of the latest instance.
+check("every_plugin_instance_shares_one_server", function()
+    local saved_settings = plugin.server.settings
+    local second = plugin_module:new{ ui = { menu = { registerToMainMenu = function() end } } }
+    local same = second.server == plugin.server
+    local follows = plugin.server.settings == second.settings:server_for_run()
+    plugin.server.settings = saved_settings
+    assert_true(same, "a second instance must use the same server")
+    assert_true(follows, "and the server must follow the latest instance's settings")
+end)
+
 check("server_autostart_starts_once_the_tick_runs", function()
     local socket = require("socket")
     local probe = assert(socket.bind("127.0.0.1", 0))
