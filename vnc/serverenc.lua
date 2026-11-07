@@ -65,7 +65,7 @@ local function map_index(r, g, b)
 end
 
 function Enc.new()
-    return setmetatable({
+    local self = setmetatable({
         -- Never nil: an encoder is always able to convert, and ServerInit announces this format
         -- until the client asks for another one.
         fmt = Enc.DEFAULT_FORMAT,
@@ -83,6 +83,9 @@ function Enc.new()
         cpixel_bytes = nil,          -- which of the 4 bytes of a 32bpp pixel carry the channels
         lut = { ffi.new("uint32_t[256]"), ffi.new("uint32_t[256]"), ffi.new("uint32_t[256]") },
     }, Enc)
+    -- what the format implies (the LUTs, the CPIXEL bytes) has to hold before any SetPixelFormat
+    self:set_pixel_format(Enc.DEFAULT_FORMAT)
+    return self
 end
 
 --- Frees the reusable buffers (the zlib stream and the temp BlitBuffer).

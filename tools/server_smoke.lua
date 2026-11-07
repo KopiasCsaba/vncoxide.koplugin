@@ -402,6 +402,16 @@ check("zrle_cpixels_follow_the_client_byte_order", function()
             (want:gsub(".", function(c) return string.format("%02X", c:byte()) end))))
         enc:free()
     end
+    -- and a client that never sends SetPixelFormat gets the CPIXEL of the format ServerInit announced
+    local enc = ServerEnc.new()
+    enc:set_encodings({ ServerEnc.ZRLE })
+    local _, payload = enc:encode(src, { x = 0, y = 0, w = 1, h = 1 })
+    local z = ZStream.new()
+    local raw = z:inflate(payload:sub(5))
+    z:free()
+    assert_true(raw == string.char(1, 0x12, 0x34, 0x56), "default format: a 3-byte CPIXEL expected, got "
+        .. (raw:gsub(".", function(c) return string.format("%02X", c:byte()) end)))
+    enc:free()
     src:free()
 end)
 
