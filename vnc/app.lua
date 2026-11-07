@@ -579,12 +579,18 @@ function ViewerApp:_input_target()
 end
 
 --- True when a popup of ours (menu, dialog) is above us.
-function ViewerApp:_modal_above()
+--- @tparam[opt] boolean except_key_popup do not count the long-press popup of one of our keyboard's
+--- keys. It is no overlay for `_input_target` (modal: it must keep taps from the remote), but it
+--- does not take the keyboard away either.
+function ViewerApp:_modal_above(except_key_popup)
     local stack = UIManager._window_stack
     for i = #stack, 1, -1 do
         local w = stack[i].widget
         if w == self then return false end
-        if not self:_is_overlay(w) then return true end
+        if not self:_is_overlay(w)
+            and not (except_key_popup and self.vk and w.parent_key and w.parent_key.keyboard == self.vk) then
+            return true
+        end
     end
     return false
 end
@@ -1398,7 +1404,7 @@ end
 --- The keyboard is only up while the framebuffer view owns the screen; a menu or dialog above it
 --- takes the keyboard out of the way, and it comes back when that popup is gone.
 function ViewerApp:_wanted_keyboard_visible()
-    if self:_modal_above() then return false end
+    if self:_modal_above(true) then return false end
     -- the key panel sits where the keyboard would
     if self.key_panel then return false end
     return self:is_keyboard_wanted()

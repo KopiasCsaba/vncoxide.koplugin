@@ -5389,6 +5389,56 @@ check("show_opens_the_viewer_on_a_single_errored_session", function()
     assert_true(ok, tostring(err))
 end)
 
+check("key_popup_leaves_keyboard_and_view_alone", function()
+    -- Long-pressing a letter opens KOReader's VirtualKeyPopup (modal, above us). It belongs to the
+    -- keyboard: it must not hide it, re-fit the view, or let a tap through to the remote.
+    local app, remote, sent = new_app(400, 300)
+    app:set_keyboard_visible(true)
+    UIManager:_checkTasks()
+    UIManager:forceRePaint()
+    assert_true(app.vk_visible, "keyboard up")
+    local key
+    local function walk(t, depth)
+        if key or depth > 6 or type(t) ~= "table" then return end
+        if t.key_chars and t.hold_callback and t.keyboard == app.vk then key = t return end
+        for _, v in ipairs(t) do walk(v, depth + 1) end
+    end
+    walk(app.vk, 0)
+    assert_true(key ~= nil, "found a key with extra characters")
+    local scale, cx, cy, cw, ch = remote:get_scale(), app.canvas.x, app.canvas.y, app.canvas.w, app.canvas.h
+    local areas, fulls = #sent.areas, sent.full_updates
+    key.hold_callback()
+    local popup = top()
+    assert_true(popup and popup.parent_key == key and popup.modal, "the key popup is on top")
+    UIManager:forceRePaint()
+    for _ = 1, 3 do
+        app:_sync_keyboard_later()
+        UIManager:_checkTasks()
+    end
+    assert_true(app.vk_visible, "the popup must not hide the keyboard")
+    assert_true(remote:get_scale() == scale and app.canvas.x == cx and app.canvas.y == cy
+        and app.canvas.w == cw and app.canvas.h == ch, "nor change the view")
+    assert_true(#sent.areas == areas and sent.full_updates == fulls, "nor re-request the remote")
+    assert_true(not app:_input_target(), "the popup, not the viewer, is the input target")
+    -- the toolbar and canvas stay inert, the popup closes on a tap outside, nothing reaches the remote
+    local outside = Geom:new{ x = cx + 10, y = cy + 10 }
+    dispatch_gesture{ ges = "hold", pos = outside }
+    dispatch_gesture{ ges = "pan", pos = outside, relative = { x = 20, y = 0 } }
+    assert_true(#sent.pointer == 0 and top() == popup, "hold and pan outside the popup do nothing")
+    dispatch_gesture{ ges = "tap", pos = outside }
+    assert_true(#sent.pointer == 0, "the tap that closes the popup sends no pointer event")
+    assert_true(top() ~= popup, "a tap outside closes the popup")
+    app:_sync_keyboard_later()
+    UIManager:_checkTasks()
+    assert_true(app.vk_visible and remote:get_scale() == scale and app.canvas.h == ch,
+        "closing it leaves keyboard and view as they were")
+    assert_true(#sent.areas == areas and sent.full_updates == fulls, "and does not re-request the remote")
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = cx + 10, y = cy + 10 } }
+    assert_true(#sent.pointer > 0, "afterwards taps reach the remote again")
+    app:set_keyboard_visible(false)
+    close_viewer(app, remote)
+end)
+
 if failures > 0 then
     print(string.format("%d check(s) failed", failures))
     os.exit(1)
