@@ -19,6 +19,12 @@ all; nothing stays down on the remote between actions. That action is either
   (`ViewerApp:_press_armed`), and sends any ups still pending when the panel or the viewer closes
   in the middle of a drag.
 
+The same module also makes the key strip (`variant = "strip"`): one row above the on-screen keyboard
+with the panel's modifier buttons and a few keys (`STRIP_KEYS`), no title, tabs or combo display.
+Its modifiers arm and are taken exactly like the panel's; the viewer also hands it the keyboard's
+keys while a modifier is armed (`ViewerApp:send_osk_key`). It sits `bottom_offset` pixels above the
+bottom of the screen, i.e. on top of the keyboard.
+
 The last few distinct combos sent from the panel are kept in the `recent_combos` setting; tapping
 one sends exactly that combo again. That counts as the action: the armed modifiers are cleared, not
 added to it.
@@ -123,8 +129,17 @@ local GRID_ROWS = 4
 local KeyPanel = InputContainer:extend{
     name = "VNCKeyPanel",
     app = nil,            -- the @{vnc.app} that owns us (mandatory)
+    variant = nil,        -- nil: the full panel; "strip": the one-row strip above the keyboard
+    bottom_offset = 0,    -- the strip: pixels between its bottom and the bottom of the screen
     modal = false,        -- the viewer's keyboard and dialogs stack above us normally
     covers_fullscreen = false,
+}
+
+--- The strip's keys, after its modifiers.
+KeyPanel.STRIP_KEYS = {
+    { "Esc", X.Escape }, { "Tab", X.Tab },
+    { "←", X.Left }, { "↑", X.Up }, { "↓", X.Down }, { "→", X.Right },
+    { "Del", X.Delete },
 }
 
 --- Height of one row: KOReader's large list item, comfortably tappable on a 300 dpi panel.
@@ -135,7 +150,14 @@ end
 function KeyPanel:init()
     self.mods = {}        -- modifier name -> "armed"
     self.tab = self.tab or 1
-    if Device:hasKeys() then
+    if self.variant == "strip" then
+        -- The keyboard is modal, so it stays above the strip on the window stack and is the one
+        -- widget UIManager hands input first; widgets below it get what it leaves only when they
+        -- are always active (as the viewer is).
+        self.is_always_active = true
+    end
+    -- (the strip leaves Back and Menu to the viewer: it is part of the keyboard, not a panel)
+    if Device:hasKeys() and self.variant ~= "strip" then
         self.key_events = {
             Close = { { Device.input.group.Back } },
             CloseMenuKey = { { "Menu" }, event = "Close" },
@@ -223,6 +245,11 @@ function KeyPanel:tap_modifier(name)
     self:_update()
 end
 
+--- Whether any modifier is armed.
+function KeyPanel:has_armed()
+    return next(self.mods) ~= nil
+end
+
 --- Hands the armed modifiers to an action on the canvas, and disarms them.
 --- @treturn {number,...} their keysyms, in the order they are to be pressed
 function KeyPanel:take_armed()
@@ -254,6 +281,7 @@ end
 --- The viewer's drag or long press began or ended: "Release all" follows (repainted only when
 --- that changes whether it has anything to do).
 function KeyPanel:pointer_action_changed()
+    if self.variant == "strip" then return end -- no "Release all" on the strip
     if self:_anything_to_release() ~= self._release_enabled then self:_update() end
 end
 
@@ -353,9 +381,8 @@ local function unit_width(width, units, count)
     return unit, avail - unit * units
 end
 
-function KeyPanel:_modifier_row(width, row_height)
-    local unit, rest = unit_width(width, 6, 5)
-    local entries = {}
+--- The modifier buttons (Ctrl, Shift, Alt, Super), `unit` wide each, appended to `entries`.
+function KeyPanel:_modifier_entries(entries, unit)
     for _i, m in ipairs(Keysyms.modifiers) do
         local name = m.name
         entries[#entries + 1] = {
@@ -367,6 +394,12 @@ function KeyPanel:_modifier_row(width, row_height)
             callback = function() self:tap_modifier(name) end,
         }
     end
+    return entries
+end
+
+function KeyPanel:_modifier_row(width, row_height)
+    local unit, rest = unit_width(width, 6, 5)
+    local entries = self:_modifier_entries({}, unit)
     entries[#entries + 1] = {
         id = "combo",
         text = self:combo_display_text(),
@@ -481,11 +514,55 @@ function KeyPanel:_bottom_row(width, row_height)
     return self:_button_row(entries, row_height)
 end
 
+--- The strip's single row: the modifiers, then `STRIP_KEYS`; the last key absorbs the rounding.
+function KeyPanel:_strip_row(width, row_height)
+    local count = #Keysyms.modifiers + #KeyPanel.STRIP_KEYS
+    local unit, rest = unit_width(width, count, count)
+    local entries = self:_modifier_entries({}, unit)
+    for i, key in ipairs(KeyPanel.STRIP_KEYS) do
+        local label, keysym = key[1], key[2]
+        entries[#entries + 1] = {
+            id = "key:" .. label,
+            text = label,
+            width = i < #KeyPanel.STRIP_KEYS and unit or unit + rest,
+            callback = function() self:send_key(label, keysym) end,
+        }
+    end
+    return self:_button_row(entries, row_height)
+end
+
+--- (Re)builds the strip: a grey line on top of one row, `row_height()` tall in all, ending
+--- `bottom_offset` above the bottom of the screen.
+function KeyPanel:_build_strip(screen)
+    local line = Size.line.medium
+    local row_h = KeyPanel.row_height()
+    local frame = FrameContainer:new{
+        bordersize = 0,
+        padding = 0,
+        margin = 0,
+        radius = 0,
+        background = Blitbuffer.COLOR_WHITE,
+        VerticalGroup:new{
+            align = "center",
+            separator(screen.w, line),
+            self:_strip_row(screen.w, row_h - line),
+        },
+    }
+    local h = frame:getSize().h
+    local bottom = screen.h - self.bottom_offset
+    self[1] = BottomContainer:new{
+        dimen = Geom:new{ w = screen.w, h = bottom },
+        frame,
+    }
+    self.dimen = Geom:new{ x = 0, y = bottom - h, w = screen.w, h = h }
+end
+
 --- (Re)builds the panel for the current state and screen size.
 function KeyPanel:_build()
     if self[1] then self[1]:free() end
     self.button_by_id = {}
     local screen = Screen:getSize()
+    if self.variant == "strip" then return self:_build_strip(screen) end
     local border = Size.border.window
     local width = screen.w - 2 * border
     local row_h = KeyPanel.row_height()
@@ -546,6 +623,13 @@ end
 
 --- Re-lays the panel out for the current screen size (after a rotation).
 function KeyPanel:relayout()
+    self:_build()
+end
+
+--- The strip: moves it to end `px` above the bottom of the screen (the keyboard's new height),
+--- re-laid out for the current screen size.
+function KeyPanel:set_bottom_offset(px)
+    self.bottom_offset = px
     self:_build()
 end
 
@@ -613,6 +697,7 @@ end
 
 --- ✕, Back or the Menu key: the viewer closes us.
 function KeyPanel:onClose(_args, key)
+    if self.variant == "strip" then return nil end -- it goes with the keyboard
     self.app:close_key_panel(key and key.key)
     return true
 end

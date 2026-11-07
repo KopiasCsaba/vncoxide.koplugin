@@ -68,7 +68,8 @@ function ViewerApp:init()
     self._needs_flash = false        -- the next remote frame must be flashed, not blitted region by region
     self._keyboard_sync_pending = false
     self._keyboard_watch_pending = false
-    self.vk = Keyboard.new(self.session, function() self:on_keyboard_height_changed() end)
+    self.vk = Keyboard.new(self.session, function() self:on_keyboard_height_changed() end,
+        function(keysym) self:send_osk_key(keysym) end)
     self._drag_active = nil
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
@@ -231,11 +232,14 @@ function ViewerApp:getSize()
     return self.dimen
 end
 
---- Height of what covers the bottom of the screen: the on-screen keyboard while it is visible,
---- else the "Send keys" panel while it is open (the keyboard makes room for it), else 0.
+--- Height of what covers the bottom of the screen: the on-screen keyboard (with the key strip on
+--- top of it) while it is visible, else the "Send keys" panel while it is open (the keyboard makes
+--- room for it), else 0.
 function ViewerApp:_bottom_cover_height()
     if self.vk and self.vk_visible then
-        return self.vk:getSize().h or 0
+        local h = self.vk:getSize().h or 0
+        if self.key_strip then h = h + self.key_strip.dimen.h end
+        return h
     end
     if self.key_panel then return self.key_panel.dimen.h end
     return 0
@@ -337,6 +341,11 @@ function ViewerApp:onScreenResize(dimen)
     self.toolbar:relayout()
     self:_reflow()
     self:_refresh_keyboard()
+    -- the strip sits on the keyboard, re-laid out just above
+    if self.key_strip then
+        self:_place_key_strip()
+        self:_reflow()
+    end
     self:updateTouchZonesOnScreenResize(self.dimen)
     -- new geometry: the whole canvas changed, and nothing else here would refresh it
     self:_wholesale_change()
@@ -500,6 +509,7 @@ function ViewerApp:onCloseWidget()
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
     self:_drop_key_panel()
+    self:_drop_key_strip()
     self:_end_pointer_action()
     -- a click still waiting for a possible second tap is not worth sending any more
     self:_drop_deferred_click()
@@ -531,9 +541,9 @@ end
 -- ---------------------------------------------------------------- input plumbing
 
 --- Widgets above us that are part of the viewer rather than popups over it: the on-screen
---- keyboard, the "Send keys" panel, and toasts.
+--- keyboard, the key strip on it, the "Send keys" panel, and toasts.
 function ViewerApp:_is_overlay(w)
-    return w.toast or w == self.vk or w == self.key_panel
+    return w.toast or w == self.vk or w == self.key_strip or w == self.key_panel
 end
 
 --[[--
@@ -594,15 +604,21 @@ function ViewerApp:_end_stale_pointer_action()
     end
 end
 
+--- Where modifiers are armed: the key strip or the "Send keys" panel (never both up), or nil.
+function ViewerApp:_armed_source()
+    return self.key_strip or self.key_panel
+end
+
 --[[--
-A canvas action (tap, long press, drag) begins: the modifiers armed on the "Send keys" panel go
-down now, before the pointer press, and are disarmed there - they are for this one action only.
-`_release_action_mods` lets them go after the pointer release.
+A canvas action (tap, long press, drag) begins: the modifiers armed on the key strip or the "Send
+keys" panel go down now, before the pointer press, and are disarmed there - they are for this one
+action only. `_release_action_mods` lets them go after the pointer release.
 ]]
 function ViewerApp:_press_armed()
     self:_release_action_mods()
-    if not self.key_panel then return end
-    local keysyms = self.key_panel:take_armed()
+    local source = self:_armed_source()
+    if not source then return end
+    local keysyms = source:take_armed()
     if #keysyms == 0 then return end
     for _i, keysym in ipairs(keysyms) do
         self:send_key(keysym, true)
@@ -1194,6 +1210,18 @@ end
 --- Types `text` on the remote, one key down/up per character ("\n" becomes Return). Characters
 --- with no keysym are skipped.
 --- @treturn number how many were skipped
+--- A key from the on-screen keyboard: with the modifiers armed on the key strip around it (and
+--- them disarmed), like a strip key; else just its down and up.
+function ViewerApp:send_osk_key(keysym)
+    local strip = self.key_strip
+    if strip and strip:has_armed() then
+        strip:send_key(Keysyms.name_for_keysym(keysym) or "", keysym)
+        return
+    end
+    self:send_key(keysym, true)
+    self:send_key(keysym, false)
+end
+
 function ViewerApp:send_text(text)
     local skipped = 0
     for _, ch in ipairs(Util.split_chars(text)) do
@@ -1248,7 +1276,9 @@ function ViewerApp:evaluate_keyboard()
     if want then
         self:_end_stale_pointer_action()
         self.vk:showKeyboard()
+        self:_show_key_strip()
     else
+        self:_drop_key_strip()
         self.vk:hideKeyboard()
     end
     -- The keyboard decides what "fit (with keyboard)" fits into, and whether a view that fits
@@ -1268,6 +1298,12 @@ end
 --- Flips the keyboard, and keeps the "always visible" setting in sync: that setting wins over
 --- the wish, so asking for the keyboard to go away while it is on would silently do nothing.
 function ViewerApp:toggle_keyboard()
+    -- the panel sits where the keyboard goes: closing it is the way back to the keyboard
+    if self.key_panel then
+        self.vk_wanted = true
+        self:close_key_panel()
+        return
+    end
     local want = not self:is_keyboard_wanted()
     if not want and self.settings.keyboard_always_visible then
         self.settings.keyboard_always_visible = false
@@ -1319,6 +1355,7 @@ end
 function ViewerApp:on_keyboard_height_changed()
     -- A different layout (or a rotation) changes how much room the keyboard takes, which is what
     -- "fit (with keyboard)" fits into and whether a view fits above it.
+    if self.key_strip then self:_place_key_strip() end
     self:_fit_zoom_mode()
     self:update_canvas()
     self:_wholesale_change()
@@ -1445,6 +1482,32 @@ function ViewerApp:_drop_key_panel()
     if not panel then return end
     self.key_panel = nil
     UIManager:close(panel)
+end
+
+--- Shows the key strip on top of the keyboard (with it, in `evaluate_keyboard`).
+function ViewerApp:_show_key_strip()
+    if self.key_strip then return end
+    self.key_strip = require("vnc/keypanel"):new{
+        app = self,
+        variant = "strip",
+        bottom_offset = self.vk:getSize().h or 0,
+    }
+    UIManager:show(self.key_strip, "ui", self.key_strip.dimen)
+end
+
+--- Takes the key strip down (with the keyboard); whatever was armed on it is dropped.
+function ViewerApp:_drop_key_strip()
+    local strip = self.key_strip
+    if not strip then return end
+    self.key_strip = nil
+    UIManager:close(strip, "ui", strip.dimen)
+end
+
+--- Re-lays the strip out right above the keyboard's current height, and repaints it there.
+function ViewerApp:_place_key_strip()
+    local strip = self.key_strip
+    strip:set_bottom_offset(self.vk:getSize().h or 0)
+    UIManager:setDirty(strip, "ui", strip.dimen)
 end
 
 --- The panel came or went: the keyboard follows (it makes room for the panel), and the view is

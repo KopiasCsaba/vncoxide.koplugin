@@ -66,13 +66,8 @@ function Keyboard.restore_layout()
     saved_layout = nil
 end
 
-local function press(session, keysym)
-    session:send_key(keysym, true)
-    session:send_key(keysym, false)
-end
-
---- Builds the inputbox stub the keyboard talks to.
-local function make_stub(session, on_height_changed)
+--- Builds the inputbox stub the keyboard talks to. Each key goes to `send(keysym)`.
+local function make_stub(send, on_height_changed)
     local stub = {
         parent = { onKeyboardHeightChanged = on_height_changed },
     }
@@ -81,18 +76,18 @@ local function make_stub(session, on_height_changed)
     function stub:addChars(chars)
         for _, ch in ipairs(Util.split_chars(chars)) do
             local keysym = Keysyms.from_char(ch)
-            if keysym then press(session, keysym) end
+            if keysym then send(keysym) end
         end
     end
-    function stub:delChar() press(session, special.Backspace) end
-    function stub:delWord() press(session, special.Backspace) end
+    function stub:delChar() send(special.Backspace) end
+    function stub:delWord() send(special.Backspace) end
     function stub:delToStartOfLine() end -- no equivalent single RFB event
-    function stub:leftChar() press(session, special.Left) end
-    function stub:rightChar() press(session, special.Right) end
-    function stub:goToStartOfLine() press(session, special.Home) end
-    function stub:goToEndOfLine() press(session, special.End) end
-    function stub:upLine() press(session, special.Up) end
-    function stub:downLine() press(session, special.Down) end
+    function stub:leftChar() send(special.Left) end
+    function stub:rightChar() send(special.Right) end
+    function stub:goToStartOfLine() send(special.Home) end
+    function stub:goToEndOfLine() send(special.End) end
+    function stub:upLine() send(special.Up) end
+    function stub:downLine() send(special.Down) end
     function stub:scrollUp() end
     function stub:scrollDown() end
 
@@ -104,11 +99,17 @@ Creates the on-screen keyboard.
 
 --- @tparam table session the @{vnc.session} to send key events to
 --- @tparam function on_height_changed called when the keyboard height changes
+--- @tparam[opt] function press called with the keysym of each key instead of sending its down and
+--- up to the session directly
 --- @treturn table a ready-to-show VirtualKeyboard (`UIManager:show(vk)`)
 ]]
-function Keyboard.new(session, on_height_changed)
+function Keyboard.new(session, on_height_changed, press)
     local VirtualKeyboard = require("ui/widget/virtualkeyboard")
-    local stub = make_stub(session, on_height_changed)
+    local send = press or function(keysym)
+        session:send_key(keysym, true)
+        session:send_key(keysym, false)
+    end
+    local stub = make_stub(send, on_height_changed)
     pin_latin_layout()
     local ok, vk = pcall(VirtualKeyboard.new, VirtualKeyboard, { inputbox = stub })
     if not ok then

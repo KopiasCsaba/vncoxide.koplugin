@@ -714,8 +714,9 @@ check("zoom_modes_follow_the_keyboard", function()
         string.format("\"fit screen\" fits the screen: %s", remote:get_scale()))
 
     app:set_keyboard_visible(true)
-    local kbd_h = app.vk:getSize().h
-    assert_true(kbd_h > 0, "the keyboard must have a height")
+    assert_true(app.vk:getSize().h > 0, "the keyboard must have a height")
+    -- what the keyboard covers, with the key strip on top of it
+    local kbd_h = app.vk:getSize().h + app.key_strip.dimen.h
 
     app:zoom_to("fit_with_keyboard")
     local fit_kbd = math.min(size.w / 400, (size.h - kbd_h) / 300)
@@ -745,8 +746,9 @@ check("a_view_that_fits_goes_above_the_keyboard", function()
     local size = Screen:getSize()
 
     app:set_keyboard_visible(true)
-    local kbd_h = app.vk:getSize().h
-    assert_true(kbd_h > 0, "the keyboard must have a height")
+    assert_true(app.vk:getSize().h > 0, "the keyboard must have a height")
+    -- what the keyboard covers, with the key strip on top of it
+    local kbd_h = app.vk:getSize().h + app.key_strip.dimen.h
 
     -- 50% of the 400x300 plane is 200x150: it fits in the space the keyboard leaves
     app:zoom_to(0.5)
@@ -4061,6 +4063,135 @@ check("key_panel_follows_a_rotation", function()
     assert_true(app.key_panel == panel, "the panel stays open")
     assert_true(panel.dimen.w == size.w and panel.dimen.y + panel.dimen.h == size.h,
         "and is re-laid out for the new orientation")
+    app:set_rotation_mode(start)
+    close_viewer(app, remote)
+end)
+
+-- ---------------------------------------------------------------- key strip
+
+--- The strip's bottom edge: right on top of the on-screen keyboard.
+local function strip_bottom(strip) return strip.dimen.y + strip.dimen.h end
+
+check("key_strip_comes_and_goes_with_the_keyboard", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    -- the strip's own show/close refreshes: partial "ui" ones only
+    local modes = {}
+    local real_show, real_close = UIManager.show, UIManager.close
+    UIManager.show = function(self_, w, mode, ...)
+        if w and w.variant == "strip" then modes[#modes + 1] = { "show", mode, (...) } end
+        return real_show(self_, w, mode, ...)
+    end
+    UIManager.close = function(self_, w, mode, ...)
+        if w and w.variant == "strip" then modes[#modes + 1] = { "close", mode, (...) } end
+        return real_close(self_, w, mode, ...)
+    end
+    local ok, err = pcall(function()
+        tap_toolbar(app, "keyboard")
+        local strip = app.key_strip
+        assert_true(app.vk_visible and strip ~= nil, "the keyboard comes with the strip")
+        assert_true(count(function(w) return w == strip end) == 1, "the strip is on the stack once")
+        assert_true(strip.dimen.w == Screen:getWidth(), "full width")
+        assert_true(strip.dimen.h == require("vnc/keypanel").row_height(), "one row tall: " .. strip.dimen.h)
+        assert_true(strip_bottom(strip) == Screen:getHeight() - app.vk:getSize().h,
+            "right above the keyboard: " .. strip_bottom(strip))
+        assert_true(strip.title_bar == nil and strip.button_by_id["combo"] == nil, "no title bar, no combo display")
+        for _, id in ipairs({ "mod:Ctrl", "mod:Alt", "mod:Shift", "mod:Super", "key:Esc", "key:Tab",
+                              "key:←", "key:↑", "key:↓", "key:→", "key:Del" }) do
+            assert_true(strip.button_by_id[id] ~= nil, "strip button " .. id)
+        end
+        assert_true(not app:_modal_above() and app:_input_target(), "the strip does not count as a popup")
+        tap_toolbar(app, "keyboard")
+        assert_true(not app.vk_visible and app.key_strip == nil, "both go away")
+        assert_true(count(function(w) return w == strip end) == 0, "the strip left the stack")
+    end)
+    UIManager.show, UIManager.close = real_show, real_close
+    assert_true(ok, tostring(err))
+    assert_true(#modes == 2, "one show and one close of the strip, got " .. #modes)
+    for _, m in ipairs(modes) do
+        assert_true(m[2] == "ui" and m[3] ~= nil, m[1] .. ": a partial ui refresh, got " .. tostring(m[2]))
+    end
+    close_viewer(app, remote)
+end)
+
+check("key_strip_modifiers_apply_to_osk_strip_and_canvas", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "keyboard")
+    app:set_toolbar_visible(false)
+    local strip = app.key_strip
+    local wire = wire_log(app)
+    -- an on-screen keyboard key
+    app.vk.inputbox:addChars("c")
+    assert_true(wire() == "+0x63,-0x63", "a plain OSK key")
+    touch(strip, "mod:Ctrl")
+    assert_true(strip:modifier_state("Ctrl") == "armed" and wire() == "", "a tap arms Ctrl, sending nothing")
+    app.vk.inputbox:addChars("c")
+    local got = wire()
+    assert_true(got == "+0xFFE3,+0x63,-0x63,-0xFFE3", "Ctrl+c from the keyboard, got " .. got)
+    assert_true(strip:modifier_state("Ctrl") == nil, "disarmed after one key")
+    -- a strip key
+    touch(strip, "mod:Shift")
+    touch(strip, "key:Tab")
+    got = wire()
+    assert_true(got == "+0xFFE1,+0xFF09,-0xFF09,-0xFFE1", "Shift+Tab from the strip, got " .. got)
+    touch(strip, "key:Esc")
+    got = wire()
+    assert_true(got == "+0xFF1B,-0xFF1B", "the next strip key goes alone, got " .. got)
+    -- a canvas tap
+    touch(strip, "mod:Alt")
+    wire()
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 20, y = 20 } }
+    got = wire()
+    assert_true(got == "+0xFFE9,p0,p1,p0,-0xFFE9", "Alt+click, got " .. got)
+    assert_true(strip:modifier_state("Alt") == nil, "Alt is disarmed after the click")
+    -- the strip itself never clicks the remote
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 1, y = strip.dimen.y + 1 } }
+    got = wire()
+    assert_true(not got:find("p"), "the strip's area never clicks the remote, got " .. got)
+    close_viewer(app, remote)
+end)
+
+check("key_strip_and_panel_are_exclusive", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "keyboard")
+    assert_true(app.key_strip ~= nil, "strip up")
+    hold_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel ~= nil and app.key_strip == nil and not app.vk_visible,
+        "the panel replaces the keyboard and the strip")
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel == nil and app.key_strip ~= nil and app.vk_visible,
+        "the keyboard tap closes the panel and brings keyboard and strip back")
+    close_viewer(app, remote)
+end)
+
+check("fit_with_keyboard_accounts_for_the_strip", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    app:zoom_to("fit_with_keyboard")
+    tap_toolbar(app, "keyboard")
+    local strip = app.key_strip
+    local want = Screen:getHeight() - app.vk:getSize().h - strip.dimen.h
+    assert_true(remote.ch == want, "the view fits above the strip: " .. tostring(remote.ch) .. " vs " .. want)
+    close_viewer(app, remote)
+end)
+
+check("key_strip_follows_rotation_and_layout_height", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "keyboard")
+    local strip = app.key_strip
+    local start = Screen:getRotationMode()
+    app:set_rotation_mode((start + 1) % 4)
+    local size = Screen:getSize()
+    assert_true(app.key_strip == strip, "the strip stays")
+    assert_true(strip.dimen.w == size.w and strip_bottom(strip) == size.h - app.vk:getSize().h,
+        "re-laid out for the new orientation, on top of the keyboard")
+    -- a keyboard layout of a different height
+    local vk_h = app.vk:getSize().h + 40
+    app.vk.getSize = function(self_) return Geom:new{ w = size.w, h = vk_h } end
+    app:on_keyboard_height_changed()
+    assert_true(strip_bottom(strip) == size.h - vk_h, "the strip moves to stay on top of the keyboard")
+    app.vk.getSize = nil
     app:set_rotation_mode(start)
     close_viewer(app, remote)
 end)
