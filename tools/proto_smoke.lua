@@ -1912,6 +1912,66 @@ local function main()
         return true
     end)
 
+    -- Lengths and sizes on the wire are the server's to choose. The client must not allocate on
+    -- their say-so: a desktop name, a reason or a cut text over 1 MiB fails the connection, and so
+    -- does a framebuffer that is empty or would take more than 256 MiB as a plane - with an error
+    -- that says so, before anything is read or allocated.
+    do
+        local Util = require("vnc/util")
+        --- Drives a fresh Protocol over `script` (the server's bytes); returns the error it stopped
+        --- with, what it was waiting for when the script ran out, and the sizes it reported.
+        local function run_script(script, callbacks)
+            local proto = Protocol.new{ io = { write = function() end }, host = "test", port = 0,
+                callbacks = callbacks, get_plane = function() return nil end }
+            local pos, kind, arg = 1, proto:step(nil)
+            while kind == "need" do
+                if pos + arg - 1 > #script then return nil, arg end
+                local data = script:sub(pos, pos + arg - 1)
+                pos = pos + arg
+                kind, arg = proto:step(data)
+            end
+            return kind == nil and tostring(arg) or nil, nil
+        end
+        local function server_init(w, h, name_len, name)
+            return Util.writer():raw("RFB 003.008\n"):u8(1):u8(1):u32(0):u16(w):u16(h)
+                :raw(string.rep("\0", 16)):u32(name_len):raw(name or ""):tostring()
+        end
+        local BIG = 0x7FFFFFFF
+        local cases = {
+            { "a huge desktop name", server_init(4, 4, BIG), "name" },
+            { "a zero-width framebuffer", server_init(0, 4, 1, "x"), "framebuffer" },
+            { "a framebuffer over the cap", server_init(65535, 65535, 1, "x"), "framebuffer" },
+            { "a huge refusal reason", Util.writer():raw("RFB 003.008\n"):u8(0):u32(BIG):tostring(), "reason" },
+            { "a huge 3.3 refusal reason", Util.writer():raw("RFB 003.003\n"):u32(0):u32(BIG):tostring(), "reason" },
+            { "a huge failure reason", Util.writer():raw("RFB 003.008\n"):u8(1):u8(1):u32(1):u32(BIG):tostring(), "reason" },
+            { "a huge cut text", server_init(4, 4, 1, "x") .. Util.writer():u8(3):raw("\0\0\0"):u32(BIG):tostring(), "cut text" },
+            { "a DesktopSize over the cap", server_init(4, 4, 1, "x") .. Util.writer():u8(0):u8(0):u16(1)
+                :u16(0):u16(0):u16(65535):u16(65535):u32(-223 % 4294967296):tostring(), "framebuffer" },
+            { "an empty DesktopSize", server_init(4, 4, 1, "x") .. Util.writer():u8(0):u8(0):u16(1)
+                :u16(0):u16(0):u16(0):u16(8):u32(-223 % 4294967296):tostring(), "framebuffer" },
+        }
+        for _, case in ipairs(cases) do
+            check("protocol_rejects_" .. case[1]:gsub("^an? ", ""):gsub("[^%w]+", "_"), function()
+                local resized
+                local err, waiting = run_script(case[2], { on_desktop_resize = function(w, h) resized = { w, h } end })
+                if resized then return nil, "the resize was reported: " .. resized[1] .. "x" .. resized[2] end
+                if not err then return nil, "not rejected (waiting for " .. tostring(waiting) .. " bytes)" end
+                if not err:find(case[3], 1, true) then return nil, "unclear error: " .. err end
+                return true
+            end)
+        end
+        check("protocol_accepts_a_sane_handshake_and_cut_text", function()
+            local got, size
+            local err, waiting = run_script(server_init(640, 480, 4, "test")
+                .. Util.writer():u8(3):raw("\0\0\0"):u32(5):raw("hello"):tostring(),
+                { on_connected = function(_, w, h) size = { w, h } end, on_cut_text = function(t) got = t end })
+            if err then return nil, err end
+            if not (size and size[1] == 640 and size[2] == 480) then return nil, "no on_connected" end
+            if got ~= "hello" then return nil, "cut text not delivered" end
+            return waiting == 1, "should be waiting for the next message"
+        end)
+    end
+
     -- NetworkMgr calls back once Wi-Fi is up - possibly long after the attempt it was armed for
     -- has been given up (the Wi-Fi watchdog failed it, or the user disconnected) or replaced by a
     -- newer one. Such a late callback must not dial: it would open a socket nothing owns, or put

@@ -21,6 +21,35 @@ local logger = require("logger")
 local Protocol = {}
 Protocol.__index = Protocol
 
+--- Longest string the server may send (desktop name, failure reason, cut text). Its length is the
+--- server's to choose and the string is read whole, so a longer one fails the connection instead
+--- of having the device allocate whatever was claimed.
+Protocol.MAX_STRING = 1024 * 1024
+--- Largest framebuffer accepted, in bytes of the 3-byte-per-pixel plane it becomes (c.f.,
+--- @{vnc.framebuffer}): 256 MiB is far beyond any real desktop and still an allocation a device
+--- can refuse cleanly; 65535x65535 would be 12 GiB.
+Protocol.MAX_FRAMEBUFFER_BYTES = 256 * 1024 * 1024
+
+--- Reads a u32-length-prefixed string, failing with `what` in the message when it is too long.
+local function read_string(r, what)
+    local len = r:u32()
+    if len > Protocol.MAX_STRING then
+        error(string.format("server sent a %s of %d bytes (more than %d)", what, len, Protocol.MAX_STRING), 0)
+    end
+    return r:bytes(len)
+end
+
+--- Fails unless `w` x `h` is a framebuffer we can hold.
+local function check_framebuffer(w, h)
+    if w == 0 or h == 0 then
+        error(string.format("server announced an empty %dx%d framebuffer", w, h), 0)
+    end
+    if w * h * 3 > Protocol.MAX_FRAMEBUFFER_BYTES then
+        error(string.format("server announced a %dx%d framebuffer, more than %d MiB", w, h,
+            Protocol.MAX_FRAMEBUFFER_BYTES / (1024 * 1024)), 0)
+    end
+end
+
 --[[--
 Creates a client.
 --- @tparam table opts
@@ -124,8 +153,7 @@ function Protocol:_handshake()
     if self.version == 33 then
         sec_type = r:u32()
         if sec_type == 0 then
-            local len = r:u32()
-            error(string.format("server refused connection: %s", r:bytes(len)), 0)
+            error(string.format("server refused connection: %s", read_string(r, "reason")), 0)
         end
         if sec_type ~= 1 and sec_type ~= 2 then
             error(string.format("unsupported security type %d", sec_type), 0)
@@ -133,8 +161,7 @@ function Protocol:_handshake()
     else
         local count = r:u8()
         if count == 0 then
-            local len = r:u32()
-            error(string.format("server refused connection: %s", r:bytes(len)), 0)
+            error(string.format("server refused connection: %s", read_string(r, "reason")), 0)
         end
         local offered = {}
         for i = 1, count do offered[i] = r:u8() end
@@ -178,8 +205,7 @@ function Protocol:_handshake()
         if status ~= 0 then
             local reason = ""
             if self.version >= 38 then
-                local len = r:u32()
-                reason = r:bytes(len)
+                reason = read_string(r, "reason")
             end
             local what = sec_type == 2 and "VNC authentication failed" or "security handshake failed"
             error(reason ~= "" and (what .. ": " .. reason) or what, 0)
@@ -190,9 +216,9 @@ function Protocol:_handshake()
     self.io.write(string.char(self.shared and 1 or 0))
     self.width = r:u16()
     self.height = r:u16()
+    check_framebuffer(self.width, self.height)
     self.server_pixel_format = r:bytes(16)
-    local name_len = r:u32()
-    self.server_name = r:bytes(name_len)
+    self.server_name = read_string(r, "desktop name")
     self:_fire("on_connected", self.server_name, self.width, self.height)
 end
 
@@ -245,8 +271,7 @@ function Protocol:_message_loop()
             self:_fire("on_bell")
         elseif t == 3 then -- ServerCutText
             r:bytes(3)
-            local len = r:u32()
-            local text = r:bytes(len)
+            local text = read_string(r, "cut text")
             self:_fire("on_cut_text", text)
         else
             error(string.format("unknown server message %d", t), 0)
@@ -260,6 +285,7 @@ function Protocol:_rect(r)
     local enc = r:s32()
 
     if enc == Encodings.DESKTOP_SIZE then
+        check_framebuffer(w, h)
         self.width, self.height = w, h
         self:_fire("on_desktop_resize", w, h)
         return
