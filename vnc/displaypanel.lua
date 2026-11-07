@@ -13,6 +13,7 @@ local _ = require("gettext")
 local ButtonDialog = require("ui/widget/buttondialog")
 local Device = require("device")
 local Geom = require("ui/geometry")
+local Settings = require("vnc/settings")
 local UIManager = require("ui/uimanager")
 
 local Screen = Device.screen
@@ -121,6 +122,24 @@ function DisplayPanel.open(app)
         text = _("Use current orientation as default"),
         callback = stays(function() settings.orientation = Screen:getRotationMode() end),
     }}
+
+    -- Quality: the mark follows the stored profile (the live one only differs during a preset attempt)
+    local session_profile = app.session:get_profile()
+    local stored = session_profile and plugin_settings:get_profile(session_profile.name)
+    if stored then
+        local current = Settings.preset_of(stored)
+        local quality_buttons = {}
+        for _i, preset in ipairs(Settings.QUALITY_PRESETS) do
+            quality_buttons[#quality_buttons + 1] = {
+                text = mark(_(preset.label), current == preset.id),
+                callback = function() app:apply_quality_preset(preset.id) end,
+            }
+        end
+        buttons[#buttons + 1] = quality_buttons
+        if current == "custom" then
+            buttons[#buttons + 1] = {{ text = "✓ " .. _("Custom"), enabled = false }}
+        end
+    end
 
     local speed_buttons = {}
     for _i, speed in ipairs(SPEEDS) do

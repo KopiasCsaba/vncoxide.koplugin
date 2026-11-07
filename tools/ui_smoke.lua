@@ -105,6 +105,15 @@ local function find_button(widget, text)
     end
     error(string.format("no %q button in %s", text, stack_desc()), 2)
 end
+local function find_last_button(widget, text)
+    local found
+    for _, row in ipairs(widget.buttons or {}) do
+        for _, btn in ipairs(row) do
+            if btn.text == text then found = btn end
+        end
+    end
+    return found or error(string.format("no %q button in %s", text, stack_desc()), 2)
+end
 local function find_item(item_table, text)
     for _, item in ipairs(item_table or {}) do
         if item.text == text then return item end
@@ -592,13 +601,17 @@ local function new_app(plane_w, plane_h, opts)
     local remote = Remote.new(plane_w or 400, plane_h or 300)
     local sent = { pointer = {}, key = {}, input = 0, areas = {}, profile_updates = {}, full_updates = 0,
                    connects = {}, attaches = 0, hangups = 0 }
-    local profile = { name = "test", pointer_mode = opts and opts.mode or "touch" }
+    local profile = { name = "test", pointer_mode = opts and opts.mode or "touch",
+                      color_depth = 24, enable_tight = false, jpeg_quality = false, compress_level = false }
+    local stored = {}   -- what the settings file holds; `profile` is the session's live one
+    for k, v in pairs(profile) do stored[k] = v end
     local app = ViewerApp:new{
         plugin = {
             settings = {
                 data = { settings = { orientation = 0, keyboard_always_visible = false,
                                       zoom_mode = "fit" } },
                 profiles = function() return {} end,
+                get_profile = function() return stored end,
                 flush = function() end,
             },
             leave_app = function() end,
@@ -606,12 +619,12 @@ local function new_app(plane_w, plane_h, opts)
             connect_profile = function() end,
             update_profile_fields = function(_, name, fields)
                 sent.profile_updates[#sent.profile_updates + 1] = { name = name, fields = fields }
-                for k, v in pairs(fields) do profile[k] = v end
+                for k, v in pairs(fields) do stored[k] = v; profile[k] = v end
                 return true
             end,
         },
         session = {
-            set_profile = function() end,
+            set_profile = function(_, p) profile = p end,
             get_remote = function() return remote end,
             send_pointer = function(_, x, y, mask)
                 sent.pointer[#sent.pointer + 1] = { x = x, y = y, mask = mask }
@@ -1727,9 +1740,9 @@ check("display_panel_marks_and_applies_choices", function()
     find_button(panel, "200%").callback()
     assert_true(app.settings.zoom_mode == 2 and app.display_panel ~= nil, "applied, panel still open")
     find_button(app.display_panel, "✓ 200%")
-    find_button(app.display_panel, "Fast").callback()
+    find_last_button(app.display_panel, "Fast").callback()   -- (the quality row has a Fast too)
     assert_true(app.settings.pointer_speed == "fast")
-    find_button(app.display_panel, "✓ Fast")
+    find_last_button(app.display_panel, "✓ Fast")
     app:toggle_display_panel()
     assert_true(app.display_panel == nil and count(function(w) return w == panel end) == 0)
     app:onCloseWidget()
@@ -4755,6 +4768,68 @@ check("reconnect_close_and_back_disconnect_without_confirm", function()
         assert_true(count(function(w) return w.ok_callback end) == 0, how .. ": no confirmation: " .. stack_desc())
         close_viewer(app, remote)
     end
+end)
+
+check("quality_presets_map_and_match", function()
+    local S = require("vnc/settings")
+    local ids = {}
+    for i, p in ipairs(S.QUALITY_PRESETS) do ids[i] = p.id end
+    assert_true(table.concat(ids, ",") == "best,balanced,fast", "order: " .. table.concat(ids, ","))
+    for _, p in ipairs(S.QUALITY_PRESETS) do
+        assert_true(S.preset_of(p) == p.id, p.id .. " matches itself")
+    end
+    assert_true(S.preset_of{ color_depth = 24, enable_tight = false, jpeg_quality = false,
+                             compress_level = false } == "best")
+    assert_true(S.preset_of{ color_depth = 16, enable_tight = true, jpeg_quality = 5,
+                             compress_level = 6 } == "custom")
+end)
+
+check("quality_preset_saves_only_after_a_successful_reconnect", function()
+    local app, remote, sent = new_app()
+    local r = app.reconnect
+    app.plugin.show_connection_list = function() end
+    local function pick_fast()
+        local panel = app:open_display_panel()
+        find_button(panel, "✓ Best")
+        find_button(panel, "Fast").callback()   -- (the first Fast: the quality row)
+    end
+    pick_fast()
+    assert_true(sent.hangups == 1 and sent.keep_wifi == true, "hung up, Wi-Fi kept on")
+    assert_true(app.display_panel == nil, "the panel closed")
+    assert_true(r:is_running() and r.box.title == "Reconnecting…", "box: " .. tostring(r.box and r.box.title))
+    assert_true(#sent.connects == 1, "one connect now")
+    assert_true(app.session:get_profile().color_depth == 8, "the live profile carries the preset")
+    assert_true(#sent.profile_updates == 0, "nothing saved yet")
+    last_connect(sent)(false, "refused")
+    assert_true(r.box.title:find("Connection lost", 1, true), "plain lost text: " .. r.box.title)
+    assert_true(#sent.profile_updates == 0, "still nothing saved")
+    r:close()
+    assert_true(#sent.profile_updates == 0, "closing saves nothing")
+    assert_true(app.session:get_profile().color_depth == 24, "the live profile is back to the stored values")
+    pick_fast()
+    assert_true(#sent.connects == 2, "second connect")
+    last_connect(sent)(true)
+    assert_true(#sent.profile_updates == 1, "saved after success")
+    local f = sent.profile_updates[1].fields
+    assert_true(f.color_depth == 8 and f.enable_tight == true and f.jpeg_quality == 3
+        and f.compress_level == 9, "the Fast values")
+    assert_true(app.session:get_profile().color_depth == 8, "the live profile keeps the preset")
+    local panel = app:open_display_panel()
+    find_button(panel, "✓ Fast")
+    app:close_display_panel()
+    close_viewer(app, remote)
+end)
+
+check("same_quality_preset_does_nothing", function()
+    local app, remote, sent = new_app()
+    local panel = app:open_display_panel()
+    local before = #stack()
+    find_button(panel, "✓ Best").callback()
+    assert_true(sent.hangups == 0 and #sent.connects == 0, "no hangup, no connect")
+    assert_true(not app.reconnect:is_running(), "no box")
+    assert_true(app.display_panel ~= nil and #stack() == before, "the panel is untouched")
+    app:close_display_panel()
+    close_viewer(app, remote)
 end)
 
 check("reopening_on_an_error_session_waits_for_retry", function()

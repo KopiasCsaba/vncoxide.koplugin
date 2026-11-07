@@ -1489,6 +1489,40 @@ function ViewerApp:close_display_panel(quiet)
     if not quiet then self:_sync_keyboard_later() end
 end
 
+--[[--
+Switches the connection to quality preset `id`: reconnects with it and saves it into the stored
+profile only once that connection succeeds. Until then the live session profile carries the
+preset and the stored one keeps its values; a stop without success puts the stored values back.
+]]
+function ViewerApp:apply_quality_preset(id)
+    local Settings = require("vnc/settings")
+    local preset
+    for _i, candidate in ipairs(Settings.QUALITY_PRESETS) do
+        if candidate.id == id then preset = candidate end
+    end
+    local session = self.session
+    local live = session:get_profile()
+    local stored = preset and live and self.plugin.settings:get_profile(live.name)
+    if not stored or Settings.preset_of(stored) == id or self.reconnect:is_running() then return end
+    local name = stored.name
+    local fields = {
+        color_depth = preset.color_depth, enable_tight = preset.enable_tight,
+        jpeg_quality = preset.jpeg_quality, compress_level = preset.compress_level,
+    }
+    self:close_display_panel()
+    session:set_keep_wifi(true)
+    session:hangup()
+    local trial = {}
+    for k, v in pairs(stored) do trial[k] = v end
+    for k, v in pairs(fields) do trial[k] = v end
+    session:set_profile(trial)
+    self.reconnect:start{
+        immediate = true, auto = true, message = "reconnecting",
+        on_success = function() self.plugin:update_profile_fields(name, fields) end,
+        on_stop = function() session:set_profile(self.plugin.settings:get_profile(name)) end,
+    }
+end
+
 function ViewerApp:toggle_display_panel()
     if self.display_panel then
         self:close_display_panel()

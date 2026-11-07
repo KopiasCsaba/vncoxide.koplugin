@@ -233,6 +233,31 @@ local function level_or_off(value)
     return false
 end
 
+--- The picture-quality presets of the viewer's Display panel, each a set of the four profile
+--- fields above (false = the server's default). Documented in README.md.
+Settings.QUALITY_PRESETS = {
+    { id = "best", label = "Best", color_depth = 24, enable_tight = false, jpeg_quality = false,
+      compress_level = false },
+    { id = "balanced", label = "Balanced", color_depth = 16, enable_tight = true, jpeg_quality = 6,
+      compress_level = 6 },
+    { id = "fast", label = "Fast", color_depth = 8, enable_tight = true, jpeg_quality = 3,
+      compress_level = 9 },
+}
+
+--- The preset a profile's picture fields match exactly, else "custom".
+--- @tparam table profile a cleaned profile (see @{Settings:get_profile})
+--- @treturn string "best", "balanced", "fast" or "custom"
+function Settings.preset_of(profile)
+    for _i, preset in ipairs(Settings.QUALITY_PRESETS) do
+        if profile.color_depth == preset.color_depth and profile.enable_tight == preset.enable_tight
+            and profile.jpeg_quality == preset.jpeg_quality
+            and profile.compress_level == preset.compress_level then
+            return preset.id
+        end
+    end
+    return "custom"
+end
+
 --- Cleans one profile table, dropping unknown fields and coercing types.
 --- @tparam table p raw profile
 --- @tparam[opt] boolean tight_default `enable_tight` for a profile that has no such field
