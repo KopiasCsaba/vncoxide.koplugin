@@ -13,7 +13,6 @@ local T = require("ffi/util").template
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
-local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 
 local Dialogs = require("vnc/dialogs")
@@ -111,7 +110,7 @@ function MenuBuilder.open(app)
                         UIManager:close(dialog)
                         local skipped = app:send_text(text)
                         if skipped > 0 then
-                            UIManager:show(Notification:new{ text = T(_("%1 character(s) skipped"), skipped) })
+                            app:show_toast(T(_("%1 character(s) skipped"), skipped))
                         end
                         app:reassert_text_input()
                         app:_sync_keyboard_later()

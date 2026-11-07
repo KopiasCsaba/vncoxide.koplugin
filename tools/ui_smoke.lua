@@ -4212,6 +4212,37 @@ end)
 --- The strip's bottom edge: right on top of the on-screen keyboard.
 local function strip_bottom(strip) return strip.dimen.y + strip.dimen.h end
 
+check("toasts_sit_below_the_toolbar", function()
+    local Blitbuffer = require("ffi/blitbuffer")
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local bb = Blitbuffer.new(Screen:getWidth(), Screen:getHeight())
+    local function drawn(tip)
+        tip:paintTo(bb, 0, 0)
+        return tip.frame.dimen
+    end
+    local tb = app.toolbar.dimen
+    assert_true(app.toolbar_visible, "toolbar shown")
+    tap_toolbar(app, "mode")
+    local tip = top()
+    assert_true(tip.toast and tip.text, "a toast: " .. stack_desc())
+    local d = drawn(tip)
+    assert_true(d.y >= tb.y + tb.h, "below the toolbar: " .. d.y .. " vs " .. (tb.y + tb.h))
+    assert_true(not d:intersectWith(tb), "and clear of it")
+    -- a second one stacks below the first
+    app:show_toast("second")
+    local d2 = drawn(top())
+    assert_true(d2.y >= d.y + d.h, "stacked under the first")
+    UIManager:close(top()); UIManager:close(tip)
+    -- hidden toolbar: at the top as before
+    app:set_toolbar_visible(false)
+    app:toggle_pointer_mode()
+    local tip3 = top()
+    local d3 = drawn(tip3)
+    assert_true(d3.y < tb.y + tb.h, "toolbar hidden: toast at the top, y=" .. d3.y)
+    UIManager:close(tip3)
+    close_viewer(app, remote)
+end)
+
 check("keyboard_toggle_keeps_a_pinched_zoom_and_pan", function()
     local app, remote = new_app(400, 300, { toolbar = true })
     local fit_scale = remote:get_scale()

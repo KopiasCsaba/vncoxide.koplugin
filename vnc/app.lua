@@ -266,6 +266,23 @@ screen, at the current zoom, fits in the space the visible keyboard leaves. Then
 above the keyboard: spreading it over the full screen would hide part of it behind the keys and
 gain nothing. The zoom itself never changes here; only where the very same view is placed.
 ]=]
+--[[--
+Shows a KOReader toast the way every hint of the viewer should appear: it keeps the stock
+Notification's stacking, timeout and refresh, but while the toolbar is up it is pushed down to
+start right below it instead of covering it. (The refresh region is the frame's own `dimen`, which
+is set where the frame is drawn, so it follows the shift.)
+]]
+function ViewerApp:show_toast(text, timeout)
+    local toast = Notification:new{ text = text, timeout = timeout }
+    if self.toolbar_visible and self.toolbar then
+        local d = self.toolbar.dimen
+        local span = toast[1][1]   -- the leading RectSpan of the toast's VerticalGroup
+        span.height = span.height + d.y + d.h
+    end
+    UIManager:show(toast)
+    return toast
+end
+
 function ViewerApp:_layout(x, y)
     x, y = x or 0, y or 0
     local size = self.dimen
@@ -517,7 +534,7 @@ end
 function ViewerApp:on_bell()
     -- A status blip at the top of the screen, not a dialog: it may share the screen with the
     -- keyboard. ("toast" is also what keeps KOReader stacking it above everything else.)
-    UIManager:show(Notification:new{ text = _("Bell"), timeout = 1, toast = true })
+    self:show_toast(_("Bell"), 1)
 end
 
 function ViewerApp:onCloseWidget()
@@ -821,10 +838,8 @@ end
 function ViewerApp:toggle_pointer_mode()
     self:set_pointer_mode(self:get_pointer_mode() == "mouse" and "touch" or "mouse")
     self:_toolbar_changed()
-    UIManager:show(Notification:new{
-        text = self:get_pointer_mode() == "mouse" and _("Mouse mode \u{2014} long press for help")
-            or _("Touch mode \u{2014} long press for help"),
-    })
+    self:show_toast(self:get_pointer_mode() == "mouse" and _("Mouse mode \u{2014} long press for help")
+        or _("Touch mode \u{2014} long press for help"))
 end
 
 --- Shows the help page (the current pointer mode's gestures first), replacing one still up.
