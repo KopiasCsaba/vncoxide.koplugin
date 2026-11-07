@@ -232,7 +232,11 @@ function MenuBuilder.open(app)
         end,
     }, function(item) item.mandatory = settings.toolbar_scroll_buttons and "✓" or "-" end)
 
-    -- ---- session
+    -- ---- help, session
+    item_table[#item_table + 1] = {
+        text = _("Help"),
+        callback = action(function() app:open_help() end),
+    }
     item_table[#item_table + 1] = {
         text = _("Leave (keep connection)"),
         callback = action(function() app:leave() end),

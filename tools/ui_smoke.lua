@@ -3536,26 +3536,52 @@ local function close_viewer(app, remote)
     remote:free()
 end
 
-check("mode_switch_shows_the_cheat_sheet_and_its_tap_is_local", function()
+check("mode_switch_shows_a_tooltip_not_a_card", function()
+    local Notification = require("ui/widget/notification")
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     tap_toolbar(app, "mode")
-    assert_true(app:get_pointer_mode() == "mouse" and top() == app.cheat_sheet)
-    assert_true(app.cheat_sheet.rows == require("vnc/cheatsheet").ROWS.mouse)
-    sent.pointer = {}
-    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 10, y = Screen:getHeight() - 10 } }
-    assert_true(app.cheat_sheet == nil and #sent.pointer == 0, "dismissed, nothing sent")
+    assert_true(app:get_pointer_mode() == "mouse", "switched")
+    local tip = top()
+    assert_true(tip.text == "Mouse mode \u{2014} long press for help" and tip.toast,
+        "a tooltip on top: " .. stack_desc() .. " " .. tostring(tip.text))
+    assert_true(getmetatable(tip) == Notification or tip.timeout, "a Notification")
+    assert_true(app.help == nil and #sent.pointer == 0, "no card, nothing sent")
+    UIManager:close(tip)
+    tap_toolbar(app, "mode")
+    assert_true(app:get_pointer_mode() == "touch" and top().text == "Touch mode \u{2014} long press for help")
+    UIManager:close(top())
     close_viewer(app, remote)
 end)
 
-check("back_closes_the_cheat_sheet_like_a_tap", function()
+check("help_opens_from_mode_hold_and_menu_and_is_local", function()
     local Key = require("device/key")
     local app, remote, sent = new_app(400, 300, { toolbar = true })
-    tap_toolbar(app, "mode")
-    assert_true(top() == app.cheat_sheet, "the sheet is up: " .. stack_desc())
-    sent.pointer, sent.key = {}, {}
+    hold_toolbar(app, "mode")
+    local help = app.help
+    assert_true(help ~= nil and top() == help, "the help is on top: " .. stack_desc())
+    assert_true(help.title == "VNC viewer help", "title")
+    local text = help.text
+    assert_true(text:find("Double tap and drag", 1, true) and text:find("Scroll lock", 1, true), "content")
+    assert_true(text:find("Keys\u{2026}", 1, true) and text:find("RECONNECT", 1, true), "strip and reconnect")
+    -- the current mode (touch) is described before the other one
+    assert_true(text:find("Touch mode", 1, true) < text:find("Mouse mode", 1, true), "current mode first")
+    assert_true(not app:_input_target(), "the viewer is under a popup")
+    sent.pointer = {}
+    tap_toolbar(app, "rotate")
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 10, y = Screen:getHeight() - 10 } }
+    assert_true(#sent.pointer == 0, "nothing reaches the remote")
+    help:onClose()
+    assert_true(app.help == nil and top() == app, "closed, back on the viewer: " .. stack_desc())
+    -- mouse mode lists its own rows first
+    app:set_pointer_mode("mouse")
+    local menu = app:open_menu()
+    local items = menu.item_table
+    assert_true(items[#items - 1].text == "Help" and items[#items].text == "Leave (keep connection)", "Help before Leave")
+    menu:onMenuSelect(items[#items - 1])
+    assert_true(app.help ~= nil and app.menu == nil and top() == app.help, "Help opened from the menu")
+    assert_true(app.help.text:find("Mouse mode", 1, true) < app.help.text:find("Touch mode", 1, true), "mouse first")
     UIManager:sendEvent(Event:new("KeyPress", Key:new("Back", {})))
-    assert_true(app.cheat_sheet == nil and top() == app, "Back closed it: " .. stack_desc())
-    assert_true(#sent.pointer == 0 and #sent.key == 0, "nothing sent")
+    assert_true(app.help == nil, "Back closes it")
     close_viewer(app, remote)
 end)
 
@@ -3570,7 +3596,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text:gsub("^Connected to.*", "status") end
     assert_true(table.concat(order, "|") == "status|Connections…|Send text…|Refresh|Ctrl+Alt+Del|Lock screen|"
-        .. "Page buttons send|Keyboard always visible|Show scroll buttons on toolbar|Leave (keep connection)",
+        .. "Page buttons send|Keyboard always visible|Show scroll buttons on toolbar|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app:send_text("a\nb\1") == 1)
@@ -4677,10 +4703,10 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     app:set_rotation_mode(before)
     tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "mouse", "mode switches to mouse")
-    app:close_cheat_sheet()  -- the cheat-sheet covers the toolbar until dismissed
+    UIManager:close(top())  -- the tooltip
     tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "touch", "and back to touch")
-    app:close_cheat_sheet()
+    UIManager:close(top())
     tap_toolbar(app, "keyboard"); assert_true(app.vk_wanted == true, "keyboard tap toggles the keyboard")
     hold_toolbar(app, "keyboard"); assert_true(app.key_panel ~= nil, "keyboard hold opens the key panel")
     tap_toolbar(app, "display"); assert_true(app.display_panel ~= nil, "display opens the display panel")
@@ -5023,12 +5049,12 @@ check("a_drop_mid_drag_ends_it_and_reconnect_sends_nothing_stale", function()
     touch(strip, "mod:Shift")
     assert_true(app:has_pointer_action() and strip:modifier_state("Shift") == "armed", "drag held, Shift armed")
     app:open_display_panel()
-    app:show_cheat_sheet()
+    app:open_help()
     app.session.state = "error"
     app:on_session_error("x")
     assert_true(not app:has_pointer_action(), "the drag ended")
     assert_true(not strip:has_armed(), "nothing armed")
-    assert_true(app.cheat_sheet == nil and app.display_panel == nil, "the other popups closed")
+    assert_true(app.help == nil and app.display_panel == nil, "the other popups closed")
     UIManager:_checkTasks()                    -- the keyboard makes way for the box
     assert_true(not app.vk_visible and top() == app.reconnect.box, "the box is on top: " .. stack_desc())
     log()

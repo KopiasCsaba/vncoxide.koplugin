@@ -31,6 +31,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Notification = require("ui/widget/notification")
+local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local time = require("ui/time")
@@ -516,7 +517,7 @@ function ViewerApp:onCloseWidget()
     -- the reconnect loop lives with the open viewer only
     self.reconnect:stop()
     self:close_display_panel(true)
-    self:close_cheat_sheet(true)
+    self:close_help(true)
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
     self:_drop_key_panel()
@@ -800,35 +801,41 @@ function ViewerApp:set_pointer_mode(mode)
     end
 end
 
---- Flips Touch <-> Mouse; the toolbar's Mode button follows.
+--- Flips Touch <-> Mouse; the toolbar's Mode button follows. A tooltip says which one it is now
+--- and where the help is.
 function ViewerApp:toggle_pointer_mode()
     self:set_pointer_mode(self:get_pointer_mode() == "mouse" and "touch" or "mouse")
     self:_toolbar_changed()
-    self:show_cheat_sheet()
+    UIManager:show(Notification:new{
+        text = self:get_pointer_mode() == "mouse" and _("Mouse mode \u{2014} long press for help")
+            or _("Touch mode \u{2014} long press for help"),
+    })
 end
 
---- Shows the gesture cheat-sheet for the current pointer mode (replacing one still up).
-function ViewerApp:show_cheat_sheet()
-    self:close_cheat_sheet(true)
-    local sheet
-    sheet = require("vnc/cheatsheet"):new{
-        mode = self:get_pointer_mode(),
-        on_close = function()
-            if self.cheat_sheet == sheet then self.cheat_sheet = nil end
+--- Shows the help page (the current pointer mode's gestures first), replacing one still up.
+function ViewerApp:open_help()
+    self:close_help(true)
+    local viewer
+    viewer = TextViewer:new{
+        title = _("VNC viewer help"),
+        text = require("vnc/help").text(self:get_pointer_mode()),
+        justified = false,
+        close_callback = function()
+            if self.help == viewer then self.help = nil end
             self:_sync_keyboard_later()
         end,
     }
-    self.cheat_sheet = sheet
-    UIManager:show(sheet, "ui")
+    self.help = viewer
+    UIManager:show(viewer)
     self:_sync_keyboard_later()
+    return viewer
 end
 
-function ViewerApp:close_cheat_sheet(quiet)
-    local sheet = self.cheat_sheet
-    if not sheet then return end
-    self.cheat_sheet = nil
-    sheet._closed = true
-    UIManager:close(sheet, "ui")
+function ViewerApp:close_help(quiet)
+    local viewer = self.help
+    if not viewer then return end
+    self.help = nil
+    UIManager:close(viewer)
     if not quiet then self:_sync_keyboard_later() end
 end
 
@@ -1639,7 +1646,7 @@ function ViewerApp:on_session_error(_err)
     self:_drop_deferred_click()
     local armed = self:_armed_source()
     if armed then armed:take_armed() end
-    self:close_cheat_sheet(true)
+    self:close_help(true)
     self:close_display_panel(true)
     self.reconnect:start{ auto = true }
 end

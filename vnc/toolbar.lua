@@ -7,7 +7,7 @@ canvas beside and below it stays fully interactive. A swipe down in the top menu
 hides it (`ViewerApp:toggle_toolbar`).
 
 Buttons, left to right: Close (disconnect, after a confirmation), Display (the display panel),
-Mode (Touch/Mouse; the label shows the current one), Keyboard (tap: shows or hides the on-screen
+Mode (tap: Touch/Mouse, the label shows the current one; long press: the help), Keyboard (tap: shows or hides the on-screen
 keyboard with the key strip, or closes the "Send keys" panel; long press: that panel), Rotate,
 Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More (the menu).
 
@@ -62,7 +62,11 @@ local function specs(app)
     return {
         close = { icon = "close", callback = function() confirm_disconnect(app) end },
         display = { icon = "appbar.pagefit", callback = function() app:toggle_display_panel() end },
-        mode = { text = MODE_GLYPHS[app:get_pointer_mode()], callback = function() app:toggle_pointer_mode() end },
+        mode = {
+            text = MODE_GLYPHS[app:get_pointer_mode()],
+            callback = function() app:toggle_pointer_mode() end,
+            hold_callback = function() app:open_help() end,
+        },
         keyboard = {
             icon_file = Icons.path("keyboard"),
             callback = function() app:toggle_keyboard() end,
