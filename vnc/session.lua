@@ -187,22 +187,26 @@ function Session:connect(callback)
     self._connect_cb = callback
     self.err = nil
     self:_set_state("connecting")
+    -- Every attempt has its own token: NetworkMgr's callback can arrive after this attempt was
+    -- given up or replaced, and then it must not dial (c.f., Session:_do_connect).
+    self._attempt = (self._attempt or 0) + 1
+    local attempt = self._attempt
 
     local wifi_on = self:_net():isWifiOn()
     self.wifi_was_on = wifi_on
     if not wifi_on then
         local status = self:_net():turnOnWifiAndWaitForConnection(function()
-            self:_do_connect()
+            self:_do_connect(attempt)
         end)
         if status == false then
             self.wifi_was_on = nil
             self:_fail("could not turn on Wi-Fi")
             return
         end
-        self:_watch_wifi()
+        self:_watch_wifi(attempt)
         return
     end
-    self:_do_connect()
+    self:_do_connect(attempt)
 end
 
 function Session:_finish_connect(ok, err)
@@ -215,9 +219,7 @@ function Session:_finish_connect(ok, err)
 end
 
 --- Fails the attempt if the asynchronous Wi-Fi path never calls us back.
-function Session:_watch_wifi()
-    self._attempt = (self._attempt or 0) + 1
-    local attempt = self._attempt
+function Session:_watch_wifi(attempt)
     UIManager:scheduleIn(Session.WIFI_WAIT_TIMEOUT, function()
         if self._attempt == attempt and self.state == "connecting" then
             self:_fail(string.format("timed out after %ds waiting for Wi-Fi", Session.WIFI_WAIT_TIMEOUT))
@@ -225,7 +227,13 @@ function Session:_watch_wifi()
     end)
 end
 
-function Session:_do_connect()
+--- Dials and runs the handshake for attempt `attempt`, unless that attempt is no longer the one in
+--- progress (it failed, was disconnected, or a newer one started since Wi-Fi was asked for).
+function Session:_do_connect(attempt)
+    if attempt ~= self._attempt or self.state ~= "connecting" then
+        logger.dbg("vnc: ignoring the Wi-Fi callback of an attempt that is over")
+        return
+    end
     local p = self.profile
     logger.dbg("vnc: connecting to", p.host, p.port)
     local socket = require("socket")
@@ -236,6 +244,7 @@ function Session:_do_connect()
     sock:settimeout(Session.HANDSHAKE_SOCKET_TIMEOUT)
     local ok, err = sock:connect(p.host, p.port)
     if not ok then
+        sock:close()
         self:_fail(string.format("could not connect to %s:%d (%s)", p.host, p.port, tostring(err)))
         return
     end

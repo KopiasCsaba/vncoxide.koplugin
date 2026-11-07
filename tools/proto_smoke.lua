@@ -1912,6 +1912,71 @@ local function main()
         return true
     end)
 
+    -- NetworkMgr calls back once Wi-Fi is up - possibly long after the attempt it was armed for
+    -- has been given up (the Wi-Fi watchdog failed it, or the user disconnected) or replaced by a
+    -- newer one. Such a late callback must not dial: it would open a socket nothing owns, or put
+    -- its socket and protocol under the newer attempt.
+    check("session_ignores_a_late_wifi_callback", function()
+        local Session = load_session()
+        local pending = {}
+        local net = {
+            isWifiOn = function() return false end,
+            turnOnWifiAndWaitForConnection = function(_, cb) pending[#pending + 1] = cb end,
+            turnOffWifi = function() end,
+        }
+        local port = free_port()
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "late_wifi" },
+            network_mgr = net,
+        }
+        local results = {}
+        s:connect(function(ok, err) results[#results + 1] = { ok, err } end)
+        s:disconnect()
+        pending[1]()
+        if s:get_state() ~= "disconnected" or s.sock then
+            return nil, "a callback after a disconnect dialled anyway (state " .. tostring(s:get_state()) .. ")"
+        end
+        s:connect(function(ok, err) results[#results + 1] = { ok, err } end)
+        pending[1]()                                    -- the first attempt's, again
+        if s:get_state() ~= "connecting" or s.sock then
+            return nil, "the first attempt's callback took over the second (state " .. tostring(s:get_state()) .. ")"
+        end
+        pending[2]()                                    -- the current one dials (and is refused)
+        if s:get_state() ~= "error" then
+            return nil, "the current attempt's callback must dial, state " .. tostring(s:get_state())
+        end
+        s:disconnect()
+        return true
+    end)
+
+    -- A refused connect closes the socket it opened (it used to be left to the garbage collector).
+    check("session_closes_the_socket_of_a_failed_connect", function()
+        local Session = load_session()
+        local socket = require("socket")
+        local port = free_port()
+        local real_tcp, closed = socket.tcp, 0
+        socket.tcp = function()
+            local sock = real_tcp()
+            return setmetatable({ close = function() closed = closed + 1 return sock:close() end }, {
+                __index = function(_, k)
+                    local v = sock[k]
+                    if type(v) == "function" then return function(_, ...) return v(sock, ...) end end
+                    return v
+                end,
+            })
+        end
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "refused" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        }
+        local ok, err = pcall(s.connect, s, function() end)
+        socket.tcp = real_tcp
+        if not ok then return nil, err end
+        if s:get_state() ~= "error" then return nil, "the connect must fail, state " .. tostring(s:get_state()) end
+        if closed ~= 1 then return nil, "the refused socket must be closed once, closed " .. closed .. " time(s)" end
+        return true
+    end)
+
     -- A failure before the handshake completes (refused, auth, Wi-Fi) ends the whole run at once:
     -- one session, one failed row, and on_done gets the error.
     check("benchmark_stops_on_connect_failure", function()
