@@ -349,8 +349,15 @@ widgets a click lands on repaint through forceRePaint, which paints inside the i
 rectangles are recorded in either hook; encoding happens in the poll task, so a repaint never pays
 for a client's bandwidth. Rectangles carry a generation and each client remembers the one it was
 served with, so a client that lagged behind the eviction window is simply given a full frame
-instead of a partial one. A screen-size change (rotation) sends every client a DesktopSize
-rectangle (-223) and then a full update.
+instead of a partial one. A screen-size change (rotation) sends every client that announced
+DesktopSize a DesktopSize rectangle (-223) and then a full update; any other client keeps its old
+geometry and is served what it asks for, clamped to the screen. Client coordinates are the rotated
+screen's (Screen.bb), so injected touches are mapped back to the panel's through the touch rotation
+(the inverse of GestureDetector:adjustGesCoordinate) and skip the device's hardware adjust hook. The
+poll runs every 10 ms while a client is connected and every 0.5 s while nobody is, entirely under a
+pcall (UIManager tasks are not protected); a dropped client's contact is lifted and its held keys
+released. There is one server per KOReader run (main.lua's `shared_server`), whichever plugin
+instance (FileManager, ReaderUI) is live.
 
 A conversion may be shared only while it is still the encoder's latest. Only `pixels` - an immutable
 copy of the rectangle's bytes - may be kept; `values` is the encoder's *single* per-pixel array,
