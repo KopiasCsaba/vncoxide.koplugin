@@ -494,6 +494,14 @@ floored grey of the exact colour mean. At scale 1 the view offset is rounded to 
 whole pixel so the canvas is a plain copy of the plane. Taps map the canvas pixel's centre
 (`floor(view + (c + 0.5) / scale)`), which is the remote pixel the sharp mode draws there.
 
+Remote cursor: the viewer advertises the RichCursor pseudo-encoding (-239), so the server sends
+the cursor's image instead of painting it into the framebuffer, and `ViewerApp` draws it (scaled
+with the view, the mask as alpha) at the pointer position it last sent, refreshing the old and new
+spot when it moves. Reason: x11vnc with `-clip` *and* `-scale` (vnc-server.py -z) clamps the
+cursor it paints - and its PointerPos reports - to the unscaled clip size, so the arrow looked
+stuck in the top-left quarter while clicks landed correctly. PointerPos (-232) is therefore not
+asked for; until the first tap no cursor is drawn.
+
 Decoder hot path (LuaJIT): no per-pixel or per-field strings, closures or tables. The protocol
 reader's fixed-size reads and `ptr(n)` take a pointer straight into the session's receive buffer
 (`io.read_ptr` / `Session:_read_ptr`) instead of a `rx:sub` string each; ZRLE's RLE tiles are read

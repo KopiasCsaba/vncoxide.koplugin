@@ -339,6 +339,10 @@ function ViewerApp:paintTo(bb, x, y)
         bb:paintRect(x, c.y + c.h, size.w, y1 - c.y - c.h, BB.COLOR_BLACK)
         bb:paintRect(x, c.y, c.x - x, c.h, BB.COLOR_BLACK)
         bb:paintRect(c.x + c.w, c.y, x1 - c.x - c.w, c.h, BB.COLOR_BLACK)
+        -- the remote cursor, when the server sends its shape instead of painting it
+        local cr, img, ox, oy = self:_cursor_rect()
+        if cr then bb:alphablitFrom(img.bb, cr.x, cr.y, ox, oy, cr.w, cr.h) end
+        self._cursor_drawn = cr
     else
         bb:paintRect(x, y, size.w, size.h, BB.COLOR_BLACK)
     end
@@ -445,6 +449,11 @@ function ViewerApp:on_bell()
 end
 
 function ViewerApp:onCloseWidget()
+    if self._cursor_cache then
+        self._cursor_cache.bb:free()
+        self._cursor_cache = nil
+    end
+    self._cursor_drawn = nil
     -- never leave our own menu orphaned on the window stack
     self:close_menu()
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
@@ -522,8 +531,75 @@ end
 ViewerApp.WHEEL_NOTCHES = 3
 
 function ViewerApp:send_pointer(x, y, mask)
+    local moved = x ~= self._pointer_x or y ~= self._pointer_y
     self._pointer_x, self._pointer_y = x, y
     self.session:send_pointer(x, y, mask)
+    if moved then self:_refresh_cursor() end
+end
+
+-- ---------------------------------------------------------------- remote cursor
+
+--[[--
+The remote cursor scaled to the view: an RGB32 buffer whose alpha is the cursor's mask, cached
+until the shape or the scale changes. Nil while the server paints its cursor itself (it never
+sent a shape) or hid it.
+]]
+function ViewerApp:_cursor_image()
+    local cur = self.session and self.session.cursor
+    if not cur or not self.remote then return nil end
+    local s = self.remote:get_scale()
+    local cache = self._cursor_cache
+    if cache and cache.cur == cur and cache.s == s then return cache end
+    if cache then cache.bb:free() end
+    local floor, min = math.floor, math.min
+    local w, h = math.max(1, floor(cur.w * s + 0.5)), math.max(1, floor(cur.h * s + 0.5))
+    local img = BB.new(w, h, BB.TYPE_BBRGB32) -- zeroed: fully transparent
+    local row_bytes = floor((cur.w + 7) / 8)
+    local rgb, mask = cur.rgb, cur.mask
+    for y = 0, h - 1 do
+        local sy = min(cur.h - 1, floor(y / s))
+        for x = 0, w - 1 do
+            local sx = min(cur.w - 1, floor(x / s))
+            local m = mask:byte(sy * row_bytes + floor(sx / 8) + 1) or 0
+            if band(m, bit.rshift(0x80, sx % 8)) ~= 0 then
+                local o = (sy * cur.w + sx) * 3 + 1
+                img:setPixel(x, y, BB.ColorRGB32(rgb:byte(o), rgb:byte(o + 1), rgb:byte(o + 2), 0xFF))
+            end
+        end
+    end
+    cache = { cur = cur, s = s, bb = img, w = w, h = h, hx = cur.hot_x * s, hy = cur.hot_y * s }
+    self._cursor_cache = cache
+    return cache
+end
+
+--[[--
+Where the remote cursor goes on screen: the hotspot on the remote pixel the pointer was last sent
+to, clipped to the canvas.
+--- @treturn table|nil screen rect, plus the cursor image and the rect's offset into it
+]]
+function ViewerApp:_cursor_rect()
+    if not (self._pointer_x and self.canvas and self.remote) then return nil end
+    local img = self:_cursor_image()
+    if not img then return nil end
+    local v = self.remote:_render_view()
+    local c = self.canvas
+    local x0 = c.x + math.floor((self._pointer_x + 0.5 - v.x) * v.scale - img.hx + 0.5)
+    local y0 = c.y + math.floor((self._pointer_y + 0.5 - v.y) * v.scale - img.hy + 0.5)
+    local r = Util.intersect_rect({ x = x0, y = y0, w = img.w, h = img.h }, c)
+    if not r then return nil end
+    return r, img, r.x - x0, r.y - y0
+end
+
+--- Repaints where the cursor was drawn and where it goes now.
+function ViewerApp:_refresh_cursor()
+    if not self.canvas or self:_modal_above() then return end
+    local area = Util.union_rect(self._cursor_drawn, (self:_cursor_rect()))
+    if area then UIManager:setDirty(self, "ui", Geom:new(area)) end
+end
+
+--- The server sent a new cursor shape (or hid it).
+function ViewerApp:on_cursor_changed()
+    self:_refresh_cursor()
 end
 
 --- Sends a key. A drag or long press of ours still pending (its release was eaten by the

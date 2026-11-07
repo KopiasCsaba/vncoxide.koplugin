@@ -279,6 +279,7 @@ function Session:_do_connect(attempt)
                 logger.info("vnc: connected to", name, w, h)
                 -- a fresh connection starts with the whole screen; the app narrows it again
                 self_ref.view_area, self_ref.forced = nil, nil
+                self_ref.cursor = nil
                 if self_ref.remote then
                     -- reconnect / fresh size: keep the object so the app's reference stays valid
                     self_ref.remote:resize(w, h)
@@ -329,6 +330,13 @@ function Session:_do_connect(attempt)
             end,
             on_bell = function()
                 if self_ref.app then self_ref.app:on_bell() end
+            end,
+            on_cursor = function(hx, hy, w, h, rgb, mask)
+                -- drawn by the viewer at the pointer it sent (the server's own position reports
+                -- are not asked for: x11vnc clamps them to the unscaled size under -clip + -scale)
+                self_ref.cursor = (w > 0 and h > 0)
+                    and { hot_x = hx, hot_y = hy, w = w, h = h, rgb = rgb, mask = mask } or false
+                if self_ref.app and self_ref.app.on_cursor_changed then self_ref.app:on_cursor_changed() end
             end,
             on_cut_text = function(text)
                 logger.dbg("vnc: server cut text:", text)
