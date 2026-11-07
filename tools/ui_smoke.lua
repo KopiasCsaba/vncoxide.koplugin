@@ -148,6 +148,15 @@ local function dispatch_gesture(ges)
     UIManager:sendEvent(Event:new("Gesture", ges))
 end
 
+--- A long press of the viewer's acts once confirmed (see ViewerApp.HOLD_CONFIRM): lets that time
+--- pass now, the finger still down. No-op when no long press waits for it.
+local function confirm_hold(app)
+    if app and app._hold_pending then
+        UIManager:unschedule(app._hold_confirm_task)
+        app._hold_confirm_task()
+    end
+end
+
 -- ---------------------------------------------------------------- a plugin with two profiles
 
 local plugin_module = assert(dofile(plugin_dir .. "/main.lua"))
@@ -3811,6 +3820,7 @@ check("key_panel_armed_modifiers_go_with_the_next_canvas_action", function()
     wire()
     UIManager:forceRePaint()
     dispatch_gesture{ ges = "hold", pos = above }
+    confirm_hold(app)
     dispatch_gesture{ ges = "hold_release", pos = above }
     got = wire()
     assert_true(got == "+0xFFE3,+0xFFE9,p4,p0,-0xFFE9,-0xFFE3", "Ctrl+Alt+right click, got " .. got)
@@ -3838,6 +3848,7 @@ check("key_panel_long_press_ending_over_the_panel_releases_its_modifiers", funct
         local above = Geom:new{ x = 20, y = 20 }
         local on_panel = Geom:new{ x = 20, y = panel.dimen.y + math.floor(panel.dimen.h / 2) }
         dispatch_gesture{ ges = "hold", pos = above }
+        confirm_hold(app)
         local message
         if case == "under a message" then
             message = InfoMessage:new{ text = "busy" }
@@ -3897,7 +3908,7 @@ check("stale_drag_is_ended_before_the_next_action_or_key", function()
     -- a pan_release eaten by the keyboard or the menu leaves the button and modifiers down
     local actions = {
         tap = function(app) app:onTap(nil, { pos = Geom:new{ x = 40, y = 30 } }) end,
-        hold = function(app) app:onHold(nil, { pos = Geom:new{ x = 40, y = 30 } }) end,
+        hold = function(app) app:onHold(nil, { pos = Geom:new{ x = 40, y = 30 } }); confirm_hold(app) end,
         key = function(app) app:send_key(0x61, true) end,
     }
     local expected = { tap = "p0,-0xFFE1,p0,p1,p0", hold = "p0,-0xFFE1,p4", key = "p0,-0xFFE1,+0x61" }
@@ -3976,6 +3987,7 @@ check("key_panel_release_all_ends_a_pending_drag_or_long_press", function()
         wire()
         if case == "long press" then
             dispatch_gesture{ ges = "hold", pos = Geom:new{ x = 20, y = 20 } }
+            confirm_hold(app)
         else
             dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
         end
@@ -4158,6 +4170,7 @@ check("leaving_the_viewer_mid_drag_lets_go_of_the_button", function()
             dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
         else
             dispatch_gesture{ ges = "hold", pos = Geom:new{ x = 20, y = 20 } }
+            confirm_hold(app)
         end
         wire()
         UIManager:close(app)
@@ -4713,6 +4726,7 @@ check("mouse_long_press_right_clicks_at_the_pointer", function()
     local c = app.canvas
     local far = Geom:new{ x = c.x + 5, y = c.y + 5 }
     dispatch_gesture{ ges = "hold", pos = far }
+    confirm_hold(app)
     local e = last_pointer(sent)
     assert_true(#sent.pointer == 1 and e.mask == 4 and e.x == 200 and e.y == 150,
         "a right press at the pointer, got " .. #sent.pointer .. " event(s)")
@@ -4887,6 +4901,7 @@ check("mouse_tap_then_hold_drags_with_the_left_button", function()
     local lift = finger_down(P)
     run_scheduled(app._deferred_click_task)
     dispatch_gesture{ ges = "hold", pos = Geom:new{ x = P.x + 5, y = P.y } }
+    confirm_hold(app)
     local got = wire()
     assert_true(got == "p1", "a left press, no click, no right button: " .. got)
     assert_true(sent.pointer[1].x == 200 and sent.pointer[1].y == 150, "at the pointer")
@@ -4925,6 +4940,7 @@ check("mouse_hold_without_a_pending_tap_stays_a_right_click", function()
     -- a hold far from a pending tap: the click, then the right click
     dispatch_gesture{ ges = "tap", pos = P }
     dispatch_gesture{ ges = "hold", pos = Geom:new{ x = c.x + c.w - 5, y = c.y + c.h - 5 } }
+    confirm_hold(app)
     dispatch_gesture{ ges = "hold_release", pos = P }
     got = wire()
     assert_true(got == "p0,p1,p0,p4,p0", "click then right click: " .. got)
@@ -4950,6 +4966,7 @@ check("pointer_button_changes_are_logged_with_a_reason", function()
         dispatch_gesture{ ges = "pan", pos = Geom:new{ x = c.x + 200, y = P.y }, relative = { x = 50, y = 0 } }
         dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = c.x + 200, y = P.y } }
         dispatch_gesture{ ges = "hold", pos = P }
+        confirm_hold(app)
         dispatch_gesture{ ges = "hold_release", pos = P }
         close_viewer(app, remote)
     end)
@@ -4986,6 +5003,7 @@ check("a_drag_whose_release_is_eaten_ends_when_the_finger_lifts", function()
         local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
         local lift = finger_down(P)
         start(c, P)
+        confirm_hold(app)
         local what = mode .. " " .. name
         assert_true(app:has_pointer_action(), what .. ": under way")
         local mask = last_pointer(sent).mask
@@ -5025,6 +5043,7 @@ check("no_release_watch_without_a_finger_on_the_books", function()
     local c = app.canvas
     local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
     dispatch_gesture{ ges = "hold", pos = P }
+    confirm_hold(app)
     assert_true(app:has_pointer_action() and scheduled_delay(app._release_watch_task) == nil, "not watched")
     dispatch_gesture{ ges = "hold_release", pos = P }
     close_viewer(app, remote)
@@ -5094,6 +5113,7 @@ check("a_canvas_drag_ending_over_a_keyboard_key_is_ours", function()
             assert_true(wire() == "p1,p1,p0", what .. ": the drag let go, no key")
             assert_true(not app:has_pointer_action(), what .. ": nothing held")
             dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
             dispatch_gesture{ ges = "hold_release", pos = over }
             local got = wire()
             assert_true(got == "p4,p0", what .. ": the long press let go, no key: " .. got)
@@ -5141,6 +5161,7 @@ check("a_hold_drag_turning_two_finger_ends_cleanly", function()
             local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
             if kind == "hold-drag" then dispatch_gesture{ ges = "tap", pos = P } end
             dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
             if kind == "hold-drag" then
                 dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 120, y = P.y + 40 }, relative = { x = 120, y = 40 } }
             end
@@ -5170,6 +5191,7 @@ check("a_hold_drag_under_a_foreign_popup_ends", function()
     local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
     dispatch_gesture{ ges = "tap", pos = P }
     dispatch_gesture{ ges = "hold", pos = P }
+    confirm_hold(app)
     wire()
     local InfoMessage = require("ui/widget/infomessage")
     local popup = InfoMessage:new{ text = "server says hi" }
@@ -5256,6 +5278,7 @@ check("touch_double_tap_clicks_at_one_spot", function()
     -- another gesture in between starts over
     local x6, y6 = tap(0, 0, 105)
     app:onHold(nil, { pos = Geom:new{ x = c.x + 50, y = c.y + 50 } })
+    confirm_hold(app)
     app:onHoldRelease(nil, { pos = Geom:new{ x = c.x + 50, y = c.y + 50 } })
     local x7 = tap(15, 0, 105.2)
     assert_true(x7 ~= x6, "a long press in between resets")
@@ -5346,6 +5369,7 @@ check("toolbar_does_not_eat_a_canvas_drag_release", function()
     assert_true(log:sub(-2) == "p0", "the drag's release reached the remote: " .. log)
     assert_true(app:has_pointer_action() == false, "nothing held after the drag")
     dispatch_gesture{ ges = "hold", pos = mid }
+    confirm_hold(app)
     dispatch_gesture{ ges = "hold_release", pos = over_bar }
     log = wire()
     assert_true(log == "p4,p0", "the long press let go over the toolbar: " .. log)
@@ -6064,6 +6088,246 @@ check("viewer_follows_the_keyboards_tap_interval", function()
     G_reader_settings:saveSetting("ges_tap_interval_ms", saved)
     G_reader_settings:saveSetting("ges_tap_interval_on_keyboard_ms", saved_kb)
     if not ok then error(err, 0) end
+end)
+
+-- ---------------------------------------------------------------- hold confirmation
+
+--[[ InkView (PocketBook) can withhold a touch's events for ~0.5 s and then deliver them in one
+burst: GestureDetector's hold timer trips meanwhile, and the lift (and often a new contact that
+pans) follows within milliseconds. These replay that with synthetic gestures and times. ]]
+
+--- Whether any pointer event sent so far carried the right button.
+local function no_right_button(sent)
+    for _, e in ipairs(sent.pointer) do if e.mask == 4 then return false end end
+    return true
+end
+
+local function hold_at(pos, t) dispatch_gesture{ ges = "hold", pos = Geom:new{ x = pos.x, y = pos.y }, time = t } end
+local function hold_release_at(pos, t) dispatch_gesture{ ges = "hold_release", pos = Geom:new{ x = pos.x, y = pos.y }, time = t } end
+local function pan_from(start, rx, ry, t)
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = start.x + rx, y = start.y + ry }, relative = { x = rx, y = ry }, time = t }
+end
+
+check("false_hold_burst_with_nothing_after_is_one_tap", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+        local t0 = time.now()
+        hold_at(P, t0)
+        assert_true(wire() == "", mode .. ": a hold waits for its confirmation")
+        local d = scheduled_delay(app._hold_confirm_task)
+        assert_true(d and math.abs(d - app.HOLD_CONFIRM) <= 0.02, mode .. ": confirmed after HOLD_CONFIRM: " .. tostring(d))
+        assert_true(math.abs(app.HOLD_CONFIRM - 0.12) < 1e-9, "HOLD_CONFIRM is 0.12 s")
+        hold_release_at(P, t0 + time.ms(540))
+        assert_true(scheduled_delay(app._hold_confirm_task) == nil, mode .. ": no confirmation any more")
+        assert_true(wire() == "", mode .. ": a false hold waits a moment for a following contact")
+        d = scheduled_delay(app._false_hold_task)
+        assert_true(d and d > 0 and d <= 0.05 + 0.01, mode .. ": follow-up window: " .. tostring(d))
+        run_scheduled(app._false_hold_task)
+        if mode == "touch" then
+            local rx, ry = app:_to_remote(P.x, P.y)
+            assert_true(wire() == "p0,p1,p0", "touch: one left click")
+            for _, e in ipairs(sent.pointer) do
+                assert_true(e.x == rx and e.y == ry, string.format("at the hold position (%d,%d) vs (%d,%d)", e.x, e.y, rx, ry))
+            end
+            -- a tap right after snaps onto it like any Touch-mode double tap
+            dispatch_gesture{ ges = "tap", pos = Geom:new{ x = P.x + 4, y = P.y }, time = t0 + time.ms(700) }
+            assert_true(wire() == "p0,p1,p0" and last_pointer(sent).x == rx, "touch: the double-tap snap applies")
+        else
+            assert_true(wire() == "" and app._deferred_click ~= nil, "mouse: the click is deferred like a tap's")
+            run_scheduled(app._deferred_click_task)
+            assert_true(wire() == "p0,p1,p0", "mouse: one click")
+        end
+        assert_true(no_right_button(sent), mode .. ": never a right button")
+        assert_true(app:has_pointer_action() == false, mode .. ": nothing held")
+        close_viewer(app, remote)
+    end
+end)
+
+check("false_hold_burst_then_pan_is_one_drag_from_the_hold", function()
+    local app, remote, sent = new_app(400, 300)
+    local wire = wire_log(app)
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+    local t0 = time.now()
+    hold_at(P, t0)
+    hold_release_at(P, t0 + time.ms(528))
+    -- the new contact landed a few pixels away and pans, all in the same burst
+    local S = Geom:new{ x = P.x + 3, y = P.y + 2 }
+    pan_from(S, 20, 0, t0 + time.ms(529))
+    assert_true(scheduled_delay(app._false_hold_task) == nil, "the follow-up is settled")
+    local got = wire()
+    assert_true(got == "p1,p1", "a press then a drag move: " .. got)
+    local rx, ry = app:_to_remote(P.x, P.y)
+    assert_true(sent.pointer[1].x == rx and sent.pointer[1].y == ry, "pressed at the original hold position")
+    local mx, my = app:_to_remote(S.x + 20, S.y)
+    assert_true(sent.pointer[2].x == mx and sent.pointer[2].y == my, "then follows the finger")
+    pan_from(S, 40, 10, t0 + time.ms(560))
+    assert_true(wire() == "p1", "the drag goes on")
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = S.x + 40, y = S.y + 10 } }
+    assert_true(wire() == "p0", "released")
+    assert_true(no_right_button(sent), "never a right button")
+    assert_true(app:has_pointer_action() == false)
+    close_viewer(app, remote)
+end)
+
+check("false_hold_burst_then_a_tap_is_that_one_tap", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+        local t0 = time.now()
+        hold_at(P, t0)
+        hold_release_at(P, t0 + time.ms(530))
+        dispatch_gesture{ ges = "tap", pos = Geom:new{ x = P.x + 3, y = P.y }, time = t0 + time.ms(531) }
+        assert_true(scheduled_delay(app._false_hold_task) == nil, mode .. ": the follow-up is settled")
+        if mode == "mouse" then run_scheduled(app._deferred_click_task) end
+        local got = wire()
+        assert_true(got == "p0,p1,p0", mode .. ": exactly one click: " .. got)
+        assert_true(no_right_button(sent))
+        close_viewer(app, remote)
+    end
+end)
+
+check("genuine_hold_confirms_then_right_clicks", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+        local t0 = time.now()
+        hold_at(P, t0)
+        run_scheduled(app._hold_confirm_task)
+        assert_true(wire() == "p4", mode .. ": right press once confirmed")
+        hold_release_at(P, t0 + time.ms(1100))
+        assert_true(wire() == "p0", mode .. ": released")
+        local rx, ry = app:_to_remote(P.x, P.y)
+        if mode == "mouse" then rx, ry = 200, 150 end
+        for _, e in ipairs(sent.pointer) do assert_true(e.x == rx and e.y == ry, mode .. ": where it should be") end
+        assert_true(scheduled_delay(app._false_hold_task) == nil, mode .. ": nothing else pending")
+        assert_true(app:has_pointer_action() == false)
+        close_viewer(app, remote)
+    end
+end)
+
+check("hold_pan_before_confirmation_is_a_genuine_hold", function()
+    local app, remote, sent = new_app(400, 300)
+    local wire = wire_log(app)
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+    hold_at(P, time.now())
+    dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 8, y = P.y }, relative = { x = 8, y = 0 } }
+    assert_true(wire() == "p4", "touch: right press at once")
+    assert_true(scheduled_delay(app._hold_confirm_task) == nil, "no confirmation left")
+    hold_release_at(P)
+    assert_true(wire() == "p0", "released")
+    close_viewer(app, remote)
+    -- Mouse mode, tap then hold: the button drag, moved by the hold_pan
+    app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    wire = wire_log(app)
+    c = app.canvas
+    P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+    dispatch_gesture{ ges = "tap", pos = P }
+    hold_at(Geom:new{ x = P.x + 4, y = P.y }, time.now())
+    assert_true(wire() == "" and app._deferred_click ~= nil, "mouse: the tap still waits")
+    dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+    local got = wire()
+    assert_true(got == "p1,p1", "mouse: a left press, then the move: " .. got)
+    hold_release_at(Geom:new{ x = P.x + 40, y = P.y })
+    assert_true(wire() == "p0" and no_right_button(sent), "mouse: released, no right button")
+    assert_true(app._deferred_click == nil, "the tap's click is gone")
+    close_viewer(app, remote)
+end)
+
+check("mouse_tap_then_false_hold_burst_and_pan_drags_with_the_button", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local wire = wire_log(app)
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+    dispatch_gesture{ ges = "tap", pos = P }
+    local lift = finger_down(P)
+    run_scheduled(app._deferred_click_task) -- (the finger is down: it waits)
+    local t0 = time.now()
+    hold_at(Geom:new{ x = P.x + 2, y = P.y }, t0)
+    -- the deferred click falling due while the hold is unconfirmed still waits
+    lift()
+    run_scheduled(app._deferred_click_task)
+    assert_true(wire() == "" and app._deferred_click ~= nil, "nothing sent yet, the tap still pending")
+    hold_release_at(Geom:new{ x = P.x + 2, y = P.y }, t0 + time.ms(1))
+    pan_from(Geom:new{ x = P.x + 5, y = P.y }, 30, 0, t0 + time.ms(2))
+    local got = wire()
+    assert_true(got == "p1,p1", "a button drag from the pointer: " .. got)
+    assert_true(sent.pointer[1].x == 200 and sent.pointer[1].y == 150, "pressed at the pointer")
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = P.x + 35, y = P.y } }
+    assert_true(wire() == "p0", "released")
+    assert_true(no_right_button(sent), "never a right button")
+    assert_true(app._deferred_click == nil and scheduled_delay(app._deferred_click_task) == nil, "no click left over")
+    close_viewer(app, remote)
+    -- without a pending tap the same burst only moves the pointer
+    app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    wire = wire_log(app)
+    c = app.canvas
+    P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+    hold_at(P, t0)
+    hold_release_at(P, t0 + time.ms(1))
+    pan_from(Geom:new{ x = P.x + 5, y = P.y }, 30, 0, t0 + time.ms(2))
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = P.x + 35, y = P.y } }
+    got = wire()
+    assert_true(got == "p0", "a pointer move only: " .. got)
+    assert_true(no_right_button(sent) and app._deferred_click == nil)
+    close_viewer(app, remote)
+end)
+
+check("pending_hold_ends_cleanly_when_the_gesture_goes_elsewhere", function()
+    local cases = {
+        close = function(app, remote) close_viewer(app, remote) end,
+        mode_switch = function(app) app:set_pointer_mode("mouse") end,
+        two_finger = function(app, _, P) two_finger_pan(P, 30, 0) end,
+        swipe = function(app, _, P) dispatch_gesture{ ges = "swipe", pos = P, direction = "east", distance = 100 } end,
+        menu = function(app) app:open_menu(); app:close_menu() end,
+    }
+    for name, act in pairs(cases) do
+        for _, phase in ipairs{ "pending", "released" } do
+            local app, remote, sent = new_app(400, 300)
+            local c = app.canvas
+            local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+            local t0 = time.now()
+            hold_at(P, t0)
+            if phase == "released" then hold_release_at(P, t0 + time.ms(1)) end
+            act(app, remote, P)
+            assert_true(scheduled_delay(app._hold_confirm_task) == nil
+                and scheduled_delay(app._false_hold_task) == nil, name .. "/" .. phase .. ": nothing left scheduled")
+            app._hold_confirm_task(); app._false_hold_task()
+            assert_true(#sent.pointer == 0, name .. "/" .. phase .. ": nothing sent, got " .. #sent.pointer)
+            assert_true(app:has_pointer_action() == false, name .. "/" .. phase .. ": nothing held")
+            if name ~= "close" then close_viewer(app, remote) end
+        end
+    end
+end)
+
+check("hold_confirmation_decisions_are_logged", function()
+    local logger = require("logger")
+    local lines = {}
+    local dbg = logger.dbg
+    logger.dbg = function(tag, ...)
+        if tag == "vnc-hold:" then lines[#lines + 1] = table.concat({ ... }, " ") end
+        return dbg(tag, ...)
+    end
+    local ok, err = pcall(function()
+        local app, remote = new_app(400, 300)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+        hold_at(P, time.now()); hold_release_at(P); run_scheduled(app._false_hold_task)
+        hold_at(P, time.now()); run_scheduled(app._hold_confirm_task); hold_release_at(P)
+        close_viewer(app, remote)
+    end)
+    logger.dbg = dbg
+    if not ok then error(err, 0) end
+    local all = table.concat(lines, "|")
+    assert_true(all:find("false hold", 1, true) and all:find("confirmed", 1, true), "logged: " .. all)
 end)
 
 if failures > 0 then

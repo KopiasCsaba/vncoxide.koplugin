@@ -102,8 +102,11 @@ drag with the left button instead of a click and a press; two quick taps still g
 finger that comes down near the tap and is still down when that interval runs out keeps the click
 waiting (at most the double-tap interval plus KOReader's long-press interval plus a quarter second
 after the tap) until it turns into a tap, a drag or a long press, so a slow second touch still
-drags. A second finger joining a long press or a tap-then-hold drag lets go of its button. Touch mode clicks are sent at once. Three-finger
-gestures are not used.
+drags. A second finger joining a long press or a tap-then-hold drag lets go of its button. Touch mode clicks are sent at once. A long press acts
+about 0.12 s after KOReader reports it (at once if the finger moves first): some PocketBook
+firmware holds a touch back for half a second and then delivers it in a burst, which KOReader
+takes for a long press; one that lifts within that time is treated as the tap or drag it really
+was. Three-finger gestures are not used.
 
 The end of a drag or long press is the viewer's wherever the finger lifts: over the toolbar, the
 **Send keys** panel or the on-screen keyboard (no key is typed then). Should that end still not

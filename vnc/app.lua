@@ -91,6 +91,11 @@ function ViewerApp:init()
     self._deferred_click_task = function() self:_deferred_click_due() end
     -- ends a drag or long press whose end went to a widget above us (see `_watch_release`)
     self._release_watch_task = function() self:_release_watch_tick() end
+    -- a long press waits for its confirmation (see `onHold`), a false one for what follows it
+    self._hold_pending = nil
+    self._hold_confirm_task = function() self:_hold_confirm_due() end
+    self._false_hold = nil
+    self._false_hold_task = function() self:_false_hold_due() end
     -- shown on open, so it is discoverable; a swipe down in the top zone hides it
     self.toolbar = Toolbar:new{ app = self }
     self.toolbar_visible = true
@@ -191,7 +196,7 @@ or spread zooms the canvas wherever it is made.
 function ViewerApp:_toolbar_owns(ges)
     if not (self.toolbar_visible and self.toolbar and ges and ges.pos) then return false end
     if not self:_input_target() then return false end
-    if self._drag_active or self._hold_active or self._mouse_moving then return false end
+    if self:_one_finger_busy() then return false end
     local kind = ges.ges or ""
     if kind == "swipe" or kind:sub(1, 11) == "two_finger_" or MULTI_FINGER[kind] then return false end
     local rel = ges.relative or { x = 0, y = 0 }
@@ -659,9 +664,16 @@ function ViewerApp:send_key(keysym, down)
     self.session:send_key(keysym, down)
 end
 
---- Ends a drag or long press whose release never reached us (see `_end_pointer_action`); no-op
---- when none is pending.
+--- Whether a one-finger action of ours is under way: a drag, a long press (also one still
+--- waiting for its confirmation) or a Mouse-mode pointer move. Its end is ours wherever it lifts.
+function ViewerApp:_one_finger_busy()
+    return (self._drag_active or self._hold_active or self._mouse_moving or self._hold_pending) and true or false
+end
+
+--- Ends a drag or long press whose release never reached us (see `_end_pointer_action`), and a
+--- long press still waiting for its confirmation; no-op when none is pending.
 function ViewerApp:_end_stale_pointer_action(reason)
+    self:_cancel_hold(reason or "stale")
     if self._drag_active or self._hold_active then
         self:_end_pointer_action(reason or "stale")
     end
@@ -679,7 +691,7 @@ remote. While one of ours is under way, such a gesture skips the keyboard and co
 function ViewerApp:_keep_drag_ends_from(widget)
     local handle = widget.handleEvent
     widget.handleEvent = function(w, event)
-        if event.handler == "onGesture" and (self._drag_active or self._hold_active or self._mouse_moving) then
+        if event.handler == "onGesture" and self:_one_finger_busy() then
             local ges = event.args and event.args[1]
             local kind = ges and ges.ges
             if DRAG_CONTINUATION[kind] then return nil end
@@ -726,6 +738,9 @@ end
 
 -- ---------------------------------------------------------------- canvas gestures
 
+-- (defined with the Mouse-mode helpers below)
+local double_tap_radius, finger_down_near
+
 -- A desktop only sees a double click when both clicks land within a few pixels of each other
 -- (4 px by default on Windows, about 5 on GTK), but a finger jitters 10-20 device pixels between
 -- two taps. So a Touch-mode tap that follows the previous one quickly and closely clicks at that
@@ -754,6 +769,7 @@ end
 
 function ViewerApp:onTap(_, ges)
     if not self:_input_target() then return nil end
+    self:_false_hold_followed_by(ges.pos, "tap")
     if self:get_pointer_mode() == "mouse" then
         self._last_touch_tap = nil
         return self:_mouse_tap(ges)
@@ -772,21 +788,25 @@ end
 function ViewerApp:onPan(_, ges)
     self._last_touch_tap = nil
     if not self:_input_target() then return nil end
-    if self._drag_active == "mouse" or self._mouse_moving
-            or (self._drag_active == nil and self:get_pointer_mode() == "mouse") then
-        return self:_mouse_pan(ges)
-    end
     -- A pan's `relative` is the accumulated delta since the first contact, so this recovers the
     -- exact press position without depending on `start_pos`.
     local rel = ges.relative or { x = 0, y = 0 }
     local start = Geom:new{ x = ges.pos.x - rel.x, y = ges.pos.y - rel.y }
+    -- the rest of a long press InkView cut short: one gesture with it (see `onHoldRelease`)
+    local held = self:_false_hold_followed_by(start, "pan")
+    if self._drag_active == "mouse" or self._mouse_moving
+            or (self._drag_active == nil and self:get_pointer_mode() == "mouse") then
+        return self:_mouse_pan(ges)
+    end
     -- a drag whose release never came has its own start: a new contact is a new gesture
     if self._drag_active and self._drag_start and self._drag_start:distance(start) > 1 then
         self:_end_pointer_action("stale drag")
     end
     if self._drag_active == nil then
         self:_end_stale_pointer_action() -- a long press whose release never came
-        local rx, ry = self:_to_remote(start.x, start.y)
+        -- (after a false hold the press goes where that contact came down)
+        local press = held and held.pos or start
+        local rx, ry = self:_to_remote(press.x, press.y)
         -- armed modifiers stay down for the whole drag (Shift+drag selects, Alt+drag moves)
         self:_press_armed()
         self:send_pointer(rx, ry, 1, "drag start")
@@ -828,6 +848,7 @@ swipe, which ends the drag itself too, as it gets the swipe first and then ignor
 ]]
 function ViewerApp:onSwipe(_, ges)
     self._last_touch_tap = nil
+    self:_cancel_hold("swipe")
     self:_end_quick_drag(ges)
     return nil
 end
@@ -840,9 +861,112 @@ function ViewerApp:_end_quick_drag(ges)
     end
 end
 
+--[[--
+Seconds a long press waits before it acts. On PocketBook, InkView sometimes withholds a touch's
+events for ~0.5 s (KOReader logs a ~530 ms poll gap), long enough for GestureDetector's hold timer
+to trip, and then delivers them in one burst: the lift at the same spot (hold_release ~10-15 ms
+after the hold), often followed by a new contact a few pixels away that pans - a quick tap or a
+drag that was never a long press. A genuine long press lifts at least ~100 ms after its hold (or
+moves first, a hold_pan), so a hold acts only once it has lasted this long.
+]]
+ViewerApp.HOLD_CONFIRM = 0.12
+-- After a false hold, a new contact this soon (and near it) continues the same gesture.
+ViewerApp.FALSE_HOLD_FOLLOW = 0.05
+
+--[[--
+A long press on the canvas. It does not act at once (see HOLD_CONFIRM): it is remembered and acts
+once confirmed - its confirmation time passing with the finger still down, or a hold_pan - while a
+hold_release before that makes it a false hold (`onHoldRelease`).
+]]
 function ViewerApp:onHold(_, ges)
-    self._last_touch_tap = nil
     if not self:_input_target() then return nil end
+    -- a new contact held right after a false hold: one continuous long press with it
+    self:_false_hold_followed_by(ges.pos, "hold")
+    self:_cancel_hold("new hold")
+    local mouse = self:get_pointer_mode() == "mouse"
+    self._hold_pending = {
+        pos = ges.pos:copy(), time = ges.time, mode = mouse and "mouse" or "touch",
+        near_tap = mouse and self:_near_deferred_click(ges.pos) or false,
+    }
+    logger.dbg("vnc-hold:", "pending", ges.pos.x, ges.pos.y, self._hold_pending.mode,
+        self._hold_pending.near_tap and "near a tap" or "")
+    UIManager:scheduleIn(self.HOLD_CONFIRM, self._hold_confirm_task)
+    return true
+end
+
+--- The confirmation time of a pending long press passed, its finger still down: it is genuine.
+function ViewerApp:_hold_confirm_due()
+    if not self._hold_pending then return end
+    logger.dbg("vnc-hold:", "confirmed, still down after", self.HOLD_CONFIRM, "s")
+    self:_hold_confirmed()
+end
+
+--- A pending long press is genuine: it acts now - a right click, or (Mouse mode, a tap pending
+--- near it) a left-button drag. Nothing when the canvas got covered meanwhile.
+function ViewerApp:_hold_confirmed()
+    local pending = self._hold_pending
+    self._hold_pending = nil
+    UIManager:unschedule(self._hold_confirm_task)
+    if not pending or not self:_input_target() then return false end
+    return self:_hold_act(pending)
+end
+
+--- Forgets a long press still waiting for its confirmation, and a false one waiting for what
+--- follows it: nothing was sent for either, nothing is.
+function ViewerApp:_cancel_hold(reason)
+    if self._hold_pending then
+        logger.dbg("vnc-hold:", "pending hold cancelled:", reason or "?")
+        self._hold_pending = nil
+        UIManager:unschedule(self._hold_confirm_task)
+    end
+    if self._false_hold then
+        logger.dbg("vnc-hold:", "false hold dropped:", reason or "?")
+        self._false_hold = nil
+        UIManager:unschedule(self._false_hold_task)
+    end
+end
+
+--[[--
+The window after a false hold passed. A finger still down near it may yet turn into its pan or
+tap (it can take a while to cross the pan threshold): wait for it, re-checked every
+MOUSE_CLICK_RECHECK, up to the hold interval. Otherwise it was a tap at the hold position.
+]]
+function ViewerApp:_false_hold_due()
+    local held = self._false_hold
+    if not held then return end
+    if time.now() < held.deadline and finger_down_near(held.pos, double_tap_radius()) then
+        UIManager:scheduleIn(self.MOUSE_CLICK_RECHECK, self._false_hold_task)
+        return
+    end
+    self._false_hold = nil
+    logger.dbg("vnc-hold:", "false hold, nothing followed: a tap")
+    self:onTap(nil, { ges = "tap", pos = held.pos, time = held.time })
+end
+
+--[[--
+A gesture of kind `kind` ("tap", "pan", "hold") of a contact that began at `start` comes while a
+false hold waits for what follows it. Near it, it is the rest of the same gesture: the false hold
+is taken over (returned; it sends nothing of its own). Elsewhere, the false hold was a tap of its
+own, which goes first. Nil when no false hold waits or it is not continued.
+]]
+function ViewerApp:_false_hold_followed_by(start, kind)
+    local held = self._false_hold
+    if not held then return nil end
+    self._false_hold = nil
+    UIManager:unschedule(self._false_hold_task)
+    if start and held.pos:distance(start) <= double_tap_radius() then
+        logger.dbg("vnc-hold:", "false hold continued by a", kind)
+        return held
+    end
+    logger.dbg("vnc-hold:", "false hold, then a", kind, "elsewhere: a tap first")
+    self:onTap(nil, { ges = "tap", pos = held.pos, time = held.time })
+    return nil
+end
+
+--- What a confirmed long press does (the pending record `p`: `pos`, `mode`).
+function ViewerApp:_hold_act(p)
+    self._last_touch_tap = nil
+    local ges = { ges = "hold", pos = p.pos }
     local mouse = self:get_pointer_mode() == "mouse"
     if mouse and self:_near_deferred_click(ges.pos) then
         return self:_mouse_hold_drag(ges)
@@ -892,6 +1016,19 @@ of ours ends instead
   a two_finger_hold_pan_release, not the hold_release we wait for.
 ]]
 function ViewerApp:onHoldPan(_, ges)
+    if self._hold_pending then
+        if not self:_input_target() then
+            self:_cancel_hold("popup")
+            return nil
+        end
+        if ges.relative == nil or ges.span or ges.start_span then
+            self:_cancel_hold("two-finger gesture")
+            return true
+        end
+        -- it moves before its lift: a genuine long press
+        logger.dbg("vnc-hold:", "confirmed by a hold_pan")
+        self:_hold_confirmed()
+    end
     if not self._hold_active then return nil end
     if not self:_input_target() then
         self:_end_pointer_action("popup")
@@ -912,6 +1049,10 @@ the second finger's own hold fires, voiding ours), a two_finger_hold_pan, or a
 two_finger_hold(_pan)_release - never the hold_release it waits for. Let go now, at the pointer.
 ]]
 function ViewerApp:onTwoFingerHold()
+    if self._hold_pending or self._false_hold then
+        self:_cancel_hold("two-finger gesture")
+        if not (self._hold_active or self._drag_active) then return true end
+    end
     if not (self._hold_active or self._drag_active) then return nil end
     self:_end_pointer_action("two-finger gesture")
     return true
@@ -924,6 +1065,24 @@ ViewerApp.onTwoFingerHoldPanRelease = ViewerApp.onTwoFingerHold
 --- the meantime or the finger lifted over the key panel: the button and the modifiers it took
 --- would otherwise stay down on the remote.
 function ViewerApp:onHoldRelease(_, ges)
+    local pending = self._hold_pending
+    if pending then
+        -- lifted before its confirmation: InkView's burst, not a long press (see HOLD_CONFIRM)
+        self._hold_pending = nil
+        UIManager:unschedule(self._hold_confirm_task)
+        if not self:_input_target() then
+            logger.dbg("vnc-hold:", "false hold under a popup: dropped")
+            return true
+        end
+        logger.dbg("vnc-hold:", "false hold, lifted before", self.HOLD_CONFIRM, "s; waiting",
+            self.FALSE_HOLD_FOLLOW, "s for what follows")
+        local gd = Device.input and Device.input.gesture_detector or require("device/gesturedetector")
+        pending.time = type(ges.time) == "number" and ges.time or pending.time
+        pending.deadline = time.now() + time.s(self.FALSE_HOLD_FOLLOW) + gd.ges_hold_interval
+        self._false_hold = pending
+        UIManager:scheduleIn(self.FALSE_HOLD_FOLLOW, self._false_hold_task)
+        return true
+    end
     if not self._hold_active then return nil end
     local rx, ry
     if self._hold_active == "mouse" or self._hold_active == "mouse_drag" then
@@ -946,6 +1105,7 @@ two_finger_pan_release (Contact:handlePanRelease), not the pan_release / hold_re
 waiting for. Let go of the button and the modifiers now, before the two-finger gesture runs.
 ]]
 function ViewerApp:_end_pointer_action(reason)
+    self:_cancel_hold(reason)
     self._last_touch_tap = nil
     self._mouse_moving = nil
     if self._drag_active or self._hold_active then
@@ -1049,7 +1209,7 @@ end
 
 --- How near (screen pixels) a second tap or a drag's start must land to a pending tap to count
 --- as its double tap.
-local function double_tap_radius() return Screen:scaleByDPI(50) end
+function double_tap_radius() return Screen:scaleByDPI(50) end
 
 --[[--
 The fingers GestureDetector has down now, as a list of `{ slot =, contact =, start = }`, `start`
@@ -1081,7 +1241,7 @@ local function fingers_down()
 end
 
 --- Whether a finger is down that came down within `radius` of `pos` (or whose start is unknown).
-local function finger_down_near(pos, radius)
+function finger_down_near(pos, radius)
     for _i, f in ipairs(fingers_down() or {}) do
         if f.start == nil or pos:distance(f.start) <= radius then return true end
     end
@@ -1139,7 +1299,10 @@ down (see `mouse_click_wait_cap`): then it waits for that finger's gesture a lit
 function ViewerApp:_deferred_click_due()
     local pending = self._deferred_click
     if not pending then return end
-    if time.now() < pending.deadline and finger_down_near(pending.pos, double_tap_radius()) then
+    -- (a long press near it still unconfirmed, or a false one awaiting its follow-up, decides it)
+    local hold = self._hold_pending or self._false_hold
+    if (hold and hold.near_tap) or (time.now() < pending.deadline
+            and finger_down_near(pending.pos, double_tap_radius())) then
         UIManager:scheduleIn(self.MOUSE_CLICK_RECHECK, self._deferred_click_task)
         return
     end
