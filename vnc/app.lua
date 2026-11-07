@@ -82,6 +82,9 @@ function ViewerApp:init()
     -- true while a two-finger pan/zoom moves the view: the visible area is reported once it ends
     self._view_moving = false
     self._view_settle_task = function() self:_view_settled() end
+    -- the toolbar toggle: a two-finger drag scrolls the remote instead of moving the view; off on
+    -- every open, never stored
+    self.scroll_lock = false
     -- Mouse mode: a tap's click waits out the double-tap interval (see `_mouse_tap`)
     self._deferred_click = nil
     self._deferred_click_task = function() self:_flush_deferred_click() end
@@ -983,21 +986,67 @@ function ViewerApp:_pointer_action_changed()
     if self.key_panel then self.key_panel:pointer_action_changed() end
 end
 
+--[[--
+The movement of the two-finger drag that started at `start` since its previous event, given its
+offset `rel` from that start: GestureDetector reports `relative` from where the gesture began, on
+every move (a new start point is a new gesture). Nil once the drag was ended early (a scroll lock
+toggle, see `toggle_scroll_lock`): the rest of it does nothing.
+]]
+function ViewerApp:_two_finger_move(start, rel)
+    rel = rel or { x = 0, y = 0 }
+    local sx, sy = start and start.x, start and start.y
+    local g = self._two_finger_pan
+    if not g or g.sx ~= sx or g.sy ~= sy then
+        -- `wx`, `wy`: the scroll-lock movement not yet turned into wheel notches
+        g = { sx = sx, sy = sy, x = 0, y = 0, wx = 0, wy = 0 }
+        self._two_finger_pan = g
+    end
+    if g.ended then return nil end
+    local dx, dy = rel.x - g.x, rel.y - g.y
+    g.x, g.y = rel.x, rel.y
+    return dx, dy
+end
+
+--- Where scroll-lock notches go: the mouse pointer in Mouse mode, the fingers (`pos`) in Touch
+--- mode (nil: the last pointer position, see `scroll_wheel`).
+function ViewerApp:_wheel_position(pos)
+    if self:get_pointer_mode() == "mouse" then return self:_mouse_pointer_px() end
+    if pos then return self:_to_remote(pos.x, pos.y) end
+end
+
+--[[--
+Scroll lock: turns the drag's movement into wheel notches, one per tenth of the screen height
+(vertically) or width (sideways); what is left over waits for the next move. The content follows
+the fingers, as on a phone: fingers going up scroll down, going left scroll right.
+]]
+function ViewerApp:_scroll_by_drag(dx, dy, pos)
+    local g = self._two_finger_pan
+    g.scrolled = true
+    g.wx, g.wy = g.wx + dx, g.wy + dy
+    -- whole steps, towards zero (the epsilon keeps an exact multiple of a fractional step whole)
+    local function steps(v, step)
+        local n = math.floor(math.abs(v) / step + 1e-9)
+        return v < 0 and -n or n
+    end
+    local step_y, step_x = Screen:getHeight() / 10, Screen:getWidth() / 10
+    local ny, nx = steps(g.wy, step_y), steps(g.wx, step_x)
+    if ny == 0 and nx == 0 then return end
+    g.wy, g.wx = g.wy - ny * step_y, g.wx - nx * step_x
+    self:_flush_deferred_click()
+    local x, y = self:_wheel_position(pos)
+    if ny ~= 0 then self:scroll_wheel(ny < 0 and 1 or -1, math.abs(ny), false, x, y) end
+    if nx ~= 0 then self:scroll_wheel(nx < 0 and 1 or -1, math.abs(nx), true, x, y) end
+end
+
 function ViewerApp:onTwoFingerPan(_, ges)
     self:_end_pointer_action()
     if not self:_input_target() then return nil end
-    -- GestureDetector reports `relative` from where the gesture began, on every move: pan by what
-    -- changed since the previous event of the same gesture (a new start point is a new gesture)
-    local rel = ges.relative or { x = 0, y = 0 }
-    local sp = ges.start_pos
-    local sx, sy = sp and sp.x, sp and sp.y
-    local last = self._two_finger_pan
-    if not last or last.sx ~= sx or last.sy ~= sy then
-        last = { sx = sx, sy = sy, x = 0, y = 0 }
-        self._two_finger_pan = last
+    local dx, dy = self:_two_finger_move(ges.start_pos, ges.relative)
+    if not dx then return true end
+    if self.scroll_lock then
+        self:_scroll_by_drag(dx, dy, ges.pos)
+        return true
     end
-    local dx, dy = rel.x - last.x, rel.y - last.y
-    last.x, last.y = rel.x, rel.y
     -- the picture follows the fingers, like any touch scroll
     self.remote:pan_by(dx, dy)
     self:_view_move()
@@ -1007,10 +1056,30 @@ end
 
 function ViewerApp:onTwoFingerPanRelease(_, ges)
     self:_end_pointer_action()
+    local g = self._two_finger_pan
     self._two_finger_pan = nil
+    -- a scroll moved nothing here, and an early-ended pan was settled when it ended
+    if g and (g.scrolled or g.ended) then return true end
     self:_view_settled()
     UIManager:setDirty(self, "ui")
     return true
+end
+
+--[[--
+Turns scroll lock on or off (the toolbar toggle, drawn inverted while on). A two-finger drag under
+way ends here: whatever is left of it neither moves the view nor scrolls.
+]]
+function ViewerApp:toggle_scroll_lock()
+    self.scroll_lock = not self.scroll_lock
+    local g = self._two_finger_pan
+    if g and not g.ended then
+        g.ended = true
+        if self._view_moving then
+            self:_view_settled()
+            UIManager:setDirty(self, "ui")
+        end
+    end
+    self:_toolbar_changed()
 end
 
 function ViewerApp:_live_zoom(ges)
@@ -1062,9 +1131,15 @@ end
 --[[--
 A quick two-finger drag ends as a flick (GestureDetector turns its two_finger_pan into a
 two_finger_swipe when the fingers lift soon after moving): it only ends the view pan, the way
-two_finger_pan_release does.
+two_finger_pan_release does. With scroll lock on, the flick's movement past the drag's last event
+still scrolls (a swipe reports its start as `pos` and its end as `end_pos`).
 ]]
 function ViewerApp:onTwoFingerSwipe(_, ges)
+    if self.scroll_lock and ges.pos and ges.end_pos and self:_input_target() then
+        local rel = { x = ges.end_pos.x - ges.pos.x, y = ges.end_pos.y - ges.pos.y }
+        local dx, dy = self:_two_finger_move(ges.pos, rel)
+        if dx then self:_scroll_by_drag(dx, dy, ges.end_pos) end
+    end
     self:onTwoFingerPanRelease(nil, ges)
     return true
 end
@@ -1160,17 +1235,24 @@ function ViewerApp:_wheel_direction(key)
     return self:_page_direction(key)
 end
 
---- Scrolls the remote wheel (1 = down, -1 = up) at the last pointer position, or at the centre
---- of the remote screen when no pointer event has been sent yet.
-function ViewerApp:scroll_wheel(direction, notches)
+-- Wheel buttons as pointer masks: [horizontal][direction]. Vertical: 4 up, 5 down; horizontal:
+-- 6 left, 7 right.
+local WHEEL_MASK = { [false] = { [-1] = 8, [1] = 16 }, [true] = { [-1] = 32, [1] = 64 } }
+
+--[[--
+Scrolls the remote wheel (1 = down, -1 = up; `horizontal`: 1 = right, -1 = left), each notch a
+press and release, at `x`, `y` on the remote, else the last pointer position, or at the centre of
+the remote screen when no pointer event has been sent yet.
+]]
+function ViewerApp:scroll_wheel(direction, notches, horizontal, x, y)
     local w, h = self.remote:get_size()
-    local x, y = self._pointer_x, self._pointer_y
+    if not x then x, y = self._pointer_x, self._pointer_y end
     if not x then
         x, y = math.floor(w / 2), math.floor(h / 2)
     end
     -- the remote may have shrunk since the pointer was recorded
     x, y = math.max(0, math.min(x, w - 1)), math.max(0, math.min(y, h - 1))
-    local mask = direction > 0 and 16 or 8
+    local mask = WHEEL_MASK[horizontal and true or false][direction > 0 and 1 or -1]
     self.session:note_input("wheel")
     for _ = 1, notches or ViewerApp.WHEEL_NOTCHES do
         self:send_pointer(x, y, mask)

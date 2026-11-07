@@ -9,7 +9,7 @@ hides it (`ViewerApp:toggle_toolbar`).
 Buttons, left to right: Close (disconnect, after a confirmation), Display (the display panel),
 Mode (tap: Touch/Mouse, the label shows the current one; long press: the help), Keyboard (tap: shows or hides the on-screen
 keyboard with the key strip, or closes the "Send keys" panel; long press: that panel), Rotate,
-Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More (the menu).
+Scroll lock (a toggle, drawn inverted while on: a two-finger drag scrolls the remote), Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More (the menu).
 
 @module vnc.toolbar
 ]]
@@ -25,6 +25,7 @@ local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
+local IconWidget = require("ui/widget/iconwidget")
 local Icons = require("vnc/icons")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Size = require("ui/size")
@@ -36,7 +37,7 @@ local Toolbar = InputContainer:extend{
     app = nil, -- the @{vnc.app} instance
 }
 
-Toolbar.IDS = { "close", "display", "mode", "keyboard", "rotate", "scroll_up", "scroll_down", "more" }
+Toolbar.IDS = { "close", "display", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up", "scroll_down", "more" }
 
 -- Labels for the buttons without a fitting icon: these glyphs come from KOReader's default UI font
 -- fallbacks (FreeSerif has both).
@@ -57,7 +58,7 @@ local function confirm_disconnect(app)
 end
 
 --- Per button: an icon from KOReader's set (`icon`), one of the plugin's own (`icon_file`) or a text
---- label, and what a tap (and a long press) does.
+--- label, what a tap (and a long press) does, and for a toggle whether it is on (`selected`).
 local function specs(app)
     return {
         close = { icon = "close", callback = function() confirm_disconnect(app) end },
@@ -73,10 +74,23 @@ local function specs(app)
             hold_callback = function() app:open_key_panel() end,
         },
         rotate = { icon = "appbar.rotation", callback = function() app:rotate(1) end },
+        scroll_lock = {
+            icon_file = Icons.path("scroll-lock"),
+            selected = app.scroll_lock,
+            callback = function() app:toggle_scroll_lock() end,
+        },
         scroll_up = { icon = "move.up", callback = function() app:scroll_wheel(-1, 1) end },
         scroll_down = { icon = "move.down", callback = function() app:scroll_wheel(1, 1) end },
         more = { icon = "appbar.menu", callback = function() app:open_menu() end },
     }
+end
+
+--- Button only takes icon names, which KOReader resolves in its own folders: give `button` a fresh
+--- image of the plugin icon `file` instead, at the same size, in the place the label is painted from.
+local function show_plugin_icon(button, file, size)
+    button.label_widget:free()
+    button.label_widget = IconWidget:new{ file = file, width = size, height = size }
+    button.label_container[1] = button.label_widget
 end
 
 function Toolbar:init()
@@ -93,7 +107,7 @@ function Toolbar:visible_ids()
     return ids
 end
 
---- Rebuilds the bar for the current screen size, pointer mode and scroll setting.
+--- Rebuilds the bar for the current screen size, pointer mode, scroll lock and scroll setting.
 function Toolbar:relayout()
     if self[1] then self[1]:free() end
     self.button_by_id = {}
@@ -128,14 +142,11 @@ function Toolbar:relayout()
             padding = padding,
             callback = act(spec.callback),
             hold_callback = act(spec.hold_callback),
+            -- a toggle that is on is drawn inverted
+            preselect = spec.selected or nil,
             show_parent = app,
         }
-        if spec.icon_file then
-            -- Button only takes icon names, which KOReader resolves in its own folders: point the
-            -- image at our file instead (same size), to be rendered on the next paint
-            button.label_widget:free()
-            button.label_widget.file = spec.icon_file
-        end
+        if spec.icon_file then show_plugin_icon(button, spec.icon_file, icon_size) end
         self.button_by_id[id] = button
         group[#group + 1] = CenterContainer:new{ dimen = Geom:new{ w = cell, h = cell }, button }
     end

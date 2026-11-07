@@ -4696,7 +4696,7 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     assert_true(app.toolbar_visible, "shown on open")
     local Toolbar = require("vnc/toolbar")
-    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,mode,keyboard,rotate,scroll_up,scroll_down,more")
+    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,more")
     local before = Screen:getRotationMode()
     tap_toolbar(app, "rotate")
     assert_true(Screen:getRotationMode() == (before + 1) % 4, "rotated a quarter turn clockwise")
@@ -4825,6 +4825,215 @@ check("toolbar_toggle_repaints_only_its_area", function()
     end)
     UIManager.setDirty = real
     assert_true(ok, tostring(err))
+    close_viewer(app, remote)
+end)
+
+-- ---------------------------------------------------------------- scroll lock
+
+--- The masks of the pointer events sent so far, comma separated; clears the record.
+local function take_masks(sent)
+    local masks = {}
+    for _, e in ipairs(sent.pointer) do masks[#masks + 1] = e.mask end
+    sent.pointer = {}
+    return table.concat(masks, ",")
+end
+
+--- A two-finger drag event as GestureDetector reports it: from `start`, `rel` away from it so far.
+local function two_finger_pan(start, rx, ry)
+    dispatch_gesture{ ges = "two_finger_pan", start_pos = Geom:new{ x = start.x, y = start.y },
+        pos = Geom:new{ x = start.x + rx, y = start.y + ry }, relative = { x = rx, y = ry } }
+end
+
+local function two_finger_lift(at)
+    dispatch_gesture{ ges = "two_finger_pan_release", pos = Geom:new{ x = at.x, y = at.y } }
+end
+
+check("scroll_lock_off_two_finger_drag_pans", function()
+    local app, remote, sent = new_app(2000, 1500)
+    assert_true(app.scroll_lock == false, "off on open")
+    app:zoom_to(2)
+    local vy = remote.view_y
+    local start = { x = 300, y = 500 }
+    two_finger_pan(start, 0, -Screen:getHeight() * 0.3)
+    two_finger_lift(start)
+    assert_true(remote.view_y ~= vy, "the picture moved")
+    for _, e in ipairs(sent.pointer) do
+        assert_true(e.mask ~= 8 and e.mask ~= 16 and e.mask ~= 32 and e.mask ~= 64, "no wheel, got mask " .. e.mask)
+    end
+    close_viewer(app, remote)
+end)
+
+check("scroll_lock_on_two_finger_drag_sends_wheel_notches", function()
+    local app, remote, sent = new_app(2000, 1500)
+    app:zoom_to(2)
+    app:toggle_scroll_lock()
+    assert_true(app.scroll_lock == true, "on")
+    local vx, vy, scale = remote.view_x, remote.view_y, remote:get_scale()
+    local sy, sx = Screen:getHeight() / 10, Screen:getWidth() / 10
+    local start = { x = 300, y = 500 }
+    -- fingers up 3/10 of the screen, in two moves: three notches down, at the fingers
+    two_finger_pan(start, 0, -1.5 * sy)
+    two_finger_pan(start, 0, -3 * sy)
+    local wx, wy = app:_to_remote(start.x, start.y - 3 * sy)
+    local last = sent.pointer[#sent.pointer]
+    assert_true(last and last.x == wx and last.y == wy,
+        string.format("at the fingers (%d,%d), got (%s,%s)", wx, wy, tostring(last and last.x), tostring(last and last.y)))
+    two_finger_lift(start)
+    assert_true(take_masks(sent) == "16,0,16,0,16,0", "three notches down")
+    assert_true(remote.view_x == vx and remote.view_y == vy and remote:get_scale() == scale, "the view stays")
+    -- fingers left 2/10 of the width: two notches right
+    two_finger_pan(start, -2 * sx, 0); two_finger_lift(start)
+    assert_true(take_masks(sent) == "64,0,64,0", "two notches right")
+    -- down: up; right: left; less than a step: nothing
+    start = { x = 310, y = 500 }
+    two_finger_pan(start, 0, sy); two_finger_lift(start)
+    assert_true(take_masks(sent) == "8,0", "one notch up")
+    start = { x = 320, y = 500 }
+    two_finger_pan(start, sx, 0); two_finger_lift(start)
+    assert_true(take_masks(sent) == "32,0", "one notch left")
+    start = { x = 330, y = 500 }
+    two_finger_pan(start, 0.9 * sx, -0.9 * sy); two_finger_lift(start)
+    assert_true(take_masks(sent) == "", "less than a step sends nothing")
+    -- a quick drag ends as a flick: its remaining distance still scrolls
+    start = { x = 340, y = 500 }
+    two_finger_pan(start, 0, -sy)
+    dispatch_gesture{ ges = "two_finger_swipe", direction = "north", distance = 3 * sy,
+        pos = Geom:new{ x = start.x, y = start.y }, end_pos = Geom:new{ x = start.x, y = start.y - 3 * sy } }
+    assert_true(take_masks(sent) == "16,0,16,0,16,0", "the flick finishes the three notches")
+    assert_true(app._two_finger_pan == nil, "and ends the gesture")
+    assert_true(remote.view_x == vx and remote.view_y == vy, "the view still stays")
+    close_viewer(app, remote)
+end)
+
+check("scroll_lock_notches_go_to_the_mouse_pointer_in_mouse_mode", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    app:toggle_scroll_lock()
+    local px, py = app:_mouse_pointer_px()
+    local start = { x = 100, y = 400 }
+    two_finger_pan(start, 0, Screen:getHeight() / 10); two_finger_lift(start)
+    local e = sent.pointer[1]
+    assert_true(take_masks(sent) == "8,0" and e.x == px and e.y == py,
+        string.format("one notch up at the mouse pointer (%d,%d), got (%d,%d)", px, py, e.x, e.y))
+    close_viewer(app, remote)
+end)
+
+check("scroll_lock_neither_sends_nor_takes_armed_modifiers", function()
+    local app, remote, sent = new_app(2000, 1500)
+    local panel = open_key_panel(app)
+    touch(panel, "mod:Shift")
+    app:toggle_scroll_lock()
+    sent.key = {}; sent.pointer = {}
+    -- above the panel
+    local start = { x = 300, y = 300 }
+    two_finger_pan(start, 0, -2 * Screen:getHeight() / 10); two_finger_lift(start)
+    local masks = take_masks(sent)
+    assert_true(masks == "16,0,16,0", "two notches, got " .. masks)
+    assert_true(take_keys(sent) == "", "no key sent")
+    assert_true(panel:modifier_state("Shift") == "armed", "Shift stays armed")
+    app:close_key_panel()
+    close_viewer(app, remote)
+end)
+
+check("scroll_lock_pinch_still_zooms_and_two_finger_tap_fits", function()
+    local app, remote, sent = new_app(2000, 1500)
+    app:toggle_scroll_lock()
+    local scale = remote:get_scale()
+    dispatch_gesture{ ges = "outward_pan", pos = Geom:new{ x = 300, y = 400 }, span = 200, start_span = 100 }
+    dispatch_gesture{ ges = "spread", pos = Geom:new{ x = 300, y = 400 }, span = 200 }
+    assert_true(remote:get_scale() > scale * 1.5, "the spread zoomed in")
+    dispatch_gesture{ ges = "two_finger_tap", pos = Geom:new{ x = 300, y = 400 }, span = 50 }
+    assert_true(app.settings.zoom_mode == "fit", "two-finger tap fits")
+    assert_true(take_masks(sent) == "", "no wheel")
+    close_viewer(app, remote)
+    local app2, remote2 = new_app()
+    assert_true(app2.scroll_lock == false, "a new viewer starts with scroll lock off")
+    close_viewer(app2, remote2)
+end)
+
+check("scroll_lock_toggle_ends_the_two_finger_gesture", function()
+    local app, remote, sent = new_app(2000, 1500)
+    app:zoom_to(2)
+    local sy = Screen:getHeight() / 10
+    -- turning it on mid-pan: the rest of that drag neither pans nor scrolls
+    local start = { x = 300, y = 500 }
+    two_finger_pan(start, 0, -sy)
+    local vy = remote.view_y
+    app:toggle_scroll_lock()
+    assert_true(not app._view_moving, "the pan settled")
+    two_finger_pan(start, 0, -4 * sy)
+    assert_true(remote.view_y == vy and take_masks(sent) == "", "no stray pan or notch")
+    two_finger_lift(start)
+    -- the next drag scrolls
+    start = { x = 310, y = 500 }
+    two_finger_pan(start, 0, -sy); two_finger_lift(start)
+    assert_true(take_masks(sent) == "16,0", "the next drag scrolls")
+    -- turning it off mid-drag: no notch and no pan for the rest of it
+    start = { x = 320, y = 500 }
+    two_finger_pan(start, 0, -0.5 * sy)
+    app:toggle_scroll_lock()
+    two_finger_pan(start, 0, -3 * sy)
+    dispatch_gesture{ ges = "two_finger_swipe", direction = "north", distance = 4 * sy,
+        pos = Geom:new{ x = start.x, y = start.y }, end_pos = Geom:new{ x = start.x, y = start.y - 4 * sy } }
+    assert_true(remote.view_y == vy and take_masks(sent) == "", "no notch, no pan after the toggle")
+    close_viewer(app, remote)
+end)
+
+check("toolbar_scroll_lock_button_toggles_and_shows_selected", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local Toolbar = require("vnc/toolbar")
+    local ids = table.concat(Toolbar.IDS, ",")
+    assert_true(ids:find("rotate,scroll_lock,scroll_up", 1, true), "right after Rotate: " .. ids)
+    assert_true(app.toolbar.button_by_id.scroll_up == nil and app.toolbar.button_by_id.scroll_lock ~= nil,
+        "shown without the scroll buttons setting")
+    local Icons = require("vnc/icons")
+    local path = Icons.path("scroll-lock")
+    local f = io.open(path, "rb")
+    assert_true(f ~= nil, "icons/scroll-lock.svg exists")
+    local svg = f:read("*a"); f:close()
+    assert_true(svg:find('viewBox="0 0 48 48"', 1, true), "the mdlight viewBox")
+    for id, name in pairs({ scroll_lock = "scroll-lock", keyboard = "keyboard" }) do
+        local b = app.toolbar.button_by_id[id]
+        assert_true(b.label_widget.file == Icons.path(name), id .. " draws its icon file")
+        assert_true(b.label_container[1] == b.label_widget, id .. ": the icon is the painted one")
+    end
+    UIManager:forceRePaint()
+    local real = UIManager.setDirty
+    local seen = {}
+    UIManager.setDirty = function(self_, widget, mode, region)
+        if type(mode) == "function" then mode, region = mode() end
+        seen[#seen + 1] = { mode = mode, region = region }
+        return real(self_, widget, mode, region)
+    end
+    local ok, err = pcall(function()
+        for _, want in ipairs({ true, false }) do
+            local pos = toolbar_button_centre(app, "scroll_lock")
+            seen = {}
+            dispatch_gesture{ ges = "tap", pos = pos }
+            assert_true(app.scroll_lock == want, "toggled to " .. tostring(want))
+            local b = app.toolbar.button_by_id.scroll_lock
+            assert_true(b.label_widget.file == path and b.label_container[1] == b.label_widget,
+                "still the plugin icon after the relayout")
+            assert_true((b.frame.invert and true or false) == want, "inverted exactly while on")
+            local bar, hit = app.toolbar.dimen, false
+            for _, r in ipairs(seen) do
+                assert_true(r.mode ~= "full" and r.mode ~= "flashui" and r.mode ~= "partial",
+                    "no flashing refresh: " .. tostring(r.mode))
+                local g = r.region
+                assert_true(g and g.w <= bar.w and g.h <= bar.h, "nothing beyond the bar is refreshed")
+                if r.mode == "ui" and g:contains(b.dimen or bar) then hit = true end
+            end
+            assert_true(hit, "a ui refresh of the toolbar")
+            UIManager:forceRePaint()
+            -- the button's corner is in its padding: white normally, black inverted
+            local d = b.dimen
+            local px = pixel_at(Screen.bb, d.x + 1, d.y + 1)
+            local black = px.r < 128
+            assert_true(black == want, "painted " .. (want and "inverted" or "plain"))
+        end
+    end)
+    UIManager.setDirty = real
+    assert_true(ok, tostring(err))
+    assert_true(#sent.pointer == 0, "nothing sent")
     close_viewer(app, remote)
 end)
 
