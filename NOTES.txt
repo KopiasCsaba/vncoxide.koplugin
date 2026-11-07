@@ -71,8 +71,10 @@ tools/ui_smoke.lua        Headless UI tests (real plugin, dialogs and viewer wid
                           process, no server).
 tools/vnc-server.py       PC-side launcher: shares an X11 monitor/area via x11vnc, optional red
                           on-screen frame (ctypes libX11). Standard library only.
+tools/vnc_zoom.py         Its -z server: ffmpeg x11grab capture/scale/convert, RFB 3.8 (None/VNC
+                          auth with pure-Python DES), ZRLE/Raw 64x64 tiles, XTest input.
 tools/test_vnc_server.py  Unit + end-to-end tests for it (fake x11vnc/xrandr stubs); run with
-                          `python3 tools/test_vnc_server.py`.
+                          `python3 tools/test_vnc_server.py` (also runs tools/test_vnc_zoom.py).
 tools/tight_jpeg.b64      The fixed 32x32 JPEG the mock serves for its Tight JPEG rectangle.
 tools/mock_vnc_client.py  An independent Python RFB 3.8 *client* fixture (decodes every encoding
                           itself, can send input) - used to validate the server half against

@@ -321,7 +321,8 @@ reports and patches are welcome.
 
 `tools/vnc-server.py` shares a monitor (or just part of it) of a running X11 session with
 `x11vnc`, so this plugin's viewer can show it. It needs no venv: it uses only the Python 3
-standard library (plus `x11vnc` and `xrandr`: `sudo apt install x11vnc x11-xserver-utils`).
+standard library (plus `x11vnc` and `xrandr`: `sudo apt install x11vnc x11-xserver-utils`; with
+`-z`, `ffmpeg` instead of `x11vnc`: `sudo apt install ffmpeg x11-xserver-utils`).
 Run `tools/vnc-server.py -h` for every option.
 
 ```
@@ -330,27 +331,36 @@ tools/vnc-server.py                              # primary monitor, port 5900, a
 tools/vnc-server.py -o HDMI-1 -n                 # a named output, no password
 tools/vnc-server.py -s 632x840 -O 0,40 -f        # top-left 632x840 below a 40 px taskbar, with a red frame
 tools/vnc-server.py -s 632x840 -z 2 --sharp      # frames scaled 2x on the PC (1264x1680 for the reader)
-tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; extra args go to x11vnc
+tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; extra args go to x11vnc (not with -z)
 ```
 
 - `-s WxH` / `-O X,Y` select the area, handy to match the reader's screen size.
-- `-z ZOOM` (`2`, `1.5`, `4/3`) makes x11vnc scale the frames before sending (`-scale`); `--sharp`
-  adds nearest-neighbour scaling (no blending, crisper text). The start-up line shows the frame size
-  the viewer will get, e.g. `-s 632x840 -z 2` gives 1264x1680 for a 1264x1680 screen. Set the viewer
-  zoom to 100% then: the reader does no scaling and draws fastest, at the price of zoom² times the
-  pixels to transfer and decode. The viewer menu's "Sharp scaling" is the client-side
-  alternative that keeps the bandwidth low.
+- `-z ZOOM` (`2`, `1.5`, `4/3`) scales the frames on the PC before sending; `--sharp` uses
+  nearest-neighbour scaling (no blending, crisper text), otherwise ffmpeg's `area` filter blends
+  neighbouring pixels (no over- or undershoot at edges, unlike bicubic). The start-up line shows the frame size the viewer will get, e.g.
+  `-s 632x840 -z 2` gives 1264x1680 for a 1264x1680 screen. Set the viewer zoom to 100% then: the
+  reader does no scaling and draws fastest, at the price of zoom² times the pixels to transfer and
+  decode. The viewer menu's "Sharp scaling" is the client-side alternative that keeps the bandwidth
+  low.
+- With `-z` the script does not use x11vnc but its own small RFB server (`tools/vnc_zoom.py`), because
+  x11vnc's `-clip` + `-scale` clamps the arrow it draws to the unscaled size, so on the reader the
+  pointer looks stuck in the top-left part. `ffmpeg` grabs the area 10 times a second (`--fps N`
+  to change) with the real pointer drawn in, scales it and converts it to the viewer's pixel
+  format; the server sends the 64x64 tiles that changed, as ZRLE (or Raw), and injects pointer and
+  keys with XTest (keysyms on no key, such as `ő` on a US layout, are bound to a spare keycode). It
+  takes the same `-a`, `-n`, `-P`, `-p`, `-f` options; `--gentle` and arguments after `--` are
+  x11vnc-only and refused with `-z`. Measured in Xvfb with a 632x840 area at `-z 2` (3 runs of 20):
+  a pointer move reached the viewer in 77–92 ms on average (38–137 ms), and a still screen cost about
+  21% of one core for ffmpeg plus about 7% for the server (a lower `--fps` lowers both).
 - `-f` draws a thin red frame (50% opacity with a compositor) just outside the shared area, so
   you can see what the reader shows. It is removed when the server stops; if it cannot be drawn
   you get one warning and the server runs without it.
-- Latency: the defaults are `-wait 5 -defer 0` (x11vnc answers at once). Measured against x11vnc
-  0.9.16 on a 632x840 area, the old `-wait 50 -defer 100` cost about 150 ms per request against about
-  6 ms. With `-z`, x11vnc's X DAMAGE hints made scaling take about 170 ms per update instead of
-  about 8 ms (measured with real content on one desktop; blank content was fast either way), so the script adds `-noxdamage` whenever `-z` is not 1. `--gentle` goes back
-  to `-wait 50 -defer 100` (less CPU on a slow PC, about 145 ms more per update). `--xdamage` keeps
-  the damage hints with `-z`. `-noxdamage` means x11vnc scans the screen itself, which likely uses
-  more CPU (not measured).
-- The password file is `./vnc.passwd` (change with `-P FILE`); it is created on first use.
+- Latency (x11vnc, without `-z`): the defaults are `-wait 5 -defer 0` (x11vnc answers at once).
+  Measured against x11vnc 0.9.16 on a 632x840 area, the old `-wait 50 -defer 100` cost about 150 ms
+  per request against about 6 ms. `--gentle` goes back to `-wait 50 -defer 100` (less CPU on a slow
+  PC, about 145 ms more per update).
+- The password file is `./vnc.passwd` (change with `-P FILE`); it is created on first use, in
+  x11vnc's `-storepasswd` format (written by the script itself when `-z` runs without x11vnc).
 - X11 only; a Wayland session is refused.
 
 ## For developers
@@ -383,7 +393,9 @@ every encoding, both security types, and every client message logged — and
 half is validated by something that is not this plugin's own code.
 
 A fourth suite covers the PC-side launcher `tools/vnc-server.py` (unit tests plus end-to-end runs
-against fake `x11vnc`/`xrandr` stubs). It needs only Python 3, no KOReader:
+against fake `x11vnc`/`xrandr` stubs) and its zoom server `tools/vnc_zoom.py` (DES, ZRLE checked by
+a reference decoder, the RFB protocol against a fake capture; `tools/test_vnc_zoom.py`). It needs only
+Python 3, no KOReader:
 
     python3 tools/test_vnc_server.py
 

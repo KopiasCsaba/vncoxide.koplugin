@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Unit tests for vnc-server.py (no X display, x11vnc or xrandr needed)."""
+"""Unit tests for vnc-server.py and vnc_zoom.py (no X display, x11vnc, ffmpeg or xrandr needed)."""
 import contextlib, importlib.util, io, os, stat, sys, tempfile, unittest
+from fractions import Fraction
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("vnc_server", os.path.join(HERE, "vnc-server.py"))
 vs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vs)
+sys.path.insert(0, HERE)
+import vnc_zoom as vz  # noqa: E402
+from test_vnc_zoom import Des, Protocol, Pure as ZoomPure  # noqa: E402,F401  (run with this suite)
 
 XRANDR = """Screen 0: minimum 8 x 8, current 4480 x 1440, maximum 32767 x 32767
 DisplayPort-0 connected primary 2560x1440+0+0 (normal left inverted right x axis y axis) 597mm x 336mm
@@ -97,29 +101,19 @@ class Pure(unittest.TestCase):
         self.assertEqual(cmd[7:11], ["-rfbauth", "p", "-allow", "1.2.3.4"])
         self.assertEqual(cmd[-1], "-v")
 
-    def test_build_cmd_gentle_and_xdamage(self):
+    def test_build_cmd_gentle(self):
         cmd = vs.build_cmd(":0", (1, 2, 3, 4), 5900, [], None, [], gentle=True)
         i = cmd.index("-wait")
         self.assertEqual(cmd[i:i + 4], ["-wait", "50", "-defer", "100"])
-        cmd = vs.build_cmd(":0", (1, 2, 3, 4), 5900, [], None, ["-noxdamage"], scale="2", noxdamage=True)
-        i = cmd.index("-scale")
-        self.assertEqual(cmd[i:i + 3], ["-scale", "2", "-noxdamage"])
-        self.assertEqual(cmd.count("-noxdamage"), 2)
-        self.assertEqual(cmd[-1], "-noxdamage")
-
-    def test_build_cmd_scale(self):
-        cmd = vs.build_cmd(":0", (632, 840, 0, 0), 5900, ["-nopw"], None, [], scale="2:nb")
-        self.assertEqual(cmd[3:7], ["-clip", "632x840+0+0", "-scale", "2:nb"])
-        self.assertEqual(cmd[7], "-rfbport")
-        self.assertNotIn("-scale", vs.build_cmd(":0", (1, 2, 3, 4), 5900, [], None, []))
+        self.assertNotIn("-scale", cmd)
 
     def test_parse_zoom(self):
-        self.assertEqual(vs.parse_zoom("2", False), ("2", 2))
-        self.assertEqual(vs.parse_zoom("2", True), ("2:nb", 2))
-        self.assertEqual(vs.parse_zoom("4/3", False)[0], "4/3")
-        self.assertEqual(vs.parse_zoom("1.5", False)[0], "1.5")
-        self.assertEqual(vs.parse_zoom(None, False), (None, 1))
-        self.assertEqual(vs.parse_zoom("1", False), (None, 1))
+        self.assertEqual(vs.parse_zoom("2", False), 2)
+        self.assertEqual(vs.parse_zoom("2", True), 2)
+        self.assertEqual(vs.parse_zoom("4/3", False), Fraction(4, 3))
+        self.assertEqual(vs.parse_zoom("1.5", False), Fraction(3, 2))
+        self.assertEqual(vs.parse_zoom(None, False), 1)
+        self.assertEqual(vs.parse_zoom("1", False), 1)
         for bad in ("0", "abc", "-2", "1/0", "0/5", "2x", ""):
             with self.assertRaises(SystemExit):
                 vs.parse_zoom(bad, False)
@@ -148,6 +142,7 @@ class MainEndToEnd(unittest.TestCase):
         os.mkdir(self.bin)
         self._stub("xrandr", "cat <<'EOF'\n" + XRANDR + "EOF\n")
         self._stub("x11vnc", 'printf "%s\\n" "$@" > "$ARGV_FILE"\nexit ${FAKE_RC:-0}\n')
+        self._stub("ffmpeg", "exit 1\n")
         self.env = mock.patch.dict(os.environ, {
             "PATH": self.bin + os.pathsep + os.environ["PATH"], "DISPLAY": ":7",
             "ARGV_FILE": self.argv_file, "XDG_SESSION_TYPE": "x11"})
@@ -183,41 +178,93 @@ class MainEndToEnd(unittest.TestCase):
                                        "-nopw", "-allow", "10.0.0.2", "-forever", "-shared", "-cursor",
                                        "arrow", "-wait", "5", "-defer", "0", "-noxrecord", "-ncache", "0", "-v"])
 
+    def run_zoom(self, *args):
+        """run_main with the zoom server replaced by a recorder; returns (rc, out, err, ctor args)."""
+        calls = []
+
+        class FakeServer:
+            def __init__(self, *a):
+                calls.append(a)
+                self.port = a[4]
+
+            def serve_forever(self):
+                pass
+        with mock.patch.object(vz, "ZoomServer", FakeServer):
+            rc, out, err = self.run_main(*args)
+        return rc, out, err, calls[0] if calls else None
+
     def test_zoom(self):
-        rc, out, err = self.run_main("-n", "-s", "632x840", "-z", "2", "--sharp")
+        rc, out, err, a = self.run_zoom("-n", "-s", "632x840", "-O", "0,40", "-o", "HDMI-1", "-z", "2", "--sharp",
+                                        "-p", "5931", "-a", "10.0.0.")
         self.assertEqual((rc, err), (0, ""))
-        self.assertIn("scaled 2 sharp -> 1264x1680 (no damage hints)\n", out)
-        a = self.argv()
-        self.assertEqual(a[a.index("-clip"):a.index("-clip") + 4], ["-clip", "632x840+0+0", "-scale", "2:nb"])
-        rc, out, _ = self.run_main("-n", "-s", "632x840", "-z", "4/3")
-        self.assertIn("scaled 4/3 -> 843x1120 (no damage hints)\n", out)
-        self.assertEqual(self.argv()[self.argv().index("-scale") + 1], "4/3")
+        self.assertEqual(out, "Sharing HDMI-1 (632x840+2560+40) of :7 on port 5931 scaled 2 sharp -> 1264x1680\n")
+        self.assertEqual(a, (":7", (632, 840, 2560, 40), 2, True, 5931, "10.0.0.", None, 10))
+        self.assertFalse(os.path.exists(self.argv_file))  # x11vnc not run
+        rc, out, _, a = self.run_zoom("-n", "-s", "632x840", "-z", "4/3", "--fps", "25")
+        self.assertIn("scaled 4/3 -> 843x1120\n", out)
+        self.assertEqual((a[2], a[3], a[7]), (Fraction(4, 3), False, 25))
+
+    def test_zoom_without_x11vnc_and_password(self):
+        os.remove(os.path.join(self.bin, "x11vnc"))
+        pw = os.path.join(self.d, "pw")
+        with mock.patch.object(vs.getpass, "getpass", side_effect=["s3cret", "s3cret"]):
+            rc, out, err, a = self.run_zoom("-z", "2", "-P", pw)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("Password written to: %s" % pw, out)
+        self.assertEqual(a[6], b"s3cret")
+        self.assertEqual(vz.read_passwd(pw), b"s3cret")
+        rc, _, _, a = self.run_zoom("-z", "2", "-P", pw)  # existing file: no prompt
+        self.assertEqual((rc, a[6]), (0, b"s3cret"))
+        with mock.patch.object(vs.getpass, "getpass", side_effect=["a", "b"]):
+            rc, _, err, a = self.run_zoom("-z", "2", "-P", os.path.join(self.d, "pw2"))
+        self.assertEqual((rc, err, a), (1, "error: the passwords differ\n", None))
+
+    def test_zoom_uses_x11vnc_storepasswd_when_present(self):
+        self._stub("x11vnc", 'printf "%s\\n" "$@" > "$ARGV_FILE"\nprintf "\\044\\265\\256\\114\\341\\125\\003\\306" > "$2"\n')
+        pw = os.path.join(self.d, "pw")
+        rc, _, err, a = self.run_zoom("-z", "2", "-P", pw)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.argv(), ["-storepasswd", pw])
+        self.assertEqual(a[6], b"secret12")
 
     def test_gentle(self):
         self.run_main("-n", "--gentle")
         a = self.argv()
         self.assertEqual(a[a.index("-wait"):a.index("-wait") + 4], ["-wait", "50", "-defer", "100"])
 
-    def test_zoom_noxdamage(self):
-        rc, out, err = self.run_main("-n", "-s", "632x840", "-z", "2")
-        self.assertEqual((rc, err), (0, ""))
-        a = self.argv()
-        self.assertEqual(a[a.index("-scale"):a.index("-scale") + 3], ["-scale", "2", "-noxdamage"])
-        self.assertIn("scaled 2 -> 1264x1680 (no damage hints)\n", out)
-        rc, out, _ = self.run_main("-n", "-s", "632x840", "-z", "2", "--xdamage")
-        self.assertNotIn("-noxdamage", self.argv())
-        self.assertNotIn("damage", out)
-        self.run_main("-n", "-z", "1")
-        self.assertNotIn("-noxdamage", self.argv())
-        self.run_main("-n", "-z", "2", "--", "-xdamage")
-        self.assertEqual(self.argv()[-1], "-xdamage")
+    def test_zoom_one_is_x11vnc(self):
+        rc, out, _ = self.run_main("-n", "-z", "1", "--", "-v")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("scaled", out)
+        self.assertEqual(self.argv()[-1], "-v")
 
     def test_zoom_errors(self):
-        for args, msg in ((("-z", "0"), "-z must look like"), (("-z", "abc"), "-z must look like"),
-                          (("--sharp",), "--sharp needs -z")):
-            rc, _, err = self.run_main("-n", *args)
-            self.assertEqual(rc, 1)
+        for args, msg in ((("-z", "0"), "error: -z must look like 2, 1.5 or 4/3"),
+                          (("-z", "abc"), "error: -z must look like"),
+                          (("--sharp",), "error: --sharp needs -z"),
+                          (("--fps", "5"), "error: --fps needs -z"),
+                          (("-z", "2", "--fps", "0"), "error: --fps must be at least 1"),
+                          (("-z", "2", "--gentle"), "error: --gentle: x11vnc only, and -z does not use x11vnc"),
+                          (("-z", "2", "--xdamage"), "error: --xdamage: x11vnc only, and -z does not use x11vnc"),
+                          (("-z", "2", "--", "-viewonly"),
+                           "error: arguments after --: x11vnc only, and -z does not use x11vnc")):
+            rc, _, err, a = self.run_zoom("-n", *args)
+            self.assertEqual((rc, a), (1, None), args)
             self.assertIn(msg, err)
+        with mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"}):
+            rc, _, err = self.run_main("-n", "-z", "2")
+        self.assertEqual(err, "error: Wayland session detected; ffmpeg x11grab needs an X11 session\n")
+        os.remove(os.path.join(self.bin, "ffmpeg"))
+        with mock.patch.dict(os.environ, {"PATH": self.bin + os.pathsep + "/nonexistent"}):
+            rc, _, err, _ = self.run_zoom("-n", "-z", "2")
+        self.assertEqual((rc, err), (1, "error: 'ffmpeg' not found (Debian/Ubuntu: sudo apt install ffmpeg "
+                                        "x11-xserver-utils)\n"))
+
+    def test_zoom_frame(self):
+        with mock.patch("ctypes.CDLL", side_effect=OSError("no libX11")):
+            rc, out, err, a = self.run_zoom("-n", "-f", "-s", "100x100", "-O", "10,10", "-z", "2")
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "warning: frame disabled (no libX11)\n")
 
     def test_default_primary_and_password_file(self):
         pw = os.path.join(self.d, "pw")

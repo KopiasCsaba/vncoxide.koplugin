@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Share one monitor (or part of it) of a running X11 session over VNC with x11vnc.
 
+With -z (zoom other than 1) the frames are served by vnc_zoom.py instead (ffmpeg grabs and
+scales them): x11vnc's -clip + -scale clamps the pointer it draws to the unscaled size.
 Standard library only - no venv needed. Optionally draws a thin red frame on the
 PC screen just outside the shared area (-f).
 """
 import argparse
 import ctypes
+import getpass
 import os
 import re
 import shutil
@@ -16,6 +19,7 @@ import threading
 from fractions import Fraction
 
 APT_HINT = "Debian/Ubuntu: sudo apt install x11vnc x11-xserver-utils"
+FFMPEG_HINT = "Debian/Ubuntu: sudo apt install ffmpeg x11-xserver-utils"
 _LINE = re.compile(r"^(\S+) connected( primary)?\s*(?:(\d+)x(\d+)\+(\d+)\+(\d+))?")
 
 
@@ -88,11 +92,11 @@ def frame_rects(area, out):
 
 
 def parse_zoom(zoom, sharp):
-    """(x11vnc -scale value or None, numeric factor) from -z/--sharp; factor 1 means no scaling."""
+    """Zoom factor (Fraction) from -z/--sharp; 1 means no scaling."""
     if zoom is None:
         if sharp:
             die("--sharp needs -z")
-        return None, 1
+        return 1
     m = re.fullmatch(r"(\d+(?:\.\d+)?)|(\d+)/(\d+)", zoom)
     factor = 0
     if m:
@@ -102,20 +106,13 @@ def parse_zoom(zoom, sharp):
     if factor == 1:
         if sharp:
             die("--sharp needs -z other than 1")
-        return None, 1
-    return zoom + (":nb" if sharp else ""), factor
+        return 1
+    return factor
 
 
-def build_cmd(display, area, port, auth, allow, extra, scale=None, gentle=False, noxdamage=False):
+def build_cmd(display, area, port, auth, allow, extra, gentle=False):
     w, h, x, y = area
     cmd = ["x11vnc", "-display", display, "-clip", "%dx%d+%d+%d" % (w, h, x, y)]
-    if scale:
-        cmd += ["-scale", scale]
-        if noxdamage:
-            # With x11vnc's X DAMAGE hints, scaling took ~170 ms per update instead of ~8 ms
-            # (measured with real content on one desktop; blank content was fast either way).
-            # x11vnc then scans the screen itself.
-            cmd += ["-noxdamage"]
     cmd += ["-rfbport", str(port)] + list(auth)
     if allow:
         cmd += ["-allow", allow]
@@ -228,21 +225,23 @@ class Frame:
 def make_parser():
     p = argparse.ArgumentParser(
         prog="vnc-server.py",
-        description="Share one monitor (or part of it) of the running X11 session over VNC (x11vnc). "
+        description="Share one monitor (or part of it) of the running X11 session over VNC (x11vnc; "
+                    "with -z its own small server, vnc_zoom.py). "
                     "Standard library only.",
-        epilog="Anything after -- is passed to x11vnc, e.g.: vnc-server.py -s 632x840 -- -viewonly")
+        epilog="Anything after -- is passed to x11vnc (not with -z), e.g.: vnc-server.py -s 632x840 -- -viewonly")
     p.add_argument("-o", metavar="OUTPUT", help="xrandr output name (default: primary output)")
     p.add_argument("-s", metavar="WxH", help="share only the top-left WxH of the output, e.g. 632x840")
     p.add_argument("-O", metavar="X,Y", default="0,0",
                    help="offset of the shared area from the output's top-left, e.g. 0,40 to skip a taskbar")
     p.add_argument("-z", metavar="ZOOM",
-                   help="scale the frame server-side (x11vnc -scale), e.g. 2, 1.5 or 4/3; "
-                        "use 100%% zoom in the viewer then")
+                   help="scale the frame server-side, e.g. 2, 1.5 or 4/3; use 100%% zoom in the viewer then. "
+                        "Served by vnc_zoom.py (needs ffmpeg) instead of x11vnc")
     p.add_argument("--sharp", action="store_true", help="with -z: nearest-neighbour scaling (no blending)")
-    p.add_argument("--xdamage", action="store_true",
-                   help="with -z: keep X DAMAGE hints (slower, see README)")
+    p.add_argument("--fps", type=int, default=10, help="with -z: screen captures per second (default: 10)")
+    p.add_argument("--xdamage", action="store_true", help=argparse.SUPPRESS)  # old -z option, x11vnc's default
     p.add_argument("--gentle", action="store_true",
-                   help="batch screen updates (-wait 50 -defer 100): less CPU on the PC, about 145 ms slower updates")
+                   help="batch screen updates (-wait 50 -defer 100): less CPU on the PC, about 145 ms slower "
+                        "updates (x11vnc only, not with -z)")
     p.add_argument("-p", metavar="PORT", type=int, default=5900, help="TCP port (default: 5900)")
     p.add_argument("-a", metavar="IPS", help="comma list of allowed client IPs/prefixes (default: any)")
     p.add_argument("-n", action="store_true", help="no password (otherwise uses/creates the -P file)")
@@ -284,6 +283,57 @@ def _run(cmd, frame_rects_=None, display=":0"):
     return rc if rc >= 0 else 128 - rc
 
 
+def _run_zoom(server, frame_rects_=None, display=":0"):
+    def stop(_signum, _frame):
+        server.shutdown()
+
+    old = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM)}
+    frame = None
+    try:
+        if frame_rects_:
+            frame = Frame(display, frame_rects_)
+            frame.start()
+        try:
+            server.serve_forever()
+        except OSError as e:
+            die("cannot serve on port %d: %s" % (server.port, e))
+    finally:
+        if frame:
+            frame.close()
+        for s, h in old.items():
+            signal.signal(s, h)
+    return 0
+
+
+def _zoom_module():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import vnc_zoom
+    return vnc_zoom
+
+
+def _store_password(path, zoom):
+    """Create the password file: x11vnc -storepasswd, or (x11vnc missing with -z) the same format here."""
+    print("Set a VNC password (max 8 chars, VNC protocol limit):", flush=True)
+    if not (zoom and not shutil.which("x11vnc")):
+        if subprocess.call(["x11vnc", "-storepasswd", path]) != 0:
+            die("could not store the VNC password in %s" % path)
+        return
+    pw = getpass.getpass("Enter VNC password: ")
+    if pw != getpass.getpass("Verify password:    "):
+        die("the passwords differ")
+    if not pw:
+        die("empty password")
+    if len(pw.encode()) > 8:
+        print("warning: only the first 8 bytes are used", file=sys.stderr)
+    try:
+        _zoom_module().write_passwd(path, pw.encode())
+    except OSError as e:
+        die("could not store the VNC password in %s: %s" % (path, e))
+    print("Password written to: %s" % path, flush=True)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     extra = []
@@ -301,14 +351,23 @@ def main(argv=None):
 
 
 def _main(args, extra):
-    scale, factor = parse_zoom(args.z, args.sharp)
+    factor = parse_zoom(args.z, args.sharp)
+    zoom = factor != 1
+    if zoom:
+        for bad, opt in ((args.gentle, "--gentle"), (args.xdamage, "--xdamage"), (extra, "arguments after --")):
+            if bad:
+                die("%s: x11vnc only, and -z does not use x11vnc" % opt)
+        if args.fps < 1:
+            die("--fps must be at least 1")
+    elif args.fps != 10:
+        die("--fps needs -z")
     display = args.d or os.environ.get("DISPLAY") or ":0"
-    need = ["xrandr"] if args.list else ["x11vnc", "xrandr"]
+    need = ["xrandr"] if args.list else ["ffmpeg", "xrandr"] if zoom else ["x11vnc", "xrandr"]
     for c in need:
         if not shutil.which(c):
-            die("'%s' not found (%s)" % (c, APT_HINT))
+            die("'%s' not found (%s)" % (c, FFMPEG_HINT if zoom else APT_HINT))
     if os.environ.get("XDG_SESSION_TYPE", "x11") == "wayland":
-        die("Wayland session detected; x11vnc needs an X11 session")
+        die("Wayland session detected; %s needs an X11 session" % ("ffmpeg x11grab" if zoom else "x11vnc"))
     env = dict(os.environ, DISPLAY=display)
     r = subprocess.run(["xrandr", "--query"], env=env, capture_output=True, text=True)
     if r.returncode != 0:
@@ -322,25 +381,29 @@ def _main(args, extra):
     out = pick_output(outputs, args.o)
     area = compute_area(out, args.s, args.O)
     auth = ["-nopw"]
+    password = None
     if not args.n:
         if not (os.path.isfile(args.P) and os.path.getsize(args.P) > 0):
-            print("Set a VNC password (max 8 chars, VNC protocol limit):", flush=True)
-            if subprocess.call(["x11vnc", "-storepasswd", args.P]) != 0:
-                die("could not store the VNC password in %s" % args.P)
+            _store_password(args.P, zoom)
         auth = ["-rfbauth", args.P]
+        if zoom:
+            try:
+                password = _zoom_module().read_passwd(args.P)
+            except (OSError, ValueError) as e:
+                die("cannot read the VNC password: %s" % e)
     w, h, x, y = area
     note = ""
-    noxdamage = bool(scale) and not args.xdamage
-    if scale:
+    if zoom:
         note = " scaled %s%s -> %dx%d" % (args.z, " sharp" if args.sharp else "", round(w * factor), round(h * factor))
-        if noxdamage:
-            note += " (no damage hints)"
     print("Sharing %s (%dx%d+%d+%d) of %s on port %d%s" % (out["name"], w, h, x, y, display, args.p, note),
           flush=True)
-    cmd = build_cmd(display, area, args.p, auth, args.a, extra, scale, args.gentle, noxdamage)
     rects = frame_rects(area, out) if args.f else None
     if args.f and not rects:
         print("warning: frame disabled (shared area fills the whole output)", file=sys.stderr)
+    if zoom:
+        server = _zoom_module().ZoomServer(display, area, factor, args.sharp, args.p, args.a, password, args.fps)
+        return _run_zoom(server, rects, display)
+    cmd = build_cmd(display, area, args.p, auth, args.a, extra, args.gentle)
     return _run(cmd, rects, display)
 
 
