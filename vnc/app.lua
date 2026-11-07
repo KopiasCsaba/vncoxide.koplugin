@@ -698,7 +698,8 @@ function ViewerApp:onTwoFingerPan(_, ges)
     end
     local dx, dy = rel.x - last.x, rel.y - last.y
     last.x, last.y = rel.x, rel.y
-    if self.remote:pan_by(-dx, -dy) then
+    -- the picture follows the fingers, like any touch scroll
+    if self.remote:pan_by(dx, dy) then
         -- this two-finger gesture moved the view: if it ends as a flick, that flick only pans
         self._two_finger_moved_view = true
     end

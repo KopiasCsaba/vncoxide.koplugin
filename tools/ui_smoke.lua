@@ -2607,7 +2607,8 @@ check("opening_another_connection_replaces_the_viewer", function()
 end)
 
 check("two_finger_pan_follows_the_cumulative_relative", function()
-    -- GestureDetector's two_finger_pan carries the offset from the gesture's start on every move
+    -- GestureDetector's two_finger_pan carries the offset from the gesture's start on every move;
+    -- fingers moving left drag the picture left, i.e. the view moves right
     local app, remote = new_app(2000, 1500)
     app:zoom_to(2)
     local start = { x = 300, y = 400 }
@@ -2615,13 +2616,13 @@ check("two_finger_pan_follows_the_cumulative_relative", function()
     app:onTwoFingerPan(nil, { relative = { x = -10, y = 0 }, start_pos = start })
     app:onTwoFingerPan(nil, { relative = { x = -20, y = -6 }, start_pos = start })
     local s = remote:get_scale()
-    assert_true(math.abs((remote.view_x - x0) * s + 20) < 1e-6 and math.abs((remote.view_y - y0) * s + 6) < 1e-6,
+    assert_true(math.abs((remote.view_x - x0) * s - 20) < 1e-6 and math.abs((remote.view_y - y0) * s - 6) < 1e-6,
         string.format("two events at 10 then 20 px must pan 20 px, panned %.1f, %.1f",
             (remote.view_x - x0) * s, (remote.view_y - y0) * s))
     -- a new gesture (another start point) starts from zero again
     x0 = remote.view_x
     app:onTwoFingerPan(nil, { relative = { x = -5, y = 0 }, start_pos = { x = 10, y = 10 } })
-    assert_true(math.abs((remote.view_x - x0) * s + 5) < 1e-6, "a new gesture pans by its own offset")
+    assert_true(math.abs((remote.view_x - x0) * s - 5) < 1e-6, "a new gesture pans by its own offset")
     app:onTwoFingerPanRelease(nil, {})
     app:onCloseWidget()
     UIManager:close(app)
@@ -3822,12 +3823,12 @@ check("two_finger_flick_scrolls_only_when_the_view_did_not_move", function()
         dispatch_gesture{ ges = "two_finger_pan", direction = "north", pos = pos, relative = { x = 0, y = -40 } }
         dispatch_gesture{ ges = "two_finger_swipe", direction = "north", distance = half, pos = pos }
     end
-    for _, case in ipairs({ "fit", "zoomed at the top edge", "zoomed, the view moves" }) do
+    for _, case in ipairs({ "fit", "zoomed at the bottom edge", "zoomed, the view moves" }) do
         local app, remote, sent = new_app()
         if case ~= "fit" then
             app:zoom_to(4)
-            if case == "zoomed, the view moves" then remote:pan_by(-400, -400) end
-            if case == "zoomed at the top edge" then remote:pan_by(0, 100000) end
+            if case == "zoomed, the view moves" then remote:pan_by(100, 100) end -- off the bottom edge
+            if case == "zoomed at the bottom edge" then remote:pan_by(0, -100000) end
         end
         app:_view_settled()
         UIManager:forceRePaint()
