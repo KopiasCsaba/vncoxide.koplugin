@@ -107,19 +107,19 @@ function Enc:set_pixel_format(fmt)
                 lut[v] = math.floor(v * max / 255 + 0.5) * 2 ^ shift
             end
         end
-        -- For a 32bpp/depth<=24 format the CPIXEL is the pixel with its padding byte removed;
-        -- the padding is whichever byte no channel occupies (RFC 6143 §7.7.6).
+        -- At 32bpp the CPIXEL is the three bytes of the pixel that carry the channels - the least
+        -- significant three if every channel fits there, else the most significant three - in the
+        -- client's byte order (RFC 6143 §7.7.6; libvncserver's ZRLE 24A/24B make the same choice).
+        -- `cpixel_bytes` lists them by significance (0 = least) in wire order.
         if fmt.bits_per_pixel == 32 then
-            local used = { false, false, false, false }
+            local ls3, ms3 = true, true
             for channel = 1, 3 do
-                local byte = math.floor(shifts[channel] / 8)
-                if byte >= 0 and byte < 4 then used[byte + 1] = true end
+                if maxima[channel] * 2 ^ shifts[channel] >= 2 ^ 24 then ls3 = false end
+                if shifts[channel] < 8 then ms3 = false end
             end
-            local cpixel = {}
-            for i = 1, 4 do
-                if used[i] then cpixel[#cpixel + 1] = i - 1 end
-            end
-            self.cpixel_bytes = (#cpixel == 3) and cpixel or nil
+            local cpixel = ls3 and { 0, 1, 2 } or (ms3 and { 1, 2, 3 } or nil)
+            if cpixel and fmt.big_endian ~= 0 then cpixel = { cpixel[3], cpixel[2], cpixel[1] } end
+            self.cpixel_bytes = cpixel
         else
             self.cpixel_bytes = nil
         end

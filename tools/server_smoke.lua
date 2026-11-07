@@ -365,6 +365,46 @@ check("a_raw_conversion_never_writes_an_earlier_pixel_array", function()
     src:free()
 end)
 
+--- RFC 6143 §7.7.6: at 32bpp a CPIXEL is the three bytes of the PIXEL that carry the colour (the
+--- least or the most significant three, whichever all channels fit in), in the *client's* byte
+--- order - for a big-endian client that is the last three bytes of its wire pixel. The same
+--- reading libvncserver's ZRLE encoder (24A/24B) has.
+check("zrle_cpixels_follow_the_client_byte_order", function()
+    local ZStream = require("vnc/zstream")
+    local base = { bits_per_pixel = 32, depth = 24, true_colour = 1,
+        red_max = 255, green_max = 255, blue_max = 255 }
+    local function fmt(big_endian, rs, gs, bs, maxes)
+        local f = {}
+        for k, v in pairs(base) do f[k] = v end
+        f.big_endian, f.red_shift, f.green_shift, f.blue_shift = big_endian, rs, gs, bs
+        if maxes then f.red_max, f.green_max, f.blue_max = maxes[1], maxes[2], maxes[3] end
+        return f
+    end
+    local src = BB.new(1, 1, BB.TYPE_BBRGB24)
+    put(src, 0, 0, 0x12, 0x34, 0x56)
+    for _, case in ipairs({
+        { "little endian, low bytes", fmt(0, 0, 8, 16), string.char(0x12, 0x34, 0x56) },
+        { "big endian, low bytes", fmt(1, 0, 8, 16), string.char(0x56, 0x34, 0x12) },
+        { "little endian, high bytes", fmt(0, 8, 16, 24), string.char(0x12, 0x34, 0x56) },
+        { "big endian, high bytes", fmt(1, 8, 16, 24), string.char(0x56, 0x34, 0x12) },
+        { "big endian 565 in the low bytes", fmt(1, 11, 5, 0, { 31, 63, 31 }),
+            string.char(0x00, 0x11, 0xAA) },
+    }) do
+        local name, f, want = case[1], case[2], case[3]
+        local encoding, payload, enc = encode(ServerEnc.ZRLE, src, f)
+        assert_true(encoding == ServerEnc.ZRLE, name .. ": ZRLE expected")
+        local z = ZStream.new()
+        local raw = z:inflate(payload:sub(5))
+        z:free()
+        local got = raw:sub(2)
+        assert_true(raw:byte(1) == 1 and got == want, string.format("%s: solid tile %s, want 01%s", name,
+            (raw:gsub(".", function(c) return string.format("%02X", c:byte()) end)),
+            (want:gsub(".", function(c) return string.format("%02X", c:byte()) end))))
+        enc:free()
+    end
+    src:free()
+end)
+
 -- ---------------------------------------------------------------- encoders
 
 for _, case in ipairs({
