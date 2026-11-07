@@ -482,13 +482,23 @@ end
 function Encodings.decode_zrle(ctx)
     local r = ctx.r
     local length = r:u32()
+    -- The length is the server's to choose and is read whole before inflating: no more than the
+    -- rectangle's largest tile stream (zrle_limit) can need, stored uncompressed - zlib's stored
+    -- blocks cost 5 bytes per 64 KiB, a sync flush a few bytes more - so anything above that is a
+    -- broken or hostile server, and the rect fails before a byte of it is read.
+    local limit = zrle_limit(ctx.w, ctx.h, ctx.fmt.cbytes)
+    local max_length = limit + math.floor(limit / 1024) + 1024
+    if length > max_length then
+        return nil, string.format("ZRLE: %d compressed bytes for a %dx%d rect (at most %d)",
+            length, ctx.w, ctx.h, max_length)
+    end
     local data = r:bytes(length)
     local stream = ctx.streams.zrle
     if not stream then
         stream = ZStream.new()
         ctx.streams.zrle = stream
     end
-    local p, n = stream:inflate_ptr(data, zrle_limit(ctx.w, ctx.h, ctx.fmt.cbytes))
+    local p, n = stream:inflate_ptr(data, limit)
     if not p then
         return nil, string.format("ZRLE: %s while inflating %d bytes at rect (%d,%d,%d,%d)",
             n, length, ctx.x, ctx.y, ctx.w, ctx.h)

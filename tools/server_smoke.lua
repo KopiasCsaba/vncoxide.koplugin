@@ -566,6 +566,25 @@ check("a_deflate_stream_survives_a_reset", function()
     d:free()
 end)
 
+--- ZRLE's u32 length is the server's to choose; the client reads that many bytes before inflating,
+--- so a length no rectangle of this size can need fails the rectangle before anything is read.
+check("zrle_rejects_a_compressed_length_the_rect_cannot_need", function()
+    local w, h = 16, 8
+    local dst = BB.new(w, h, BB.TYPE_BBRGB24)
+    local ctx = {
+        encoding = ServerEnc.ZRLE,
+        r = Util.mem_reader(Util.writer():u32(0x7FFFFFFF):tostring()),
+        vp = dst:viewport(0, 0, w, h), plane = dst,
+        x = 0, y = 0, w = w, h = h,
+        streams = Encodings.new_streams(),
+    }
+    local called, ok, err = pcall(Encodings.decode, ctx)
+    dst:free()
+    assert_true(called, "the decoder must fail the rect, not raise: " .. tostring(ok))
+    assert_true(ok == nil or ok == false, "an impossible length must fail the rect")
+    assert_true(tostring(err):find("compressed", 1, true), "with a clear error, got " .. tostring(err))
+end)
+
 check("zrle_stream_continuity", function()
     -- One encoder (and therefore one zlib stream) across several rectangles, decoded in order by
     -- one client decoder state: this is what breaks if either side mishandles Z_SYNC_FLUSH.
