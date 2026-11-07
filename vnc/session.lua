@@ -656,8 +656,24 @@ end
 --- Restores Wi-Fi if we were the ones who turned it on.
 function Session:_restore_wifi()
     if self.wifi_was_on == false then
-        logger.dbg("vnc: turning Wi-Fi back off")
-        self:_net():turnOffWifi()
+        -- Another connection still needs the Wi-Fi this one turned on: it inherits the duty, so
+        -- the last connection to go turns it off.
+        local heir
+        local sessions = self.plugin and self.plugin.sessions
+        if sessions then
+            for _, s in pairs(sessions) do
+                if s ~= self and (s.state == "connected" or s.state == "connecting") then
+                    heir = s
+                    break
+                end
+            end
+        end
+        if heir then
+            heir.wifi_was_on = false
+        else
+            logger.dbg("vnc: turning Wi-Fi back off")
+            self:_net():turnOffWifi()
+        end
     end
     self.wifi_was_on = nil
 end

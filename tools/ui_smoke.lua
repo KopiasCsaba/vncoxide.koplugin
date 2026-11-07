@@ -2638,6 +2638,25 @@ check("onscreen_keyboard_enter_and_tab_send_their_keys", function()
         and Keysyms.from_char("ő") == 0x01000151, "printable characters are unchanged")
 end)
 
+check("wifi_is_turned_off_by_the_last_connection_only", function()
+    local Session = require("vnc/session")
+    local offs = 0
+    local net = { turnOffWifi = function() offs = offs + 1 end }
+    local fake_plugin = { sessions = {} }
+    local a = Session.new{ profile = { name = "a", host = "h", port = 1 }, plugin = fake_plugin }
+    local b = Session.new{ profile = { name = "b", host = "h", port = 2 }, plugin = fake_plugin }
+    a._net, b._net = function() return net end, function() return net end
+    fake_plugin.sessions = { a = a, b = b }
+    a.wifi_was_on, a.state = false, "connected" -- a turned Wi-Fi on
+    b.wifi_was_on, b.state = true, "connected"  -- b found it on
+    a:_restore_wifi()
+    assert_true(offs == 0, "b still needs the Wi-Fi")
+    assert_true(b.wifi_was_on == false, "b inherits turning it off")
+    fake_plugin.sessions.a, a.state = nil, "disconnected"
+    b:_restore_wifi()
+    assert_true(offs == 1, "the last connection turns it off")
+end)
+
 check("viewer_menu_disconnect_returns_to_the_list", function()
     local app, remote = new_app()
     local session = app.session
