@@ -943,7 +943,7 @@ local function main()
             encodings = Encodings.order(true, { jpeg_quality = 5, compress_level = 9 }),
             check = false,
             verify_log = function(log)
-                if not log_has(log, "INPUT SetEncodings 7,16,15,5,1,2,0,-223,-239,-27,-247") then
+                if not log_has(log, "INPUT SetEncodings 7,16,15,5,1,2,0,-223,-27,-247") then
                     return nil, "SetEncodings mismatch:\n" .. (read_file(log) or "")
                 end
                 return true
@@ -981,29 +981,6 @@ local function main()
             end
             plane:free()
         end
-        return true
-    end)
-
-    check("rich_cursor_shape_is_parsed", function()
-        -- RichCursor (-239): hotspot in x, y; w x h PIXELs, then the 1-bit mask, MSB first
-        local Protocol = require("vnc/protocol")
-        local Util = require("vnc/util")
-        local got
-        local p = Protocol.new{ io = { read = function() error("no reads expected") end, write = function() end },
-            callbacks = { on_cursor = function(...) got = { ... } end } }
-        local px = "\255\0\0\0" .. "\0\255\0\0" .. "\0\0\255\0" .. "\9\9\9\0" -- 2x2, 32 bpp
-        local hdr = string.char(0, 1, 0, 0, 0, 2, 0, 2) .. string.char(0xFF, 0xFF, 0xFF, 0x11) -- hotspot 1,0; -239
-        local r = Util.mem_reader(hdr .. px .. "\128\064")
-        p:_rect(r)
-        if not got then return nil, "no on_cursor" end
-        if r:remaining() ~= 0 then return nil, "left " .. r:remaining() .. " bytes" end
-        local hx, hy, w, h, rgb, mask = unpack(got)
-        if not (hx == 1 and hy == 0 and w == 2 and h == 2) then return nil, "geometry" end
-        if rgb ~= "\255\0\0\0\255\0\0\0\255\9\9\9" or mask ~= "\128\064" then return nil, "pixels or mask" end
-        -- an empty cursor hides it and carries no data
-        got = nil
-        p:_rect(Util.mem_reader(string.char(0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x11)))
-        if not (got and got[3] == 0 and got[4] == 0) then return nil, "empty cursor" end
         return true
     end)
 

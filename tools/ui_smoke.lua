@@ -2679,49 +2679,6 @@ check("hardware_keys_stay_local_under_a_popup_but_held_keys_are_released", funct
     remote:free()
 end)
 
-check("remote_cursor_is_drawn_at_the_pointer_and_follows_it", function()
-    -- the server sends the cursor's shape; the viewer draws it where it sent the pointer
-    local Geom = require("ui/geometry")
-    local app, remote = new_app(400, 300)
-    app.session.cursor = { hot_x = 0, hot_y = 0, w = 2, h = 2, rgb = string.rep("\0\0\0", 4), mask = "\192\192" }
-    local dirty = {}
-    local real_set_dirty = UIManager.setDirty
-    UIManager.setDirty = function(_, w, mode, region) if w == app and region then dirty[#dirty + 1] = region end end
-    local ok, err = pcall(function()
-        local bb = require("ffi/blitbuffer")
-        local target = bb.new(Screen:getWidth(), Screen:getHeight(), bb.TYPE_BBRGB32)
-        app:paintTo(target, 0, 0)
-        assert_true(app._cursor_drawn == nil, "no cursor before the pointer was sent anywhere")
-        remote:get_plane():fill(bb.COLOR_WHITE); remote:mark_dirty()
-        local c = app:canvas_geom()
-        -- near the remote's bottom-right corner (the plane is letterboxed inside the canvas)
-        local s = remote:get_scale()
-        local tap = { x = c.x + math.floor((380.5 - remote.view_x) * s), y = c.y + math.floor((280.5 - remote.view_y) * s) }
-        app:onTap(nil, { pos = Geom:new{ x = tap.x, y = tap.y, w = 0, h = 0 } })
-        assert_true(#dirty >= 1, "the cursor's new place is refreshed")
-        app:paintTo(target, 0, 0)
-        local d = app._cursor_drawn
-        assert_true(d and math.abs(d.x - tap.x) <= 2 and math.abs(d.y - tap.y) <= 2,
-            "drawn at the tap, got " .. tostring(d and (d.x .. "," .. d.y)))
-        local px = target:getPixel(d.x, d.y):getColorRGB32()
-        assert_true(px.r == 0 and px.g == 0 and px.b == 0, "the cursor's pixel is painted")
-        -- moving it refreshes both the old and the new place
-        dirty = {}
-        local old = d
-        app:onTap(nil, { pos = Geom:new{ x = c.x + math.floor((10.5 - remote.view_x) * s),
-            y = c.y + math.floor((10.5 - remote.view_y) * s), w = 0, h = 0 } })
-        local r, now = dirty[#dirty], app:_cursor_rect()
-        local function covers(a, b) return a.x <= b.x and a.y <= b.y and a.x + a.w >= b.x + b.w and a.y + a.h >= b.y + b.h end
-        assert_true(r and now and covers(r, old) and covers(r, now), "the refresh covers where it was and where it is")
-        target:free()
-    end)
-    UIManager.setDirty = real_set_dirty
-    app:onCloseWidget()
-    UIManager:close(app)
-    remote:free()
-    if not ok then error(err, 0) end
-end)
-
 check("viewer_menu_disconnect_returns_to_the_list", function()
     local app, remote = new_app()
     local session = app.session

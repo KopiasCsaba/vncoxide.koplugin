@@ -13,7 +13,6 @@ Normative reference: RFC 6143 (sections 7.1-7.7 and Appendix A).
 ]]
 
 local Des = require("vnc/des")
-local ffi = require("ffi")
 local Encodings = require("vnc/encodings")
 local PxFmt = require("vnc/pxfmt")
 local Util = require("vnc/util")
@@ -30,8 +29,6 @@ Protocol.MAX_STRING = 1024 * 1024
 --- @{vnc.framebuffer}): 256 MiB is far beyond any real desktop and still an allocation a device
 --- can refuse cleanly; 65535x65535 would be 12 GiB.
 Protocol.MAX_FRAMEBUFFER_BYTES = 256 * 1024 * 1024
--- A cursor image larger than this is refused (real ones are tens of pixels across).
-Protocol.MAX_CURSOR_PIXELS = 256 * 256
 
 --- Reads a u32-length-prefixed string, failing with `what` in the message when it is too long.
 local function read_string(r, what)
@@ -65,9 +62,7 @@ Creates a client.
 --- @tparam[opt] table opts.pixel_format client pixel format from @{vnc.pxfmt.for_depth}
 ---   (default: depth 24)
 --- @tparam[opt] function opts.get_plane -> the current remote plane BlitBuffer
---- @tparam[opt] table opts.callbacks on_connected|on_update_start|on_rect|on_desktop_resize|on_bell|on_cut_text|
----   on_cursor `(hot_x, hot_y, w, h, rgb, mask)`: the cursor image as packed RGB24 and its 1-bit
----   mask (w or h 0: no cursor)
+--- @tparam[opt] table opts.callbacks on_connected|on_update_start|on_rect|on_desktop_resize|on_bell|on_cut_text
 --- @tparam[opt] function opts.hold_updates -> true while the incremental request that follows a
 ---   FramebufferUpdate should be held back (see @{Protocol:release_update})
 --- @tparam[opt] function opts.request_area -> x, y, w, h: the area the incremental request after
@@ -297,25 +292,6 @@ function Protocol:_rect(r)
         check_framebuffer(w, h)
         self.width, self.height = w, h
         self:_fire("on_desktop_resize", w, h)
-        return
-    end
-
-    if enc == Encodings.RICH_CURSOR then
-        -- x, y is the hotspot; w x h PIXELs, then a 1-bit mask (rows padded to bytes, MSB
-        -- first). An empty cursor hides it.
-        if w * h > Protocol.MAX_CURSOR_PIXELS then
-            error(string.format("cursor of %dx%d is too large", w, h), 0)
-        end
-        local fmt = self.pixel_format
-        local rgb, mask = "", ""
-        if w > 0 and h > 0 then
-            local n = w * h
-            local buf = ffi.new("uint8_t[?]", n * 3)
-            PxFmt.to_rgb24(fmt, r:ptr(n * fmt.bytes), n, buf, fmt.bytes)
-            rgb = ffi.string(buf, n * 3)
-            mask = r:bytes(math.floor((w + 7) / 8) * h)
-        end
-        self:_fire("on_cursor", x, y, w, h, rgb, mask)
         return
     end
 

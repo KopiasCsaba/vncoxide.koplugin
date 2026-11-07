@@ -45,9 +45,6 @@ Encodings.TIGHT         = 7
 Encodings.TRLE          = 15
 Encodings.ZRLE          = 16
 Encodings.DESKTOP_SIZE  = -223
--- Cursor shape pseudo-encoding: the server sends the cursor's image instead of painting it into
--- the framebuffer, and the viewer draws it where it put the pointer (see @{vnc.protocol}).
-Encodings.RICH_CURSOR   = -239
 -- Tight pseudo-encodings: the server reads quality/level from the offset. They never
 -- arrive as rects, so they stay out of SUPPORTED.
 Encodings.JPEG_QUALITY_0   = -32
@@ -67,10 +64,10 @@ Encodings.SUPPORTED = {
 --- Preferred encoding list, most compact first (Tight is opt-in).
 Encodings.ORDER_DEFAULT = { Encodings.ZRLE, Encodings.TRLE, Encodings.HEXTILE,
                             Encodings.COPYRECT, Encodings.RRE, Encodings.RAW,
-                            Encodings.DESKTOP_SIZE, Encodings.RICH_CURSOR }
+                            Encodings.DESKTOP_SIZE }
 Encodings.ORDER_TIGHT = { Encodings.TIGHT, Encodings.ZRLE, Encodings.TRLE,
                           Encodings.HEXTILE, Encodings.COPYRECT, Encodings.RRE,
-                          Encodings.RAW, Encodings.DESKTOP_SIZE, Encodings.RICH_CURSOR }
+                          Encodings.RAW, Encodings.DESKTOP_SIZE }
 
 --- @tparam boolean enable_tight
 --- @tparam[opt] table opts {jpeg_quality = false|0..9, compress_level = false|0..9};
