@@ -164,16 +164,20 @@ function ViewerApp:_toolbar_changed()
     UIManager:setDirty(self, function() return "ui", area end)
 end
 
+-- Multi-finger gestures not named two_finger_*: the live zoom and its end.
+local MULTI_FINGER = { pinch = true, spread = true, inward_pan = true, outward_pan = true }
+
 --[[--
 True when gesture `ges` belongs to the toolbar: it is up and the gesture started on it. Never
 while a drag or long press of ours is under way (its end is ours wherever the finger lifts), and
-never for a swipe (the top-zone toggle, the end of a quick drag) or a two-finger gesture.
+never for a swipe (the top-zone toggle, the end of a quick drag) or a multi-finger gesture: a pinch
+or spread zooms the canvas wherever it is made.
 ]]
 function ViewerApp:_toolbar_owns(ges)
     if not (self.toolbar_visible and self.toolbar and ges and ges.pos) then return false end
     if self._drag_active or self._hold_active or self._mouse_moving then return false end
     local kind = ges.ges or ""
-    if kind == "swipe" or kind:sub(1, 11) == "two_finger_" then return false end
+    if kind == "swipe" or kind:sub(1, 11) == "two_finger_" or MULTI_FINGER[kind] then return false end
     local rel = ges.relative or { x = 0, y = 0 }
     local start = Geom:new{ x = ges.pos.x - (rel.x or 0), y = ges.pos.y - (rel.y or 0), w = 0, h = 0 }
     return self.toolbar.dimen:contains(start)

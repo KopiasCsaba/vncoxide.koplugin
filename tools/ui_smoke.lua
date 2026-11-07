@@ -4319,6 +4319,27 @@ check("toolbar_does_not_eat_a_canvas_drag_release", function()
     close_viewer(app, remote)
 end)
 
+check("toolbar_leaves_a_zoom_on_it_to_the_canvas", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local bar = app.toolbar.dimen
+    local over_bar = Geom:new{ x = bar.x + math.floor(bar.w / 2), y = bar.y + math.floor(bar.h / 2) }
+    local spreads = 0
+    local on_spread = app.onSpread
+    app.onSpread = function(...) spreads = spreads + 1; return on_spread(...) end
+    local before = remote:get_scale()
+    -- a spread: the live zoom (outward_pan) and its end (spread), both centred on the bar
+    dispatch_gesture{ ges = "outward_pan", pos = over_bar, start_span = 100, span = 150 }
+    dispatch_gesture{ ges = "spread", pos = over_bar, span = 150 }
+    assert_true(remote:get_scale() > before,
+        string.format("the canvas zoomed: scale %s -> %s", tostring(before), tostring(remote:get_scale())))
+    assert_true(spreads == 1, "the spread reached the canvas, got " .. spreads)
+    for _, kind in ipairs({ "pinch", "spread", "inward_pan", "outward_pan", "two_finger_tap", "swipe" }) do
+        assert_true(app:_toolbar_owns({ ges = kind, pos = over_bar }) == false, kind .. " is never the toolbar's")
+    end
+    assert_true(app:_toolbar_owns({ ges = "tap", pos = over_bar }) == true, "a tap there is")
+    close_viewer(app, remote)
+end)
+
 check("toolbar_recentres_after_rotation", function()
     local app, remote = new_app(400, 300, { toolbar = true })
     local before = Screen:getRotationMode()
