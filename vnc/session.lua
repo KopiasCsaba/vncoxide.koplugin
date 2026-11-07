@@ -29,6 +29,14 @@ Session.__index = Session
 
 -- Seconds between poll ticks while attached.
 Session.POLL_INTERVAL = 0.05
+-- Seconds between poll ticks while an update is half received: the rest is usually on its way,
+-- and a 50 ms nap per partial read would add up to a visibly late frame.
+Session.POLL_INTERVAL_BUSY = 0.01
+-- Bytes asked of the socket per receive once connected; whatever has arrived is taken, so one
+-- receive serves many small protocol reads.
+Session.RECV_CHUNK = 65536
+-- Protocol reads served straight from the receive buffer between two budget checks.
+Session.FAST_READS = 256
 -- Caps so a single tick can never monopolise the UI thread. The CPU budget is the one that
 -- matters: decoding is step-heavy (Hextile yields once per tiny read), so counting protocol
 -- steps, rather than time, throttled a first frame down to a few thousand steps/second and
@@ -83,7 +91,12 @@ function Session.new(opts)
         proto = nil,
         remote = nil,
         tx = {},           -- pending outgoing bytes (array of strings)
-        rx = "",           -- received but not yet consumed bytes
+        rx = "",           -- received bytes; the unconsumed ones start at `rx_pos`
+        rx_pos = 1,
+        bulk = false,      -- true once the socket is non-blocking: receive whatever has arrived
+        fast_reads = 0,    -- reads the protocol may still take from `rx` without yielding
+        fast_budget = 0,   -- bytes it may still take that way in this tick
+        in_update = false, -- a FramebufferUpdate is being received
         need = nil,        -- bytes the protocol is waiting for
         done = false,
         attached = false,
@@ -236,7 +249,7 @@ function Session:_do_connect()
     self.proto = Protocol.new{
         io = {
             write = function(s) self_ref.tx[#self_ref.tx + 1] = s end,
-            read = function(n) return coroutine.yield("need", n) end,
+            read = function(n) return self_ref:_read(n) end,
         },
         host = p.host,
         port = p.port,
@@ -263,11 +276,13 @@ function Session:_do_connect()
                 self_ref:_set_state("connected")
             end,
             on_update_start = function()
+                self_ref.in_update = true
                 if Util.timing_enabled() or self_ref.on_update then
                     self_ref.tm = { t0 = Session._now(), cpu = 0, bytes = 1, rects = 0, px = 0 }
                 end
             end,
             on_update_done = function()
+                self_ref.in_update = false
                 if self_ref.tm then self_ref.tm.finished = true end
             end,
             on_rect = function(x, y, w, h)
@@ -320,6 +335,7 @@ function Session:_do_connect()
 
     -- Connected: from now on the socket must never block the UI thread.
     sock:settimeout(0)
+    self.bulk = true
     self:_finish_connect(true)
 end
 
@@ -393,10 +409,34 @@ function Session:_resume(data)
 end
 
 --[[--
+The protocol's transport read (runs inside the protocol coroutine).
+
+While the receive buffer already holds the `n` bytes they are returned directly: a coroutine
+switch per read is slow (LuaJIT does not compile yields) and the decoders read a few bytes at a
+time. After `FAST_READS` such reads, or when the tick's byte budget is spent, or once an update
+has finished, it yields like a plain read, so `_pump` still slices the work and reports updates.
+]]
+function Session:_read(n)
+    local pos = self.rx_pos
+    if self.fast_reads > 0 and n <= self.fast_budget and #self.rx - pos + 1 >= n then
+        local tm = self.tm
+        if not (tm and tm.finished) then
+            self.fast_reads = self.fast_reads - 1
+            self.fast_budget = self.fast_budget - n
+            self.rx_pos = pos + n
+            if tm then tm.bytes = tm.bytes + n end
+            return self.rx:sub(pos, pos + n - 1)
+        end
+    end
+    return coroutine.yield("need", n)
+end
+
+--[[--
 One round of work: flush outgoing bytes, feed the protocol, collect its requests.
 
 --- @tparam[opt] boolean stop_connected return as soon as the handshake completed
---- @treturn string `"again"`, `"done"`, `"connected"` or `"error"`
+--- @treturn string `"again"` (waiting for data), `"busy"` (budget spent, more data is buffered),
+---   `"done"`, `"connected"` or `"error"`
 ]]
 function Session:_pump(stop_connected)
     local ok, err = self:_flush_tx()
@@ -412,50 +452,55 @@ function Session:_pump(stop_connected)
         steps = steps - 1
         if self.done then return "done" end
         if stop_connected and self.state == "connected" then return "connected" end
+        local resume, chunk = false, nil
         if self.need then
-            if #self.rx >= self.need then
-                local chunk = self.rx:sub(1, self.need)
-                self.rx = self.rx:sub(self.need + 1)
+            local pos, need = self.rx_pos, self.need
+            if #self.rx - pos + 1 >= need then
+                chunk = self.rx:sub(pos, pos + need - 1)
+                self.rx_pos = pos + need
                 self.need = nil
-                budget = budget - #chunk
-                if not self:_resume(chunk) then return "error" end
-                local ok2, err2 = self:_flush_tx()
-                if not ok2 then
-                    self:_fail(err2)
-                    return "error"
-                end
+                budget = budget - need
+                resume = true
             else
-                local chunk, rerr, partial = self.sock:receive(self.need - #self.rx)
-                if chunk then
-                    self.rx = self.rx .. chunk
-                    budget = budget - #chunk
-                else
-                    if partial and #partial > 0 then
-                        self.rx = self.rx .. partial
-                        budget = budget - #partial
-                    end
-                    if rerr == "timeout" then
-                        return "again"
-                    elseif rerr == "closed" then
-                        self:_fail("connection closed by server")
-                        return "error"
-                    else
-                        self:_fail(string.format("socket receive failed (%s)", tostring(rerr)))
-                        return "error"
-                    end
+                -- drop the consumed bytes before appending, so the buffer never grows unbounded
+                if pos > 1 then
+                    self.rx, self.rx_pos = self.rx:sub(pos), 1
+                end
+                local want = need - #self.rx
+                if self.bulk and want < Session.RECV_CHUNK then want = Session.RECV_CHUNK end
+                local got, rerr, partial = self.sock:receive(want)
+                got = got or partial
+                if got and #got > 0 then
+                    self.rx = self.rx .. got
+                    budget = budget - #got
+                end
+                if rerr == "closed" then
+                    self:_fail("connection closed by server")
+                    return "error"
+                elseif rerr and rerr ~= "timeout" then
+                    self:_fail(string.format("socket receive failed (%s)", tostring(rerr)))
+                    return "error"
+                elseif rerr == "timeout" and #self.rx < need then
+                    return "again"
                 end
             end
         else
-            if not self:_resume(nil) then return "error" end
+            resume = true
+        end
+        if resume then
+            self.fast_reads, self.fast_budget = Session.FAST_READS, budget
+            local resumed = self:_resume(chunk)
+            budget, self.fast_reads, self.fast_budget = self.fast_budget, 0, 0
+            if not resumed then return "error" end
             local ok2, err2 = self:_flush_tx()
             if not ok2 then
                 self:_fail(err2)
                 return "error"
             end
         end
-        if budget <= 0 or os.clock() >= cpu_deadline then return "again" end
+        if budget <= 0 or os.clock() >= cpu_deadline then return "busy" end
     end
-    return "again"
+    return "busy"
 end
 
 -- ---------------------------------------------------------------- lifecycle
@@ -523,7 +568,13 @@ function Session:_poll()
     -- the app callback may have rescheduled the task (see `poll_soon`): keep exactly one
     UIManager:unschedule(self._poll_task)
     if self.attached then
-        UIManager:scheduleIn(self.poll_interval or Session.POLL_INTERVAL, self._poll_task)
+        local interval = self.poll_interval or Session.POLL_INTERVAL
+        if status == "busy" then
+            interval = 0 -- more is buffered: carry on after the UI has had its turn
+        elseif self.in_update then
+            interval = math.min(interval, Session.POLL_INTERVAL_BUSY)
+        end
+        UIManager:scheduleIn(interval, self._poll_task)
     end
 end
 
@@ -546,7 +597,8 @@ function Session:_teardown_connection()
         self.proto:free()
         self.proto = nil
     end
-    self.tx, self.rx, self.need, self.done = {}, "", nil, false
+    self.tx, self.rx, self.rx_pos, self.need, self.done = {}, "", 1, nil, false
+    self.bulk, self.in_update, self.fast_reads, self.fast_budget = false, false, 0, 0
     -- An update cut short by the teardown must not leave its timing state for the next connection.
     self.tm = nil
     -- Rectangles a dead connection never got to report: a reconnect requests the whole screen again,

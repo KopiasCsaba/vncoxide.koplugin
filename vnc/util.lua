@@ -109,18 +109,71 @@ function Util.split_chars(str)
     return Util._splitToChars(str)
 end
 
+--- `n` bytes of the stream as a `const uint8_t*`, valid until the next read from this reader.
+function Util.Reader:ptr(n)
+    local s = self:bytes(n)
+    self._anchor = s -- keeps the string (and so the pointer) alive
+    return ffi.cast("const uint8_t*", s)
+end
+
+local const_u8p = ffi.typeof("const uint8_t*")
+
 --[[--
-A reader over an in-memory byte string (used for ZRLE's inflated tile stream).
+A reader over `len` bytes of memory at `ptr` (`anchor` is any object that keeps them alive).
+
+Same interface as @{Util.reader}, but every read is a bounds-checked pointer access, with no
+string or closure per read: decoders run their inner loops on it (e.g. ZRLE's inflated tiles).
 ]]
+function Util.ptr_reader(ptr, len, anchor)
+    return setmetatable({ p = ffi.cast(const_u8p, ptr), pos = 0, len = len, anchor = anchor },
+        Util.PtrReader)
+end
+
+--- A reader over an in-memory byte string.
 function Util.mem_reader(str)
-    local pos = 1
-    return Util.reader({
-        read = function(n)
-            local s = str:sub(pos, pos + n - 1)
-            pos = pos + n
-            return s
-        end,
-    })
+    return Util.ptr_reader(str, #str, str)
+end
+
+Util.PtrReader = {}
+Util.PtrReader.__index = Util.PtrReader
+
+local function overrun(self, n)
+    error(string.format("transport returned %d bytes, wanted %d", math.max(0, self.len - self.pos), n), 3)
+end
+
+function Util.PtrReader:ptr(n)
+    local pos = self.pos
+    if pos + n > self.len then overrun(self, n) end
+    self.pos = pos + n
+    return self.p + pos
+end
+
+function Util.PtrReader:bytes(n)
+    return ffi.string(self:ptr(n), n)
+end
+
+function Util.PtrReader:u8()
+    local pos = self.pos
+    if pos >= self.len then overrun(self, 1) end
+    self.pos = pos + 1
+    return self.p[pos]
+end
+
+function Util.PtrReader:u16()
+    local p = self:ptr(2)
+    return p[0] * 256 + p[1]
+end
+
+function Util.PtrReader:u32()
+    local p = self:ptr(4)
+    return ((p[0] * 256 + p[1]) * 256 + p[2]) * 256 + p[3]
+end
+
+Util.PtrReader.s32 = Util.Reader.s32
+
+--- Bytes left to read.
+function Util.PtrReader:remaining()
+    return self.len - self.pos
 end
 
 --[[--

@@ -78,6 +78,28 @@ local function channel_lut(max)
     end
     return lut
 end
+PxFmt.channel_lut = channel_lut
+
+-- Whole-pixel tables for 1- and 2-byte wire pixels: lut[v * 3 .. v * 3 + 2] = RGB24 of wire
+-- value v (in host order), cached per channel layout (at most 192 KiB for 16 bpp).
+local pixel_luts = {}
+local function pixel_lut(fmt, size)
+    local key = table.concat({ size, fmt.red_max, fmt.green_max, fmt.blue_max,
+        fmt.red_shift, fmt.green_shift, fmt.blue_shift }, ",")
+    local lut = pixel_luts[key]
+    if not lut then
+        local n = lshift(1, 8 * size)
+        lut = ffi.new("uint8_t[?]", n * 3)
+        local rl, gl, bl = channel_lut(fmt.red_max), channel_lut(fmt.green_max), channel_lut(fmt.blue_max)
+        for v = 0, n - 1 do
+            lut[v * 3] = rl[band(rshift(v, fmt.red_shift), fmt.red_max)]
+            lut[v * 3 + 1] = gl[band(rshift(v, fmt.green_shift), fmt.green_max)]
+            lut[v * 3 + 2] = bl[band(rshift(v, fmt.blue_shift), fmt.blue_max)]
+        end
+        pixel_luts[key] = lut
+    end
+    return lut
+end
 
 local function is_rgb_bytes(fmt)
     return fmt.big_endian == 0 and fmt.red_shift == 0 and fmt.green_shift == 8
@@ -101,22 +123,38 @@ function PxFmt.to_rgb24(fmt, src, count, dst, src_size)
         end
         return
     end
+    if src_size <= 2 then
+        -- 8/16 bpp: one table lookup per pixel, the table maps every wire value to its RGB24
+        local lut = pixel_lut(fmt, src_size)
+        if src_size == 1 then
+            for i = 0, count - 1 do
+                local q, d = src[i] * 3, i * 3
+                dst[d], dst[d + 1], dst[d + 2] = lut[q], lut[q + 1], lut[q + 2]
+            end
+        elseif fmt.big_endian ~= 0 then
+            for i = 0, count - 1 do
+                local s, d = i * 2, i * 3
+                local q = (src[s] * 256 + src[s + 1]) * 3
+                dst[d], dst[d + 1], dst[d + 2] = lut[q], lut[q + 1], lut[q + 2]
+            end
+        else
+            for i = 0, count - 1 do
+                local s, d = i * 2, i * 3
+                local q = (src[s + 1] * 256 + src[s]) * 3
+                dst[d], dst[d + 1], dst[d + 2] = lut[q], lut[q + 1], lut[q + 2]
+            end
+        end
+        return
+    end
     local rl, gl, bl = channel_lut(fmt.red_max), channel_lut(fmt.green_max), channel_lut(fmt.blue_max)
     local rm, gm, bm = fmt.red_max, fmt.green_max, fmt.blue_max
     local rs, gs, bs = fmt.red_shift, fmt.green_shift, fmt.blue_shift
     local big = fmt.big_endian ~= 0
     for i = 0, count - 1 do
         local s = src + i * src_size
-        local v
-        if src_size == 1 then
-            v = s[0]
-        elseif src_size == 2 then
-            v = big and bor(lshift(s[0], 8), s[1]) or bor(lshift(s[1], 8), s[0])
-        else
-            v = 0
-            for k = 0, src_size - 1 do
-                v = bor(v, lshift(s[big and k or (src_size - 1 - k)], 8 * (src_size - 1 - k)))
-            end
+        local v = 0
+        for k = 0, src_size - 1 do
+            v = bor(v, lshift(s[big and k or (src_size - 1 - k)], 8 * (src_size - 1 - k)))
         end
         local d = dst + i * 3
         d[0] = rl[band(rshift(v, rs), rm)]
@@ -169,6 +207,13 @@ function PxFmt.fill_rect(vp, x, y, w, h, r, g, b)
         for j = y, y + h - 1 do
             local p = base + j * stride + x * 3
             p[0], p[1], p[2] = r, g, b
+        end
+        return
+    end
+    if r == g and g == b then
+        -- grey (most of what an e-reader is shown): one memset per row
+        for j = y, y + h - 1 do
+            ffi.fill(base + j * stride + x * 3, w * 3, r)
         end
         return
     end

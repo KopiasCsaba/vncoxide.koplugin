@@ -93,34 +93,53 @@ function ZStream:reset()
     self.active = true
 end
 
+--- Grows the stream's persistent output buffer to at least `need` bytes, keeping `keep` bytes.
+local function grow(self, need, keep)
+    local cap = self.out_cap or 0
+    if cap >= need then return end
+    if cap == 0 then cap = 65536 end
+    while cap < need do cap = cap * 2 end
+    local buf = ffi.new("uint8_t[?]", cap)
+    if keep > 0 then ffi.copy(buf, self.out, keep) end
+    self.out, self.out_cap = buf, cap
+end
+
 --[[--
-Feeds `data` (may be nil/empty for a bare drain) and returns every byte the stream produced.
+Feeds `data` (may be nil/empty for a bare drain) and inflates everything the stream produces
+into the stream's own output buffer.
 
 The stream is *not* finished: ZRLE/Tight blocks end with a sync flush, not with a stream
 end, so we drain until the input is consumed and no more output can be produced.
-]]
+
+The buffer is reused by the next call (no allocation per rect once it has grown), so the bytes
+are only valid until then.
 --- @tparam string|nil data
---- @treturn string|nil, string|nil output, or nil plus an error message
-function ZStream:inflate(data)
+--- @tparam[opt] number limit fail rather than produce more than this many bytes
+--- @treturn cdata|nil `const uint8_t*` to the output, or nil plus an error
+--- @treturn number|string the output length, or the error
+]]
+function ZStream:inflate_ptr(data, limit)
     local strm = self.strm[0]
     strm.next_in = data and ffi.cast("const uint8_t*", data) or nil
     strm.avail_in = data and #data or 0
-
-    local chunks = {}
-    local bufsize = 65536
+    grow(self, 65536, 0)
+    local total = 0
     local iterations = 0
     while true do
         iterations = iterations + 1
-        if iterations > 24 then
+        if iterations > 32 then
             return nil, "zlib produced an unreasonable amount of output (possible loop)"
         end
-        local buf = ffi.new("uint8_t[?]", bufsize)
-        strm.next_out = buf
-        strm.avail_out = bufsize
+        -- (a full buffer means there may be more: grow it; `limit` below bounds the growth)
+        if total == self.out_cap then grow(self, total * 2, total) end
+        local room = self.out_cap - total
+        strm.next_out = self.out + total
+        strm.avail_out = room
         local res = libz.inflate(strm, Z_SYNC_FLUSH)
-        local produced = bufsize - strm.avail_out
-        if produced > 0 then
-            chunks[#chunks + 1] = ffi.string(buf, produced)
+        local produced = room - strm.avail_out
+        total = total + produced
+        if limit and total > limit then
+            return nil, string.format("zlib output exceeds the %d bytes the rect can hold", limit)
         end
         if res == Z_STREAM_END then
             break
@@ -128,18 +147,21 @@ function ZStream:inflate(data)
             return nil, string.format("zlib error %d (%s)", res,
                 strm.msg ~= nil and ffi.string(strm.msg) or "no message")
         end
-        if strm.avail_out == 0 then
-            -- Output buffer was filled: grow and keep going (there may be input left).
-            bufsize = bufsize * 2
-        elseif strm.avail_in == 0 then
-            -- Input consumed, stream still open at a flush point: done.
-            break
-        elseif produced == 0 then
-            -- No progress possible (Z_BUF_ERROR with data left): stop to avoid spinning.
+        if strm.avail_out == 0 then -- luacheck: ignore 542
+            -- the buffer is full: grow it and drain the rest
+        elseif strm.avail_in == 0 or produced == 0 then
             break
         end
     end
-    return table.concat(chunks)
+    return self.out, total
+end
+
+--- Like @{ZStream:inflate_ptr}, but returns the output as a Lua string.
+--- @treturn string|nil the inflated bytes, or nil plus an error
+function ZStream:inflate(data, limit)
+    local p, n = self:inflate_ptr(data, limit)
+    if not p then return nil, n end
+    return ffi.string(p, n)
 end
 
 --[[--
@@ -149,45 +171,35 @@ That marker is what an RFB zlib stream needs at the end of every ZRLE/Tight bloc
 stays open (and keeps its compression history) but everything written so far becomes available to
 the decoder.
 ]]
---- @tparam string data
---- @treturn string|nil, string|nil output, or nil plus an error message
 function ZStream:deflate(data)
     local strm = self.strm[0]
     strm.next_in = ffi.cast("const uint8_t*", data)
     strm.avail_in = #data
-
-    local chunks = {}
-    local bufsize = 65536
+    -- deflateBound-ish room: the input plus a little, so one call is the common case
+    grow(self, #data + math.floor(#data / 1000) + 64, 0)
+    local total = 0
     local iterations = 0
     while true do
         iterations = iterations + 1
         if iterations > 64 then
             return nil, "zlib deflate did not settle (possible loop)"
         end
-        local buf = ffi.new("uint8_t[?]", bufsize)
-        strm.next_out = buf
-        strm.avail_out = bufsize
+        if total == self.out_cap then grow(self, total * 2, total) end
+        local room = self.out_cap - total
+        strm.next_out = self.out + total
+        strm.avail_out = room
         local res = libz.deflate(strm, Z_SYNC_FLUSH)
-        local produced = bufsize - strm.avail_out
-        if produced > 0 then
-            chunks[#chunks + 1] = ffi.string(buf, produced)
-        end
+        total = total + room - strm.avail_out
         if res ~= Z_OK then
             return nil, string.format("zlib error %d (%s)", res,
                 strm.msg ~= nil and ffi.string(strm.msg) or "no message")
         end
-        -- With Z_SYNC_FLUSH, deflate consumes all input and leaves the output buffer unfilled
-        -- once the flush marker has been written.
         if strm.avail_in == 0 and strm.avail_out > 0 then
-            return table.concat(chunks)
-        end
-        if strm.avail_out == 0 then
-            bufsize = bufsize * 2
+            return ffi.string(self.out, total)
         end
     end
 end
 
---- Releases the stream.
 function ZStream:free()
     if self.active then
         if self.mode == "deflate" then
@@ -198,6 +210,7 @@ function ZStream:free()
         self.active = false
     end
     self.strm = nil
+    self.out, self.out_cap = nil, nil
 end
 
 return ZStream

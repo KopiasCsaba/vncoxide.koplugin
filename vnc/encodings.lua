@@ -33,6 +33,8 @@ local ZStream = require("vnc/zstream")
 
 local band, bor, rshift, lshift = bit.band, bit.bor, bit.rshift, bit.lshift
 
+pcall(ffi.cdef, "void *memmove(void *dst, const void *src, size_t n);")
+
 local Encodings = {}
 
 Encodings.RAW           = 0
@@ -92,66 +94,107 @@ Encodings.TIGHT_FILL = 0x08
 Encodings.TIGHT_JPEG = 0x09
 Encodings.TIGHT_NO_ZLIB = 0x0A
 
--- Growable scratch row used to convert 4-byte wire pixels into packed RGB24.
-local scratch, scratch_len = nil, 0
-local function ensure_scratch(n)
-    if scratch_len < n then
-        scratch = ffi.new("uint8_t[?]", n)
-        scratch_len = n
+-- Hot-path notes: every decoder works on `const uint8_t*` input (`reader:ptr(n)`) and writes
+-- whole rows through the plane's data pointer. No per-pixel strings, closures, tables or
+-- function calls through module tables, which is what keeps LuaJIT's traces tight.
+
+local u8p = ffi.typeof("uint8_t*")
+local const_u8p = ffi.typeof("const uint8_t*")
+
+-- Growable scratch buffers (never shrunk), by name.
+local scratch_bufs = {}
+local function scratch(name, ctype, n)
+    local b = scratch_bufs[name]
+    if not b or b.n < n then
+        b = { n = n, p = ffi.new(ctype .. "[?]", n) }
+        scratch_bufs[name] = b
     end
-    return scratch
+    return b.p
 end
 
 local DEFAULT_FMT = PxFmt.for_depth(24)
 
---- Reads one PIXEL, returning r, g, b.
-local function read_pixel(r, fmt)
-    if fmt.bits_per_pixel == 32 then
-        local s = r:bytes(4)
-        return s:byte(1), s:byte(2), s:byte(3)
+--[[--
+Per-format pixel conversion parameters, cached on the format table.
+
+`rgb` is the 32 bpp format whose PIXEL `[R, G, B, X]` and CPIXEL `[R, G, B]` both start with
+the three channel bytes; otherwise a wire value is looked up through per-channel tables.
+]]
+local function conv(fmt)
+    local cv = fmt._conv
+    if cv then return cv end
+    cv = {
+        rgb = fmt.bits_per_pixel == 32 and fmt.big_endian == 0 and fmt.red_shift == 0
+            and fmt.green_shift == 8 and fmt.blue_shift == 16 and fmt.red_max == 255
+            and fmt.green_max == 255 and fmt.blue_max == 255,
+        bytes = fmt.bytes, cbytes = fmt.cbytes,
+        big = fmt.big_endian ~= 0,
+        rl = PxFmt.channel_lut(fmt.red_max), gl = PxFmt.channel_lut(fmt.green_max),
+        bl = PxFmt.channel_lut(fmt.blue_max),
+        rm = fmt.red_max, gm = fmt.green_max, bm = fmt.blue_max,
+        rs = fmt.red_shift, gs = fmt.green_shift, bs = fmt.blue_shift,
+    }
+    fmt._conv = cv
+    return cv
+end
+
+--- The r, g, b of the `size`-byte wire pixel at `p`.
+local function wire_rgb(cv, p, size)
+    if cv.rgb then return p[0], p[1], p[2] end
+    local v
+    if size == 1 then
+        v = p[0]
+    elseif size == 2 then
+        if cv.big then v = bor(lshift(p[0], 8), p[1]) else v = bor(lshift(p[1], 8), p[0]) end
+    else
+        v = 0
+        for k = 0, size - 1 do
+            v = bor(v, lshift(p[cv.big and k or (size - 1 - k)], 8 * (size - 1 - k)))
+        end
     end
-    return PxFmt.unpack(fmt, r:bytes(fmt.bytes), 0, fmt.bytes)
+    return cv.rl[band(rshift(v, cv.rs), cv.rm)], cv.gl[band(rshift(v, cv.gs), cv.gm)],
+        cv.bl[band(rshift(v, cv.bs), cv.bm)]
+end
+
+--- Reads one PIXEL, returning r, g, b.
+local function read_pixel(r, cv)
+    return wire_rgb(cv, r:ptr(cv.bytes), cv.bytes)
 end
 
 --- Reads one CPIXEL/TPIXEL, returning r, g, b.
-local function read_cpixel(r, fmt)
-    local s = r:bytes(fmt.cbytes)
-    if fmt.bits_per_pixel == 32 then
-        return s:byte(1), s:byte(2), s:byte(3)
-    end
-    return PxFmt.unpack(fmt, s, 0, fmt.cbytes)
+local function read_cpixel(r, cv)
+    return wire_rgb(cv, r:ptr(cv.cbytes), cv.cbytes)
+end
+
+--- Base pointer and stride of a viewport (rect-local pixel (x, y) is at base + y * stride + x * 3).
+local function vp_base(vp)
+    return ffi.cast(u8p, vp.data), vp.stride
 end
 
 --[[--
-Writes `count` wire PIXELs (`[R, G, B, X]` at 32 bpp) as packed RGB24 into `vp` at `(x, y)`.
+Converts `count` wire pixels of `size` bytes at `src` to packed RGB24 at `dst`.
 ]]
-local function write_row(fmt, vp, x, y, data, count)
-    local buf = ensure_scratch(count * 3)
-    local src = ffi.cast("const uint8_t*", data)
-    if fmt.bits_per_pixel ~= 32 then
-        PxFmt.to_rgb24(fmt, src, count, buf, fmt.bytes)
-    else
-        for i = 0, count - 1 do
-            buf[i * 3] = src[i * 4]
-            buf[i * 3 + 1] = src[i * 4 + 1]
-            buf[i * 3 + 2] = src[i * 4 + 2]
+local function to_rgb(cv, fmt, src, count, dst, size)
+    if cv.rgb then
+        if size == 3 then
+            ffi.copy(dst, src, count * 3)
+        else
+            for i = 0, count - 1 do
+                local s, d = i * 4, i * 3
+                dst[d], dst[d + 1], dst[d + 2] = src[s], src[s + 1], src[s + 2]
+            end
         end
+    else
+        PxFmt.to_rgb24(fmt, src, count, dst, size)
     end
-    PxFmt.write_pixel_buffer(vp, x, y, buf, count)
 end
 
---[[--
-Writes `count` packed CPIXELs/TPIXELs (`[R, G, B]` at 32 bpp) from pointer `src` into `vp` at
-`(x, y)`.
-]]
-local function write_crow(fmt, vp, x, y, src, count)
-    if fmt.bits_per_pixel == 32 then
-        PxFmt.write_pixel_buffer(vp, x, y, src, count)
-        return
+--- Writes the `h` rows of `w` wire pixels of `size` bytes at `src` into the viewport rect at (x, y).
+local function write_rows(cv, fmt, vp, x, y, w, h, src, size)
+    local base, stride = vp_base(vp)
+    for row = 0, h - 1 do
+        to_rgb(cv, fmt, src + row * w * size, w, base + (y + row) * stride + x * 3, size)
     end
-    local buf = ensure_scratch(count * 3)
-    PxFmt.to_rgb24(fmt, src, count, buf, fmt.cbytes)
-    PxFmt.write_pixel_buffer(vp, x, y, buf, count)
 end
 
 --- Clamps a subrect to the rect it lives in; returns nil when it is entirely outside.
@@ -163,8 +206,11 @@ end
 
 function Encodings.decode_raw(ctx)
     local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
+    local cv = conv(fmt)
+    local nb = cv.bytes
+    -- one row per read: a whole rect may be megabytes
     for row = 0, h - 1 do
-        write_row(fmt, vp, 0, row, r:bytes(w * fmt.bytes), w)
+        write_rows(cv, fmt, vp, 0, row, w, 1, r:ptr(w * nb), nb)
     end
     return true
 end
@@ -177,28 +223,27 @@ function Encodings.decode_copyrect(ctx)
         return nil, string.format("CopyRect source (%d,%d,%d,%d) outside %dx%d framebuffer",
             src_x, src_y, w, h, ctx.plane.w, ctx.plane.h)
     end
-    -- RFC 6143: the source is the state *before* this rectangle. BlitBuffer's blitter is a
-    -- naive forward copy and corrupts overlapping self-blits (verified: shifting right by 8
-    -- reproduces the already-overwritten pixels), so stage through a temporary plane.
-    local overlapping = src_x < x + w and x < src_x + w and src_y < y + h and y < src_y + h
-    if overlapping then
-        local tmp = BB.new(w, h, BB.TYPE_BBRGB24)
-        tmp:blitFrom(ctx.plane, 0, 0, src_x, src_y, w, h)
-        ctx.plane:blitFrom(tmp, x, y, 0, 0, w, h)
-        tmp:free()
-    else
-        ctx.plane:blitFrom(ctx.plane, x, y, src_x, src_y, w, h)
+    -- RFC 6143: the source is the state *before* this rectangle. Rows are copied with memmove in
+    -- an order that never reads a row already overwritten (bottom-up when moving down), so
+    -- overlapping copies need no temporary buffer.
+    local base, stride = vp_base(ctx.plane)
+    local n = w * 3
+    local y0, y1, dir = 0, h - 1, 1
+    if src_y < y then y0, y1, dir = h - 1, 0, -1 end
+    for row = y0, y1, dir do
+        ffi.C.memmove(base + (y + row) * stride + x * 3, base + (src_y + row) * stride + src_x * 3, n)
     end
     return true
 end
 
 function Encodings.decode_rre(ctx)
-    local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
+    local r, vp, w, h = ctx.r, ctx.vp, ctx.w, ctx.h
+    local cv = conv(ctx.fmt)
     local n = r:u32()
-    local br, bg, bb = read_pixel(r, fmt)
+    local br, bg, bb = read_pixel(r, cv)
     PxFmt.fill_rect(vp, 0, 0, w, h, br, bg, bb)
     for _ = 1, n do
-        local pr, pg, pb = read_pixel(r, fmt)
+        local pr, pg, pb = read_pixel(r, cv)
         local sx, sy, sw, sh = r:u16(), r:u16(), r:u16(), r:u16()
         local cx, cy, cw, ch = clamp_sub(w, h, sx, sy, sw, sh)
         if cx then
@@ -210,6 +255,8 @@ end
 
 function Encodings.decode_hextile(ctx)
     local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
+    local cv = conv(fmt)
+    local nb = cv.bytes
     local bg_r, bg_g, bg_b, bg_valid
     local fg_r, fg_g, fg_b, fg_valid
     for ty = 0, h - 1, 16 do
@@ -218,14 +265,12 @@ function Encodings.decode_hextile(ctx)
             local tw = math.min(16, w - tx)
             local mask = r:u8()
             if band(mask, 1) ~= 0 then -- Raw
-                for row = 0, th - 1 do
-                    write_row(fmt, vp, tx, ty + row, r:bytes(tw * fmt.bytes), tw)
-                end
+                write_rows(cv, fmt, vp, tx, ty, tw, th, r:ptr(tw * th * nb), nb)
                 -- Neither colour may be carried over a raw tile.
                 bg_valid, fg_valid = false, false
             else
                 if band(mask, 2) ~= 0 then -- BackgroundSpecified
-                    bg_r, bg_g, bg_b = read_pixel(r, fmt)
+                    bg_r, bg_g, bg_b = read_pixel(r, cv)
                     bg_valid = true
                 elseif not bg_valid then
                     return nil, string.format("Hextile: background not specified at tile (%d,%d)", tx, ty)
@@ -234,7 +279,7 @@ function Encodings.decode_hextile(ctx)
                     if band(mask, 16) ~= 0 then
                         return nil, string.format("Hextile: ForegroundSpecified with SubrectsColoured at tile (%d,%d)", tx, ty)
                     end
-                    fg_r, fg_g, fg_b = read_pixel(r, fmt)
+                    fg_r, fg_g, fg_b = read_pixel(r, cv)
                     fg_valid = true
                 end
                 PxFmt.fill_rect(vp, tx, ty, tw, th, bg_r, bg_g, bg_b)
@@ -244,7 +289,7 @@ function Encodings.decode_hextile(ctx)
                     for _ = 1, count do
                         local sr, sg, sb
                         if coloured then
-                            sr, sg, sb = read_pixel(r, fmt)
+                            sr, sg, sb = read_pixel(r, cv)
                         else
                             if not fg_valid then
                                 return nil, string.format("Hextile: subrect without foreground at tile (%d,%d)", tx, ty)
@@ -280,76 +325,41 @@ local function read_run_length(r)
     end
 end
 
--- Writes `count` copies of one colour starting at row-major tile index `start`,
--- spanning rows if needed.
-local function write_tile_run(vp, dx, dy, tw, th, start, count, cr, cg, cb)
-    local limit = tw * th
-    if start + count > limit then
-        count = limit - start
-    end
-    local idx = start
-    while count > 0 do
-        local col = idx % tw
-        local n = math.min(count, tw - col)
-        PxFmt.fill_rect(vp, dx + col, dy + math.floor(idx / tw), n, 1, cr, cg, cb)
-        idx = idx + n
-        count = count - n
-    end
-end
-
-local function decode_packed_palette(vp, r, dx, dy, tw, th, pal, palette_size)
-    local bpp = palette_size == 2 and 1 or (palette_size <= 4 and 2 or 4)
-    local row_bytes = math.floor((tw * bpp + 7) / 8)
-    local mask = lshift(1, bpp) - 1
-    for row = 0, th - 1 do
-        local data = r:bytes(row_bytes)
-        for col = 0, tw - 1 do
-            local bitpos = col * bpp
-            local byte = data:byte(math.floor(bitpos / 8) + 1)
-            local v = band(rshift(byte, 8 - bpp - (bitpos % 8)), mask)
-            local px = pal[v + 1]
-            if not px then
-                return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d) col %d",
-                    v, palette_size, dx, dy, col)
-            end
-            PxFmt.write_pixel(vp, dx + col, dy + row, px.r, px.g, px.b)
-        end
-    end
-    return true
-end
+-- A ZRLE tile is at most 64 x 64 pixels; TRLE's are 16 x 16.
+local MAX_TILE = 64
 
 --[[--
 Decodes one TRLE-style tile at `(dx, dy)` into `vp`.
 
-`state.palette` carries the previous tile's palette (subencodings 127/129).
+The tile is built in a packed RGB24 tile buffer, then copied into the plane row by row, so runs
+and palette pixels are plain sequential byte stores. `state.pal` (`uint8_t[128 * 3]`) carries
+the previous tile's palette (subencodings 127/129).
 ]]
-local function decode_tile(state, fmt, vp, r, dx, dy, tw, th)
+local function decode_tile(state, cv, fmt, vp, r, dx, dy, tw, th)
+    local cb = cv.cbytes
     local sub = r:u8()
     if sub == 0 then -- raw CPIXELs
-        for row = 0, th - 1 do
-            local data = r:bytes(tw * fmt.cbytes)
-            write_crow(fmt, vp, dx, dy + row, ffi.cast("const uint8_t*", data), tw)
-        end
+        write_rows(cv, fmt, vp, dx, dy, tw, th, r:ptr(tw * th * cb), cb)
         return true
     elseif sub == 1 then -- solid
-        local cr, cg, cb = read_cpixel(r, fmt)
-        PxFmt.fill_rect(vp, dx, dy, tw, th, cr, cg, cb)
+        local cr, cg, cbl = read_cpixel(r, cv)
+        PxFmt.fill_rect(vp, dx, dy, tw, th, cr, cg, cbl)
         return true
     end
 
-    local pal, palette_size
+    local palette_size
     local rle, read_palette
     if sub >= 2 and sub <= 16 then
         palette_size = sub
         read_palette = true
     elseif sub == 127 then -- packed palette, reused
-        pal, palette_size = state.palette, state.palette_size
-        if not pal then return nil, "TRLE: palette reuse (127) without a previous palette" end
+        palette_size = state.palette_size
+        if not palette_size then return nil, "TRLE: palette reuse (127) without a previous palette" end
     elseif sub == 128 then -- plain RLE
         rle = true
     elseif sub == 129 then -- palette RLE, reused
-        pal, palette_size = state.palette, state.palette_size
-        if not pal then return nil, "TRLE: palette reuse (129) without a previous palette" end
+        palette_size = state.palette_size
+        if not palette_size then return nil, "TRLE: palette reuse (129) without a previous palette" end
         rle = true
     elseif sub >= 130 then
         palette_size = sub - 128
@@ -363,58 +373,90 @@ local function decode_tile(state, fmt, vp, r, dx, dy, tw, th)
         return nil, string.format("unsupported TRLE subencoding %d", sub)
     end
 
+    local pal = state.pal
+    if not pal then
+        pal = ffi.new("uint8_t[?]", 128 * 3)
+        state.pal = pal
+    end
     if read_palette then
-        pal = {}
-        for i = 1, palette_size do
-            local pr, pg, pb = read_cpixel(r, fmt)
-            pal[i] = { r = pr, g = pg, b = pb }
+        local p = r:ptr(palette_size * cb)
+        for i = 0, palette_size - 1 do
+            pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2] = wire_rgb(cv, p + i * cb, cb)
         end
-        state.palette, state.palette_size = pal, palette_size
+        state.palette_size = palette_size
     end
 
-    if not rle then
-        return decode_packed_palette(vp, r, dx, dy, tw, th, pal, palette_size)
-    end
-
-    -- Run-length encoded (plain RLE or palette RLE).
+    local tb = scratch("tile", "uint8_t", MAX_TILE * MAX_TILE * 3)
     local npix = tw * th
-    local done = 0
-    while done < npix do
-        local cr, cg, cb, length
-        if sub == 128 then
-            cr, cg, cb = read_cpixel(r, fmt)
-            length = read_run_length(r)
-        else
-            local idx = r:u8()
-            if idx >= 128 then
-                idx = idx - 128
+    if not rle then
+        -- packed palette: rows of 1/2/4-bit indices, each row padded to a byte
+        local bpp = palette_size == 2 and 1 or (palette_size <= 4 and 2 or 4)
+        local row_bytes = rshift(tw * bpp + 7, 3)
+        local mask = lshift(1, bpp) - 1
+        local p = r:ptr(row_bytes * th)
+        local o = 0
+        for row = 0, th - 1 do
+            local rp = p + row * row_bytes
+            for col = 0, tw - 1 do
+                local bitpos = col * bpp
+                local v = band(rshift(rp[rshift(bitpos, 3)], 8 - bpp - band(bitpos, 7)), mask)
+                if v >= palette_size then
+                    return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d) col %d",
+                        v, palette_size, dx, dy, col)
+                end
+                local q = v * 3
+                tb[o], tb[o + 1], tb[o + 2] = pal[q], pal[q + 1], pal[q + 2]
+                o = o + 3
+            end
+        end
+    else
+        -- run-length encoded (plain RLE or palette RLE), runs may span rows
+        local done = 0
+        while done < npix do
+            local cr, cg, cbl, length
+            if sub == 128 then
+                cr, cg, cbl = read_cpixel(r, cv)
                 length = read_run_length(r)
             else
-                length = 1
+                local idx = r:u8()
+                if idx >= 128 then
+                    idx = idx - 128
+                    length = read_run_length(r)
+                else
+                    length = 1
+                end
+                if idx >= palette_size then
+                    return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d)",
+                        idx, palette_size, dx, dy)
+                end
+                local q = idx * 3
+                cr, cg, cbl = pal[q], pal[q + 1], pal[q + 2]
             end
-            local px = pal[idx + 1]
-            if not px then
-                return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d)",
-                    idx, palette_size, dx, dy)
+            if done + length > npix then
+                return nil, string.format("TRLE: run of %d overflows tile (%d/%d pixels) at tile (%d,%d)",
+                    length, done, npix, dx, dy)
             end
-            cr, cg, cb = px.r, px.g, px.b
+            for o = done * 3, (done + length - 1) * 3, 3 do
+                tb[o], tb[o + 1], tb[o + 2] = cr, cg, cbl
+            end
+            done = done + length
         end
-        if length <= 0 or done + length > npix then
-            return nil, string.format("TRLE: run of %d overflows tile (%d/%d pixels) at tile (%d,%d)",
-                length, done, npix, dx, dy)
-        end
-        write_tile_run(vp, dx, dy, tw, th, done, length, cr, cg, cb)
-        done = done + length
+    end
+    local base, stride = vp_base(vp)
+    local n = tw * 3
+    for row = 0, th - 1 do
+        ffi.copy(base + (dy + row) * stride + dx * 3, tb + row * n, n)
     end
     return true
 end
 
 local function decode_tiles(state, fmt, vp, r, w, h, tile_size)
+    local cv = conv(fmt)
     for ty = 0, h - 1, tile_size do
         local th = math.min(tile_size, h - ty)
         for tx = 0, w - 1, tile_size do
             local tw = math.min(tile_size, w - tx)
-            local ok, err = decode_tile(state, fmt, vp, r, tx, ty, tw, th)
+            local ok, err = decode_tile(state, cv, fmt, vp, r, tx, ty, tw, th)
             if not ok then return nil, err end
         end
     end
@@ -430,6 +472,13 @@ function Encodings.decode_trle(ctx)
     return decode_tiles(state, ctx.fmt, ctx.vp, ctx.r, ctx.w, ctx.h, 16)
 end
 
+--- The most inflated bytes a w x h ZRLE rect can legitimately take (worst case: plain RLE with
+--- a one-pixel run per pixel, plus a full palette and the subencoding byte per tile).
+local function zrle_limit(w, h, cb)
+    local tiles = math.ceil(w / 64) * math.ceil(h / 64)
+    return w * h * (cb + 1) + tiles * (1 + 127 * cb)
+end
+
 function Encodings.decode_zrle(ctx)
     local r = ctx.r
     local length = r:u32()
@@ -439,17 +488,17 @@ function Encodings.decode_zrle(ctx)
         stream = ZStream.new()
         ctx.streams.zrle = stream
     end
-    local inflated, err = stream:inflate(data)
-    if not inflated then
+    local p, n = stream:inflate_ptr(data, zrle_limit(ctx.w, ctx.h, ctx.fmt.cbytes))
+    if not p then
         return nil, string.format("ZRLE: %s while inflating %d bytes at rect (%d,%d,%d,%d)",
-            err, length, ctx.x, ctx.y, ctx.w, ctx.h)
+            n, length, ctx.x, ctx.y, ctx.w, ctx.h)
     end
     local state = ctx.streams.zrle_tiles
     if not state then
         state = {}
         ctx.streams.zrle_tiles = state
     end
-    return decode_tiles(state, ctx.fmt, ctx.vp, Util.mem_reader(inflated), ctx.w, ctx.h, 64)
+    return decode_tiles(state, ctx.fmt, ctx.vp, Util.ptr_reader(p, n, stream), ctx.w, ctx.h, 64)
 end
 
 --- Tight's 1..3 byte little-endian compact length.
@@ -480,47 +529,50 @@ local function tight_stream(ctx, id)
 end
 
 --- Applies the Tight copy filter: packed TPIXEL rows.
-local function tight_copy(fmt, vp, data, w, h)
-    local cb = fmt.cbytes
-    if #data < w * h * cb then
-        return nil, string.format("Tight: copy filter got %d bytes, need %d", #data, w * h * cb)
+local function tight_copy(cv, fmt, vp, data, len, w, h)
+    local cb = cv.cbytes
+    if len < w * h * cb then
+        return nil, string.format("Tight: copy filter got %d bytes, need %d", len, w * h * cb)
     end
-    local ptr = ffi.cast("const uint8_t*", data)
-    for row = 0, h - 1 do
-        write_crow(fmt, vp, 0, row, ptr + row * w * cb, w)
-    end
+    write_rows(cv, fmt, vp, 0, 0, w, h, data, cb)
     return true
 end
 
---- Applies the Tight palette filter.
-local function tight_palette(vp, data, w, h, pal, num_colors)
+--- Applies the Tight palette filter (`pal` is packed RGB24, `num_colors` entries).
+local function tight_palette(vp, data, len, w, h, pal, num_colors)
+    local base, stride = vp_base(vp)
     if num_colors == 2 then
-        local row_bytes = math.floor((w + 7) / 8)
-        if #data < row_bytes * h then
-            return nil, string.format("Tight: palette(2) got %d bytes, need %d", #data, row_bytes * h)
+        local row_bytes = rshift(w + 7, 3)
+        if len < row_bytes * h then
+            return nil, string.format("Tight: palette(2) got %d bytes, need %d", len, row_bytes * h)
         end
+        local r0, g0, b0, r1, g1, b1 = pal[0], pal[1], pal[2], pal[3], pal[4], pal[5]
         for row = 0, h - 1 do
-            local base = row * row_bytes
+            local src = data + row * row_bytes
+            local out = base + row * stride
             for col = 0, w - 1 do
-                local byte = data:byte(base + math.floor(col / 8) + 1)
-                local bit = band(rshift(byte, 7 - col % 8), 1)
-                local px = pal[bit + 1]
-                PxFmt.write_pixel(vp, col, row, px[1], px[2], px[3])
+                local o = col * 3
+                if band(rshift(src[rshift(col, 3)], 7 - band(col, 7)), 1) ~= 0 then
+                    out[o], out[o + 1], out[o + 2] = r1, g1, b1
+                else
+                    out[o], out[o + 1], out[o + 2] = r0, g0, b0
+                end
             end
         end
     else
-        if #data < w * h then
-            return nil, string.format("Tight: palette(%d) got %d bytes, need %d", num_colors, #data, w * h)
+        if len < w * h then
+            return nil, string.format("Tight: palette(%d) got %d bytes, need %d", num_colors, len, w * h)
         end
         for row = 0, h - 1 do
-            local base = row * w
+            local src = data + row * w
+            local out = base + row * stride
             for col = 0, w - 1 do
-                local idx = data:byte(base + col + 1)
-                local px = pal[idx + 1]
-                if not px then
+                local idx = src[col]
+                if idx >= num_colors then
                     return nil, string.format("Tight: palette index %d out of range (%d entries)", idx, num_colors)
                 end
-                PxFmt.write_pixel(vp, col, row, px[1], px[2], px[3])
+                local q, o = idx * 3, col * 3
+                out[o], out[o + 1], out[o + 2] = pal[q], pal[q + 1], pal[q + 2]
             end
         end
     end
@@ -531,102 +583,137 @@ end
 Applies the Tight gradient filter at 8/16 bpp (libvncclient's `FilterGradientBPP` without
 cutZeros): the prediction runs on the quantized channel values, one residual PIXEL per pixel.
 ]]
-local function tight_gradient_bpp(fmt, vp, data, w, h)
-    local nb = fmt.bytes
-    if #data < w * h * nb then
-        return nil, string.format("Tight: gradient got %d bytes, need %d", #data, w * h * nb)
+local function tight_gradient_bpp(cv, fmt, vp, src, len, w, h)
+    local nb = cv.bytes
+    if len < w * h * nb then
+        return nil, string.format("Tight: gradient got %d bytes, need %d", len, w * h * nb)
     end
-    local src = ffi.cast("const uint8_t*", data)
-    local maxes = { fmt.red_max, fmt.green_max, fmt.blue_max }
-    local shifts = { fmt.red_shift, fmt.green_shift, fmt.blue_shift }
-    local prev = ffi.new("int32_t[?]", w * 3)
-    local cur = ffi.new("int32_t[?]", w * 3)
-    local out = ffi.new("uint8_t[?]", w * nb)
-    local big = fmt.big_endian ~= 0
+    local rm, gm, bm = cv.rm, cv.gm, cv.bm
+    local rs, gs, bs = cv.rs, cv.gs, cv.bs
+    local rl, gl, bl = cv.rl, cv.gl, cv.bl
+    -- quantized channel values of the row above (prev) and of this row (cur), 3 per pixel
+    local prev = scratch("grad_prev", "int32_t", w * 3)
+    local cur = scratch("grad_cur", "int32_t", w * 3)
+    ffi.fill(prev, w * 3 * 4, 0)
+    local big = cv.big
+    local base, stride = vp_base(vp)
     for row = 0, h - 1 do
+        local out = base + row * stride
+        local sp = src + row * w * nb
+        -- left and upper-left neighbours; the first column predicts from the pixel above
+        local lr, lg, lb, ulr, ulg, ulb = prev[0], prev[1], prev[2], 0, 0, 0
         for col = 0, w - 1 do
-            local s = src + (row * w + col) * nb
-            local v = s[0]
+            local v
             if nb == 2 then
-                v = big and bor(lshift(s[0], 8), s[1]) or bor(lshift(s[1], 8), s[0])
-            end
-            local pv = 0
-            for c = 0, 2 do
-                local max = maxes[c + 1]
-                local est = prev[c]
-                if col > 0 then
-                    est = prev[col * 3 + c] + cur[(col - 1) * 3 + c] - prev[(col - 1) * 3 + c]
-                    if est > max then est = max elseif est < 0 then est = 0 end
-                end
-                local p = band(rshift(v, shifts[c + 1]) + est, max)
-                cur[col * 3 + c] = p
-                pv = bor(pv, lshift(p, shifts[c + 1]))
-            end
-            if nb == 2 then
-                if big then
-                    out[col * 2], out[col * 2 + 1] = rshift(pv, 8), band(pv, 0xFF)
-                else
-                    out[col * 2], out[col * 2 + 1] = band(pv, 0xFF), rshift(pv, 8)
-                end
+                local s = sp + col * 2
+                if big then v = bor(lshift(s[0], 8), s[1]) else v = bor(lshift(s[1], 8), s[0]) end
             else
-                out[col] = pv
+                v = sp[col]
             end
+            local o = col * 3
+            local ur, ug, ub = prev[o], prev[o + 1], prev[o + 2]
+            local er, eg, eb = ur, ug, ub
+            if col > 0 then
+                er, eg, eb = ur + lr - ulr, ug + lg - ulg, ub + lb - ulb
+                if er > rm then er = rm elseif er < 0 then er = 0 end
+                if eg > gm then eg = gm elseif eg < 0 then eg = 0 end
+                if eb > bm then eb = bm elseif eb < 0 then eb = 0 end
+            end
+            local pr = band(rshift(v, rs) + er, rm)
+            local pg = band(rshift(v, gs) + eg, gm)
+            local pb = band(rshift(v, bs) + eb, bm)
+            cur[o], cur[o + 1], cur[o + 2] = pr, pg, pb
+            out[o], out[o + 1], out[o + 2] = rl[pr], gl[pg], bl[pb]
+            lr, lg, lb, ulr, ulg, ulb = pr, pg, pb, ur, ug, ub
         end
-        write_crow(fmt, vp, 0, row, out, w)
-        ffi.copy(prev, cur, w * 3 * 4)
+        prev, cur = cur, prev
     end
     return true
 end
 
---- Applies the Tight gradient filter (24-bit "cutZeros" variant).
-local function tight_gradient(vp, data, w, h)
-    if #data < w * h * 3 then
-        return nil, string.format("Tight: gradient got %d bytes, need %d", #data, w * h * 3)
+--- Applies the Tight gradient filter (24-bit "cutZeros" variant), straight into the plane.
+local function tight_gradient(vp, data, len, w, h)
+    if len < w * h * 3 then
+        return nil, string.format("Tight: gradient got %d bytes, need %d", len, w * h * 3)
     end
-    local prev = ffi.new("uint8_t[?]", w * 3)
-    local cur = ffi.new("uint8_t[?]", w * 3)
-    local di = 0
+    local base, stride = vp_base(vp)
+    local n = w * 3
     for row = 0, h - 1 do
+        local d = data + row * n
+        local cur = base + row * stride
+        -- the row above as already decoded (all zero above the first row)
+        local prev = row > 0 and cur - stride or nil
         for c = 0, 2 do
-            local v = (prev[c] + data:byte(di + 1)) % 256
-            di = di + 1
-            cur[c] = v
+            cur[c] = band((prev and prev[c] or 0) + d[c], 255)
         end
-        local px = { cur[0], cur[1], cur[2] }
-        PxFmt.write_pixel(vp, 0, row, px[1], px[2], px[3])
-        for col = 1, w - 1 do
-            for c = 0, 2 do
-                local est = prev[col * 3 + c] + cur[(col - 1) * 3 + c] - prev[(col - 1) * 3 + c]
+        if prev then
+            for o = 3, n - 1 do
+                local est = prev[o] + cur[o - 3] - prev[o - 3]
                 if est > 255 then est = 255 elseif est < 0 then est = 0 end
-                local v = (est + data:byte(di + 1)) % 256
-                di = di + 1
-                cur[col * 3 + c] = v
-                px[c + 1] = v
+                cur[o] = band(est + d[o], 255)
             end
-            PxFmt.write_pixel(vp, col, row, px[1], px[2], px[3])
+        else
+            for o = 3, n - 1 do
+                cur[o] = band(cur[o - 3] + d[o], 255)
+            end
         end
-        ffi.copy(prev, cur, w * 3)
     end
     return true
 end
 
-local function tight_jpeg(ctx, data)
-    local ok, jpeg = pcall(require, "ffi/jpeg")
-    if not ok then
-        return nil, "Tight: JPEG payload but ffi/jpeg is unavailable"
+-- TurboJPEG decompressor, loaded on first use; false once it proved unavailable.
+local tj
+
+local function load_tj()
+    if tj ~= nil then return tj end
+    tj = false
+    local ok, lib = pcall(function()
+        require("ffi/turbojpeg_h")
+        return ffi.loadlib("turbojpeg", "0.5.0", "turbojpeg", "0.4.0", "turbojpeg", "0.3.0", "turbojpeg")
+    end)
+    if ok and lib then
+        local init = pcall(function() return lib.tj3Init ~= nil end) and lib.tj3Init
+            or function(t) return lib.tj3InitVersion(t, lib.TURBOJPEG_VERSION_NUMBER) end
+        tj = { lib = lib, init = init }
     end
-    local bb, w, h = jpeg.openDocumentFromMem(data, true, #data)
+    return tj
+end
+
+--[[--
+Decodes a Tight JPEG rect straight into the plane (TurboJPEG writes RGB rows at the plane's
+stride), with one decompressor handle per connection.
+]]
+local function tight_jpeg(ctx, data)
+    local t = load_tj()
+    if not t then
+        return nil, "Tight: JPEG payload but TurboJPEG is unavailable"
+    end
+    local lib = t.lib
+    local handle = ctx.streams.tj
+    if not handle then
+        handle = t.init(lib.TJINIT_DECOMPRESS)
+        if handle == nil then return nil, "Tight: no TurboJPEG decompressor" end
+        ctx.streams.tj = handle
+    end
+    local src = ffi.cast("const unsigned char*", data)
+    if lib.tj3DecompressHeader(handle, src, #data) < 0 then
+        return nil, "Tight: unreadable JPEG header"
+    end
+    local w = lib.tj3Get(handle, lib.TJPARAM_JPEGWIDTH)
+    local h = lib.tj3Get(handle, lib.TJPARAM_JPEGHEIGHT)
     if w ~= ctx.w or h ~= ctx.h then
-        bb:free()
         return nil, string.format("Tight: JPEG is %dx%d, rect is %dx%d", w, h, ctx.w, ctx.h)
     end
-    ctx.vp:blitFrom(bb, 0, 0, 0, 0, w, h)
-    bb:free()
+    local base, stride = vp_base(ctx.vp)
+    if lib.tj3Decompress8(handle, src, #data, base, stride, lib.TJPF_RGB) < 0 then
+        return nil, "Tight: JPEG decoding failed"
+    end
     return true
 end
 
 function Encodings.decode_tight(ctx)
     local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
+    local cv = conv(fmt)
     local ctl = r:u8()
 
     -- Low nibble: per-stream zlib reset flags.
@@ -639,8 +726,8 @@ function Encodings.decode_tight(ctx)
     ctl = rshift(ctl, 4)
 
     if ctl == Encodings.TIGHT_FILL then
-        local cr, cg, cb = read_cpixel(r, fmt)
-        PxFmt.fill_rect(vp, 0, 0, w, h, cr, cg, cb)
+        local cr, cg, cbl = read_cpixel(r, cv)
+        PxFmt.fill_rect(vp, 0, 0, w, h, cr, cg, cbl)
         return true
     elseif ctl == Encodings.TIGHT_JPEG then
         local len = read_compact_len(r)
@@ -656,17 +743,19 @@ function Encodings.decode_tight(ctx)
         filter = r:u8()
     end
 
+    local cb = cv.cbytes
     local pal, num_colors, bits
     if filter == 0 then
-        bits = fmt.cbytes * 8
+        bits = cb * 8
     elseif filter == 1 then
         num_colors = r:u8() + 1
         if num_colors < 2 then
             return nil, "Tight: palette with fewer than 2 colours"
         end
-        pal = {}
-        for i = 1, num_colors do
-            pal[i] = { read_cpixel(r, fmt) }
+        pal = scratch("tight_pal", "uint8_t", 256 * 3)
+        local p = r:ptr(num_colors * cb)
+        for i = 0, num_colors - 1 do
+            pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2] = wire_rgb(cv, p + i * cb, cb)
         end
         bits = num_colors == 2 and 1 or 8
     elseif filter == 2 then
@@ -674,39 +763,40 @@ function Encodings.decode_tight(ctx)
             return nil, string.format("Tight: gradient rect width %d exceeds %d",
                 w, Encodings.TIGHT_GRADIENT_MAX_WIDTH)
         end
-        bits = fmt.cbytes * 8
+        bits = cb * 8
     else
         return nil, string.format("unsupported Tight filter %d", filter)
     end
 
-    local row_size = math.floor((w * bits + 7) / 8)
+    local row_size = rshift(w * bits + 7, 3)
     local raw_size = row_size * h
-    local data
+    local data, len
     if raw_size < Encodings.TIGHT_MIN_TO_COMPRESS then
-        data = r:bytes(raw_size)
+        data, len = r:ptr(raw_size), raw_size
     else
-        local len = read_compact_len(r)
-        local comp = r:bytes(len)
+        local clen = read_compact_len(r)
         if uncompressed then
-            data = comp
+            data, len = r:ptr(clen), clen
         else
-            local out, err = tight_stream(ctx, stream_id):inflate(comp)
-            if not out then
+            local comp = r:bytes(clen)
+            local p, n = tight_stream(ctx, stream_id):inflate_ptr(comp, raw_size)
+            if not p then
                 return nil, string.format("Tight: %s while inflating %d bytes at rect (%d,%d,%d,%d)",
-                    err, len, ctx.x, ctx.y, ctx.w, ctx.h)
+                    n, clen, ctx.x, ctx.y, ctx.w, ctx.h)
             end
-            data = out
+            data, len = p, n
         end
     end
+    data = ffi.cast(const_u8p, data)
 
     if filter == 0 or uncompressed then
-        return tight_copy(fmt, vp, data, w, h)
+        return tight_copy(cv, fmt, vp, data, len, w, h)
     elseif filter == 1 then
-        return tight_palette(vp, data, w, h, pal, num_colors)
+        return tight_palette(vp, data, len, w, h, pal, num_colors)
     elseif fmt.bits_per_pixel ~= 32 then
-        return tight_gradient_bpp(fmt, vp, data, w, h)
+        return tight_gradient_bpp(cv, fmt, vp, data, len, w, h)
     end
-    return tight_gradient(vp, data, w, h)
+    return tight_gradient(vp, data, len, w, h)
 end
 
 --- Dispatches on `ctx.encoding`.
@@ -749,6 +839,10 @@ function Encodings.free_streams(streams)
             s:free()
         end
         streams.tight = nil
+    end
+    if streams.tj then
+        load_tj().lib.tj3Destroy(streams.tj)
+        streams.tj = nil
     end
 end
 

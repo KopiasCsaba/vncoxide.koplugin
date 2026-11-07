@@ -29,6 +29,9 @@ local ffi = require("ffi")
 local BB = require("ffi/blitbuffer")
 
 local floor, ceil, min, max = math.floor, math.ceil, math.min, math.max
+-- integer shifts instead of floor(x / 2^n) on the per-pixel paths (values stay far below 2^31);
+-- floor is a library call on ARM
+local rshift = require("bit").rshift
 
 local Scaler = {}
 
@@ -181,7 +184,7 @@ local function sharp_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
                 local r = sp + j * ss
                 for i = sa, sb do
                     local o = i * 3
-                    grow[i] = floor((r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) / 256)
+                    grow[i] = rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)
                 end
                 lastj = j
             end
@@ -212,7 +215,7 @@ local function copy_kernel(dp, ds, bpp, sp, ss, dx, dy, xa, xb, ya, yb)
         elseif bpp == 1 then
             for k = 0, n - 1 do
                 local o = k * 3
-                out[k] = floor((r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) / 256)
+                out[k] = rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)
             end
         else
             for k = 0, n - 1 do
@@ -313,7 +316,7 @@ local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
             local h = floor(t / 2)
             local r, g, b = floor((sr + h) / t), floor((sg + h) / t), floor((sbl + h) / t)
             if bpp == 1 then
-                out[x] = floor((r * 77 + g * 150 + b * 29) / 256)
+                out[x] = rshift(r * 77 + g * 150 + b * 29, 8)
             else
                 local d = x * bpp
                 out[d], out[d + 1], out[d + 2] = r, g, b
