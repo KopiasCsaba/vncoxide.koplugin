@@ -271,7 +271,9 @@ function Enc:convert(source, rect, need_values)
     local stride = self.bb24.stride
     local data = ffi.cast("const uint8_t*", self.bb24.data)
 
-    local out, values = self.out, self.values
+    -- Only when wanted: an array from an earlier (smaller, tiled) rectangle may still be there, and
+    -- a conversion that did not ask for it did not grow it either.
+    local out, values = self.out, need_values and self.values or nil
     local count = w * h
 
     -- The layout every viewer asks for (and the one ServerInit announces): 8 bits per channel, in

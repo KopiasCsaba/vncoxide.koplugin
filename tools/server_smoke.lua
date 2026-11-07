@@ -343,6 +343,28 @@ check("converting_without_the_pixel_array_matches_every_format", function()
     src:free()
 end)
 
+--- A client that switches from a tiled encoding to Raw keeps the (small, tile-sized) `values` array
+--- of its earlier rectangles, and a Raw conversion does not grow it; writing it anyway is a write
+--- past its end as soon as the Raw rectangle is bigger (the full screen, typically). A Raw
+--- conversion must therefore leave the array alone in every format, not only the byte-aligned one.
+check("a_raw_conversion_never_writes_an_earlier_pixel_array", function()
+    local fmt = { bits_per_pixel = 16, depth = 16, big_endian = 0, true_colour = 1,
+        red_max = 31, green_max = 63, blue_max = 31, red_shift = 11, green_shift = 5, blue_shift = 0 }
+    local src = pattern_plane(8, 4)
+    local enc = ServerEnc.new()
+    enc:set_pixel_format(fmt)
+    enc:convert(src, { x = 0, y = 0, w = 2, h = 2 }, true)
+    local values, size = enc.values, enc.values_size
+    for i = 0, size do values[i] = 0xDEADBEEF end
+    enc:convert(src, { x = 0, y = 0, w = 8, h = 4 }, false)
+    assert_true(enc.values == values and enc.values_size == size, "a Raw conversion must not swap the array")
+    for i = 0, size do
+        assert_true(values[i] == 0xDEADBEEF, "a Raw conversion wrote pixel " .. i .. " of an older array")
+    end
+    enc:free()
+    src:free()
+end)
+
 -- ---------------------------------------------------------------- encoders
 
 for _, case in ipairs({
