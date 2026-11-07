@@ -984,7 +984,10 @@ function Server:_poll()
     if self._screen_at and (self._screen_at[1] ~= sw or self._screen_at[2] ~= sh) then
         resized = true
         for _, client in pairs(self.clients) do
-            client.server.client.pending_desktop = { sw, sh }
+            -- DesktopSize is opt-in (c.f., RfbServer:_collect_rects); the others are served the
+            -- full-screen record below, clamped to what they ask for
+            local state = client.server.client
+            if state.desktop_size_supported then state.pending_desktop = { sw, sh } end
         end
     end
     self._screen_at = { sw, sh }

@@ -46,6 +46,11 @@ Server.SUPPORTED_ENCODINGS = {
 Server.PSEUDO_DESKTOP_SIZE = -223
 Server.PSEUDO_LAST_RECT = -224
 
+--- Longest ClientCutText accepted. Its length is the client's to choose and the text has to be
+--- read whole before it can be handed on, so a longer one fails the connection instead of having
+--- the device allocate whatever the client claimed.
+Server.MAX_CUT_TEXT = 1024 * 1024
+
 --- Client messages from the RFB "community" extensions that real viewers send. They are not in
 --- RFC 6143, but a viewer that sends one and gets the connection closed on it (which is all a
 --- server can do with a message whose length it does not know) looks like a viewer whose input
@@ -372,8 +377,11 @@ end
 function Server:_collect_rects(x, y, w, h, full)
     local rects = {}
     local client = self.client
-    if client.pending_desktop then
-        -- DesktopSize (-223): the new geometry is carried by the rectangle's own fields.
+    if client.pending_desktop and client.desktop_size_supported then
+        -- DesktopSize (-223): the new geometry is carried by the rectangle's own fields. Only for
+        -- a client that announced it: to any other it is an unknown encoding. Such a client keeps
+        -- its old geometry, and what it asks for is clamped to the screen (c.f., the driver's
+        -- get_rects), so it is never sent a rectangle outside the one it asked for.
         rects[#rects + 1] = { x = 0, y = 0, w = client.pending_desktop[1], h = client.pending_desktop[2],
                               encoding = Server.PSEUDO_DESKTOP_SIZE }
     end
@@ -385,7 +393,7 @@ function Server:_collect_rects(x, y, w, h, full)
         local sw, sh = self.get_size()
         rects[1] = { x = 0, y = 0, w = sw, h = sh }
     end
-    if #rects > 0 then client.pending_desktop = nil end
+    if #rects > 0 or not client.desktop_size_supported then client.pending_desktop = nil end
     return rects
 end
 
@@ -486,6 +494,10 @@ function Server:_message_loop()
         elseif msg == 6 then
             r:bytes(3)                                  -- padding
             local len = r:u32()
+            if len > Server.MAX_CUT_TEXT then
+                error(string.format("client cut text of %d bytes is over the %d byte limit",
+                    len, Server.MAX_CUT_TEXT), 0)
+            end
             local text = r:bytes(len)
             if self.on_cut_text then self.on_cut_text(text, self.client) end
         elseif msg == Server.CLIENT_FENCE then
@@ -500,13 +512,16 @@ function Server:_message_loop()
             r:bytes(3)                                  -- padding
             local flags = r:u32()
             local len = r:u8()
-            if len > 0 then r:bytes(len) end
+            local payload = len > 0 and r:bytes(len) or ""
             if bit.band(flags, 0x80000000) ~= 0 then
+                -- The reply is the same fence with the Request bit cleared and the payload echoed:
+                -- the payload is how the client matches a reply to its request.
                 local out = Util.writer()
                 out:u8(Server.CLIENT_FENCE)
                 out:raw("\0\0\0")                       -- padding
-                out:u32(flags)
-                out:u8(0)
+                out:u32(bit.band(flags, 0x7FFFFFFF))
+                out:u8(len)
+                out:raw(payload)
                 self:_write(out:tostring())
             end
         elseif msg == Server.CLIENT_SET_DESKTOP_SIZE then

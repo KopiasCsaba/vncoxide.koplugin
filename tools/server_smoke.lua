@@ -702,6 +702,108 @@ local function pump(server, client, limit)
     end
 end
 
+--- One RfbServer past its handshake (RFB 3.8, no password), fed bytes by `send` and collecting what
+--- it writes; `fail` is the error the state machine stopped with, `need` what it waits for next.
+local function rfb_harness(opts)
+    local h = { out = {}, inbuf = "", need = nil, fail = nil }
+    h.srv = RfbServer.new({
+        io = {
+            read = function(n) return coroutine.yield("need", n) end,
+            write = function(s) h.out[#h.out + 1] = s end,
+        },
+        password = "",
+        get_size = function() return 8, 4 end,
+        get_rects = function(_, region) return { { x = region.x, y = region.y, w = region.w, h = region.h } } end,
+        encode = function() return ServerEnc.RAW, string.rep("\0", 4) end,
+        on_cut_text = opts and opts.on_cut_text,
+    })
+    local function run(data)
+        local kind, arg = h.srv:step(data)
+        if kind == "need" then h.need = arg else h.need, h.fail = nil, tostring(arg) end
+    end
+    function h.send(bytes)
+        h.inbuf = h.inbuf .. bytes
+        while h.need and #h.inbuf >= h.need do
+            local n = h.need
+            local data = h.inbuf:sub(1, n)
+            h.inbuf = h.inbuf:sub(n + 1)
+            run(data)
+        end
+    end
+    function h.take()
+        local s = table.concat(h.out)
+        h.out = {}
+        return s
+    end
+    run(nil)
+    h.send("RFB 003.008\n" .. string.char(1) .. string.char(1))
+    h.take()
+    return h
+end
+
+local function set_encodings_msg(list)
+    local w = Util.writer():u8(2):u8(0):u16(#list)
+    for _, e in ipairs(list) do w:u32(e) end
+    return w:tostring()
+end
+
+local function update_request(incremental, x, y, w, h)
+    return Util.writer():u8(3):u8(incremental and 1 or 0):u16(x):u16(y):u16(w):u16(h):tostring()
+end
+
+--- The encodings of the rectangles of one FramebufferUpdate (s32), in order.
+local function update_encodings(bytes)
+    assert_true(bytes:byte(1) == 0, "a FramebufferUpdate expected")
+    local n = Util.get_u16be(bytes, 2)
+    local out, off = {}, 4
+    for i = 1, n do
+        local e = Util.get_u32be(bytes, off + 8)
+        if e >= 2 ^ 31 then e = e - 2 ^ 32 end
+        out[i] = e
+        off = off + 12 + ((e == RfbServer.PSEUDO_DESKTOP_SIZE) and 0 or 4)
+    end
+    return out
+end
+
+--- DesktopSize (-223) is a pseudo-encoding a client opts into; one that did not announce it would
+--- read the rectangle as an unknown encoding (most drop the connection over it).
+check("desktop_size_goes_only_to_clients_that_announced_it", function()
+    for _, case in ipairs({ { false, { 0 } }, { true, { RfbServer.PSEUDO_DESKTOP_SIZE, 0 } } }) do
+        local supported, want = case[1], case[2]
+        local h = rfb_harness()
+        h.send(set_encodings_msg(supported and { 0, RfbServer.PSEUDO_DESKTOP_SIZE } or { 0 }))
+        h.srv.client.pending_desktop = { 8, 4 }
+        h.send(update_request(false, 0, 0, 8, 4))
+        local got = update_encodings(h.take())
+        assert_true(table.concat(got, ",") == table.concat(want, ","), string.format(
+            "%s client: rectangles %s, want %s", supported and "a DesktopSize" or "a plain",
+            table.concat(got, ","), table.concat(want, ",")))
+        assert_true(h.srv.client.pending_desktop == nil, "the resize is consumed either way")
+    end
+end)
+
+--- A Fence with the Request bit is answered with that bit cleared and the same payload (rfbproto).
+check("a_fence_request_is_answered_with_its_payload_and_no_request_bit", function()
+    local h = rfb_harness()
+    local flags = 0x80000000 + 0x2               -- Request | BlockAfter
+    h.send(Util.writer():u8(RfbServer.CLIENT_FENCE):raw("\0\0\0"):u32(flags):u8(3):raw("abc"):tostring())
+    local reply = h.take()
+    local want = Util.writer():u8(RfbServer.CLIENT_FENCE):raw("\0\0\0"):u32(0x2):u8(3):raw("abc"):tostring()
+    assert_true(reply == want, "fence reply " .. (reply:gsub(".", function(c) return string.format("%02X", c:byte()) end)))
+end)
+
+--- ClientCutText's length is the client's to choose; reading 4 GiB into memory on its say-so is
+--- what a broken (or hostile) client would make the device do. Above the cap the connection fails.
+check("client_cut_text_is_capped", function()
+    local got
+    local h = rfb_harness({ on_cut_text = function(text) got = text end })
+    h.send(Util.writer():u8(6):raw("\0\0\0"):u32(5):raw("hello"):tostring())
+    assert_true(got == "hello", "a small cut text is delivered")
+    h.send(Util.writer():u8(6):raw("\0\0\0"):u32(0x7FFFFFFF):tostring())
+    assert_true(h.fail ~= nil and h.fail:find("cut text", 1, true),
+        "an oversized cut text must fail the connection, got need=" .. tostring(h.need) .. " fail=" .. tostring(h.fail))
+end)
+
 check("server_protocol_serves_our_own_client", function()
     -- rfbserver + serverenc driven byte-for-byte against the client protocol: the same wire
     -- contract the socket path uses, without sockets.
