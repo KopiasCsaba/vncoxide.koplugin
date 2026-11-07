@@ -456,30 +456,6 @@ local function dominant(values, from, to, scratch)
     return best, best_count, distinct
 end
 
---- Groups one row into runs of equal values, skipping the background.
---- @treturn table, number array of `{x, y, w, value}` (one pixel tall) and its length
-local function row_runs(values, w, y, background, scratch)
-    local runs = scratch.runs
-    local n = 0
-    local base = y * w
-    local x = 0
-    while x < w do
-        local v = values[base + x + 1]
-        local run = 1
-        while x + run < w and values[base + x + run + 1] == v do
-            run = run + 1
-        end
-        if v ~= background then
-            n = n + 1
-            local r = runs[n]
-            if not r then r = {} runs[n] = r end
-            r.x, r.y, r.w, r.value = x, y, run, v
-        end
-        x = x + run
-    end
-    return runs, n
-end
-
 local function new_scratch(w, h)
     return { counts = {}, runs = {} }
 end
@@ -488,34 +464,57 @@ end
 RRE: one background pixel, then subrectangles of non-background pixels with their own pixel.
 
 Runs are taken per row and extended downwards while the rows below match, which is what makes
-this worthwhile on the large flat areas a reader UI has. If the result would not be smaller than
-Raw, Raw is used instead (returning nil).
+this worthwhile on the large flat areas a reader UI has. The pixels a run extended over are marked
+covered, so the rows below neither start subrectangles of their own there nor re-walk them. If the
+result would not be smaller than Raw, Raw is used instead (returning nil).
 ]]
 function Enc:encode_rre(values, count, w, h)
     local scratch = self.scratch or new_scratch(w, h)
     self.scratch = scratch
     local background = dominant(values, 1, count, scratch)
 
+    -- 1-based like `values`; cleared per rectangle, grown only when a bigger one arrives
+    if (scratch.covered_size or 0) < count then
+        scratch.covered = ffi.new("uint8_t[?]", count + 1)
+        scratch.covered_size = count
+    else
+        ffi.fill(scratch.covered, count + 1)
+    end
+    local covered = scratch.covered
+
     local subrects = {}
-    local y = 0
-    while y < h do
-        local runs, n = row_runs(values, w, y, background, scratch)
-        for i = 1, n do
-            local r = runs[i]
-            local height = 1
-            -- extend downwards while the same run exists on the next row
-            while y + height < h do
-                local base = (y + height) * w
-                local same = true
-                for dx = 0, r.w - 1 do
-                    if values[base + r.x + dx + 1] ~= r.value then same = false break end
+    for y = 0, h - 1 do
+        local row = y * w
+        local x = 0
+        while x < w do
+            local i = row + x + 1
+            local v = values[i]
+            if covered[i] ~= 0 or v == background then
+                x = x + 1
+            else
+                local run = 1
+                while x + run < w and values[i + run] == v and covered[i + run] == 0 do
+                    run = run + 1
                 end
-                if not same then break end
-                height = height + 1
+                -- extend downwards while the next row has the same, still uncovered, run
+                local height = 1
+                while y + height < h do
+                    local base = i + height * w
+                    local same = true
+                    for dx = 0, run - 1 do
+                        if values[base + dx] ~= v or covered[base + dx] ~= 0 then
+                            same = false
+                            break
+                        end
+                    end
+                    if not same then break end
+                    for dx = 0, run - 1 do covered[base + dx] = 1 end
+                    height = height + 1
+                end
+                subrects[#subrects + 1] = { x = x, y = y, w = run, h = height, value = v }
+                x = x + run
             end
-            subrects[#subrects + 1] = { x = r.x, y = y, w = r.w, h = height, value = r.value }
         end
-        y = y + 1
     end
 
     local bpp = math.floor(self.fmt.bits_per_pixel / 8)

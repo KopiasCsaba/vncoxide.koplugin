@@ -451,6 +451,27 @@ check("rre_beats_raw_on_flat_content", function()
     src:free()
 end)
 
+--- A run extended downwards covers the rows below it, so they must not start subrectangles of
+--- their own over the same pixels (a 30-row block used to cost 30 nested subrectangles, and an
+--- encode quadratic in its height); the result must still decode to the same pixels.
+check("rre_sends_one_subrect_per_block", function()
+    local w, h = 64, 48
+    local src = BB.new(w, h, BB.TYPE_BBRGB24)
+    for y = 0, h - 1 do for x = 0, w - 1 do put(src, x, y, 255, 255, 255) end end
+    for y = 4, 33 do for x = 10, 19 do put(src, x, y, 0, 0, 0) end end         -- one block
+    for y = 10, 19 do for x = 30, 49 do put(src, x, y, 0, 0, 255) end end      -- a second one ...
+    for y = 14, 15 do for x = 30, 49 do put(src, x, y, 255, 0, 0) end end      -- ... split by a band
+    local encoding, payload = encode(ServerEnc.RRE, src)
+    assert_true(encoding == ServerEnc.RRE, "RRE expected, got " .. encoding)
+    local subrects = Util.get_u32be(payload, 0)
+    assert_true(subrects == 4, "4 subrectangles expected, got " .. subrects)
+    local dst = decode(encoding, payload, w, h)
+    local same, detail = pixels_equal(src, dst, w, h)
+    assert_true(same, "decoded pixels differ: " .. tostring(detail))
+    dst:free()
+    src:free()
+end)
+
 check("zrle_stream_continuity", function()
     -- One encoder (and therefore one zlib stream) across several rectangles, decoded in order by
     -- one client decoder state: this is what breaks if either side mishandles Z_SYNC_FLUSH.
