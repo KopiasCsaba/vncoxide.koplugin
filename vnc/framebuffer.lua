@@ -148,7 +148,10 @@ function Remote:resize(w, h)
         if self.cw and self.ch and self.cw > 0 and self.ch > 0 then self:_clamp() end
         return
     end
-    self.plane:free()
+    -- Not left pointing at freed memory should the allocation fail (BB.new asserts): without a
+    -- plane nothing draws or decodes. Freed first, so a big desktop never needs both at once.
+    if self.plane then self.plane:free() end
+    self.plane = nil
     self.plane = BB.new(w, h, BB.TYPE_BBRGB24)
     self.w, self.h = w, h
     self:mark_dirty()

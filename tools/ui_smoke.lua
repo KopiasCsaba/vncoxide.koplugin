@@ -3087,6 +3087,24 @@ check("canvas_dithered_paint_reports_its_blit_time", function()
     target:free(); remote:free()
 end)
 
+check("a_failed_plane_resize_leaves_no_freed_plane", function()
+    -- BB.new asserts when it cannot allocate; the old plane must not stay behind freed
+    local Remote = require("vnc/framebuffer")
+    local bb = require("ffi/blitbuffer")
+    local remote = Remote.new(40, 30)
+    local real_new = bb.new
+    bb.new = function() error("cannot allocate memory for new bb") end
+    local ok = pcall(remote.resize, remote, 9000, 9000)
+    bb.new = real_new
+    assert_true(not ok, "the resize must fail")
+    assert_true(remote.plane == nil, "no plane must be left after the failed allocation")
+    local target = bb.new(50, 40, bb.TYPE_BB8)
+    assert_true(remote:draw_to(target, 0, 0, 50, 40) == false, "without a plane nothing is drawn")
+    remote:resize(20, 10)
+    assert_true(remote.plane ~= nil and remote.w == 20, "a later resize allocates again")
+    target:free(); remote:free()
+end)
+
 check("canvas_dithered_partial_paint_matches_a_full_dither", function()
     -- only the recomputed rects are re-dithered; the result must be the whole canvas dithered,
     -- also after undithered paints changed the canvas in between
