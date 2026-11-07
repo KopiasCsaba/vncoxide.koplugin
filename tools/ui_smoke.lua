@@ -5625,33 +5625,6 @@ check("viewer_follows_the_keyboards_tap_interval", function()
     if not ok then error(err, 0) end
 end)
 
-check("viewer_prevents_standby_while_shown", function()
-    local c0 = UIManager._prevent_standby_count
-    local app, remote = new_app()
-    assert_true(UIManager._prevent_standby_count == c0 + 1, "+1 while shown")
-    app:onCloseWidget()
-    assert_true(UIManager._prevent_standby_count == c0, "back after close")
-    app:onCloseWidget()
-    assert_true(UIManager._prevent_standby_count == c0, "double close harmless")
-    -- Leave then re-show counts once more
-    UIManager:show(app, "full")
-    assert_true(UIManager._prevent_standby_count == c0 + 1, "re-shown counts once")
-    UIManager:show(app, "full")
-    assert_true(UIManager._prevent_standby_count == c0 + 1, "showing twice still counts once")
-    app:onCloseWidget()
-    assert_true(UIManager._prevent_standby_count == c0, "and balanced again")
-    remote:free()
-    -- independent of Keep screen on
-    app, remote = new_app()
-    app:onCloseWidget(); remote:free()
-    local app2, remote2 = new_app()
-    app2.settings.keep_screen_on = false
-    app2:onCloseWidget()
-    UIManager:show(app2, "full")
-    assert_true(UIManager._prevent_standby_count == c0 + 1, "even with Keep screen on off")
-    close_viewer(app2, remote2)
-end)
-
 if failures > 0 then
     print(string.format("%d check(s) failed", failures))
     os.exit(1)

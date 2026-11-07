@@ -541,7 +541,6 @@ function ViewerApp:onCloseWidget()
     -- never leave our own menu orphaned on the window stack
     self:close_menu()
     self:_apply_keep_screen_on(true)
-    self:_prevent_standby(true)
     -- the reconnect loop lives with the open viewer only
     self.reconnect:stop()
     self:close_display_panel(true)
@@ -1263,27 +1262,10 @@ function ViewerApp:_apply_keep_screen_on(closing)
     end
 end
 
---- Keeps KOReader's auto-standby off while the viewer is shown (balanced; safe to call twice).
--- Observed on a PocketBook: right after a touch-down, input stalled ~500 ms ("vnc-timing: poll
--- gap ms=526" instead of ~201), then the lift arrived in one burst with the same timestamps, so a
--- quick second tap became a hold. The device enables auto-standby at init and its input wait
--- sleeps while standby is allowed. Preventing it is meant to remove that stall; unverified on
--- device. Independent of "Keep screen on": this is about input latency, not suspend.
-function ViewerApp:_prevent_standby(closing)
-    if not closing and not self._standby_prevented then
-        self._standby_prevented = true
-        UIManager:preventStandby()
-    elseif closing and self._standby_prevented then
-        self._standby_prevented = nil
-        UIManager:allowStandby()
-    end
-end
-
 function ViewerApp:onShow()
     -- UIManager reads the override right after this event
     Util.keyboard_tap_interval(self)
     self:_apply_keep_screen_on()
-    self:_prevent_standby()
     self:_ensure_text_input()
     self:evaluate_keyboard()
     self:_watch_keyboard_state()
