@@ -20,12 +20,20 @@ Byte reader over an abstract transport.
 
 `io.read(n)` must return exactly `n` bytes; it may yield (coroutine) or block, it is the
 transport's business. All multi-byte accessors are big-endian.
+
+`io.read_ptr(n)` is optional: when the transport already holds `n` bytes it may return a
+`const uint8_t*` to them plus an object keeping that memory alive (consuming them), or nil to
+fall back to `io.read`. The fixed-size accessors and @{Reader:ptr} use it, so the decoders' many
+small reads cost a pointer access instead of a new Lua string each.
 ]]
 function Util.reader(io)
-    return setmetatable({ io = io }, { __index = Util.Reader })
+    return setmetatable({ io = io, read_ptr = io.read_ptr }, Util.Reader)
 end
 
 Util.Reader = {}
+Util.Reader.__index = Util.Reader
+
+local const_u8p = ffi.typeof("const uint8_t*")
 
 function Util.Reader:bytes(n)
     local s = self.io.read(n)
@@ -36,15 +44,30 @@ function Util.Reader:bytes(n)
 end
 
 function Util.Reader:u8()
+    local rp = self.read_ptr
+    if rp then
+        local p = rp(1)
+        if p then return p[0] end
+    end
     return self:bytes(1):byte(1)
 end
 
 function Util.Reader:u16()
+    local rp = self.read_ptr
+    if rp then
+        local p = rp(2)
+        if p then return p[0] * 256 + p[1] end
+    end
     local a, b = self:bytes(2):byte(1, 2)
     return a * 256 + b
 end
 
 function Util.Reader:u32()
+    local rp = self.read_ptr
+    if rp then
+        local p = rp(4)
+        if p then return ((p[0] * 256 + p[1]) * 256 + p[2]) * 256 + p[3] end
+    end
     local a, b, c, d = self:bytes(4):byte(1, 4)
     return ((a * 256 + b) * 256 + c) * 256 + d
 end
@@ -111,12 +134,18 @@ end
 
 --- `n` bytes of the stream as a `const uint8_t*`, valid until the next read from this reader.
 function Util.Reader:ptr(n)
+    local rp = self.read_ptr
+    if rp then
+        local p, anchor = rp(n)
+        if p then
+            self._anchor = anchor -- keeps the memory (and so the pointer) alive
+            return p
+        end
+    end
     local s = self:bytes(n)
     self._anchor = s -- keeps the string (and so the pointer) alive
-    return ffi.cast("const uint8_t*", s)
+    return ffi.cast(const_u8p, s)
 end
-
-local const_u8p = ffi.typeof("const uint8_t*")
 
 --[[--
 A reader over `len` bytes of memory at `ptr` (`anchor` is any object that keeps them alive).

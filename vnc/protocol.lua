@@ -99,6 +99,7 @@ function Protocol.new(opts)
         read = io_read or function(n)
             return coroutine.yield("need", n)
         end,
+        read_ptr = opts.io and opts.io.read_ptr,
     })
     self.co = coroutine.create(function() return self:run() end)
     return self

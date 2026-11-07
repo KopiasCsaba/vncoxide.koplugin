@@ -10,6 +10,7 @@ buffered by the kernel until we resume.
 @module vnc.session
 ]]
 
+local ffi = require("ffi")
 local Encodings = require("vnc/encodings")
 local Protocol = require("vnc/protocol")
 local PxFmt = require("vnc/pxfmt")
@@ -261,6 +262,7 @@ function Session:_do_connect(attempt)
         io = {
             write = function(s) self_ref.tx[#self_ref.tx + 1] = s end,
             read = function(n) return self_ref:_read(n) end,
+            read_ptr = function(n) return self_ref:_read_ptr(n) end,
         },
         host = p.host,
         port = p.port,
@@ -444,6 +446,29 @@ function Session:_read(n)
         end
     end
     return coroutine.yield("need", n)
+end
+
+local const_u8p = ffi.typeof("const uint8_t*")
+
+--[[--
+Like @{Session:_read} for bytes the receive buffer already holds, but without making a string:
+returns a pointer into the buffer plus the buffer string (which keeps it alive), or nil when
+`_read` would have yielded, so the reader falls back to it.
+]]
+function Session:_read_ptr(n)
+    local pos = self.rx_pos
+    if self.fast_reads > 0 and n <= self.fast_budget and #self.rx - pos + 1 >= n then
+        local tm = self.tm
+        if not (tm and tm.finished) then
+            self.fast_reads = self.fast_reads - 1
+            self.fast_budget = self.fast_budget - n
+            self.rx_pos = pos + n
+            if tm then tm.bytes = tm.bytes + n end
+            local rx = self.rx
+            return ffi.cast(const_u8p, rx) + (pos - 1), rx
+        end
+    end
+    return nil
 end
 
 --[[--
