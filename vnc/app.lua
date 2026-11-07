@@ -437,6 +437,7 @@ end
 function ViewerApp:onCloseWidget()
     -- never leave our own menu orphaned on the window stack
     self:close_menu()
+    self:close_display_panel(true)
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
     self:_drop_key_panel()
@@ -1290,6 +1291,38 @@ function ViewerApp:close_menu()
         -- framebuffer view (and its keyboard) ourselves.
         self:_sync_keyboard_later()
     end
+end
+
+--- Opens the display panel (see @{vnc.displaypanel}), or returns the one already open.
+function ViewerApp:open_display_panel()
+    if self.display_panel then return self.display_panel end
+    self.display_panel = require("vnc/displaypanel").open(self)
+    self:_sync_keyboard_later()
+    return self.display_panel
+end
+
+--- Closes the display panel when it is open. `quiet` skips the keyboard re-evaluation, for a panel
+--- that is about to be opened again in place.
+function ViewerApp:close_display_panel(quiet)
+    local panel = self.display_panel
+    if not panel then return end
+    self.display_panel = nil
+    UIManager:close(panel)
+    if not quiet then self:_sync_keyboard_later() end
+end
+
+function ViewerApp:toggle_display_panel()
+    if self.display_panel then
+        self:close_display_panel()
+    else
+        self:open_display_panel()
+    end
+end
+
+--- The panel went away by its own means (a tap outside, Back): forget it.
+function ViewerApp:_display_panel_dismissed(panel)
+    if self.display_panel == panel then self.display_panel = nil end
+    self:_sync_keyboard_later()
 end
 
 --- Opens the "Send keys" panel (see @{vnc.keypanel}), or returns the one already open.

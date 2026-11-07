@@ -10,7 +10,6 @@ session state.
 local _ = require("gettext")
 local T = require("ffi/util").template
 
-local Device = require("device")
 local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
@@ -18,42 +17,7 @@ local UIManager = require("ui/uimanager")
 
 local Dialogs = require("vnc/dialogs")
 
-local Screen = Device.screen
-
 local MenuBuilder = {}
-
-local ZOOM_CHOICES = {
-    { label = _("Fit screen"), value = "fit" },
-    { label = _("Fit (with keyboard)"), value = "fit_with_keyboard" },
-    { label = "25%", value = 0.25 },
-    { label = "50%", value = 0.5 },
-    { label = "75%", value = 0.75 },
-    { label = "100%", value = 1 },
-    { label = "150%", value = 1.5 },
-    { label = "200%", value = 2 },
-    { label = "400%", value = 4 },
-}
-
-local ROTATIONS = {
-    { label = _("Portrait"), mode = 0 },
-    { label = _("Landscape"), mode = 1 },
-    { label = _("Portrait inverted"), mode = 2 },
-    { label = _("Landscape inverted"), mode = 3 },
-}
-
-local function zoom_label(mode)
-    for _i, choice in ipairs(ZOOM_CHOICES) do
-        if choice.value == mode then return choice.label end
-    end
-    return tostring(mode)
-end
-
-local function rotation_label(mode)
-    for _i, rotation in ipairs(ROTATIONS) do
-        if rotation.mode == mode then return rotation.label end
-    end
-    return tostring(mode)
-end
 
 -- The title bar's X must close the whole menu; Menu's own wiring (like the Back key) only
 -- steps up one submenu level.
@@ -161,24 +125,6 @@ function MenuBuilder.open(app)
     end
     item_table[#item_table + 1] = { text = status, select_enabled = false }
 
-    -- ---- zoom
-    local zoom_items = {}
-    for _i, choice in ipairs(ZOOM_CHOICES) do
-        zoom_items[#zoom_items + 1] = {
-            text = choice.label,
-            mandatory = settings.zoom_mode == choice.value and "✓" or nil,
-            callback = action(function()
-                app:zoom_to(choice.value)
-                plugin.settings:flush()
-            end),
-        }
-    end
-    item_table[#item_table + 1] = {
-        text = _("Zoom…"),
-        sub_item_table = zoom_items,
-        mandatory = zoom_label(settings.zoom_mode),
-    }
-
     -- ---- keyboard
     item_table[#item_table + 1] = stays_open({
         text = _("Keyboard always visible"),
@@ -194,33 +140,6 @@ function MenuBuilder.open(app)
         text = app:is_keyboard_wanted() and _("Hide keyboard") or _("Show keyboard"),
         callback = action(function() app:toggle_keyboard() end),
     }
-
-    -- ---- orientation
-    local rotation_items = {}
-    for _i, rotation in ipairs(ROTATIONS) do
-        -- Closes the menu like Rotate screen: it only relayouts on a broadcast ScreenResize, which a
-        -- rotation does not send, so an open menu would stay laid out for the old orientation.
-        rotation_items[#rotation_items + 1] = {
-            text = rotation.label,
-            callback = action(function() app:set_rotation_mode(rotation.mode) end),
-            mandatory = settings.orientation == rotation.mode and _("default") or nil,
-        }
-    end
-    item_table[#item_table + 1] = stays_open({
-        text = _("Screen orientation"),
-        sub_item_table = rotation_items,
-    }, function(item) item.mandatory = rotation_label(Screen:getRotationMode()) end)
-    item_table[#item_table + 1] = {
-        text = _("Rotate screen"),
-        callback = action(function() app:rotate(1) end),
-    }
-    item_table[#item_table + 1] = stays_open({
-        text = _("Use current orientation as default"),
-        callback = function()
-            settings.orientation = Screen:getRotationMode()
-            plugin.settings:flush()
-        end,
-    })
 
     -- ---- page buttons: read on every key press, so this applies at once
     local function set_page_buttons(value)
@@ -245,20 +164,6 @@ function MenuBuilder.open(app)
     }, function(item)
         item.mandatory = settings.page_buttons == "wheel" and _("Mouse wheel") or _("Page Up/Down keys")
     end)
-
-    -- ---- scaling: global, applied to the live view at once
-    item_table[#item_table + 1] = stays_open({
-        text = _("Sharp scaling (faster)"),
-        help_text = _("Scales by repeating pixels instead of blending them. Much faster redraws when the zoom is not 100%; text looks crisper but can look uneven at non-whole zoom levels."),
-        callback = function()
-            settings.scaling = settings.scaling == "sharp" and "smooth" or "sharp"
-            plugin.settings:flush()
-            local live = session:get_remote()
-            if live then live:set_scaling(settings.scaling) end
-            -- the menu is on top: this only flags the flash that closing it performs
-            app:_wholesale_change()
-        end,
-    }, function(item) item.mandatory = settings.scaling == "sharp" and "✓" or "-" end)
 
     -- ---- any key or hotkey the on-screen keyboard cannot send
     item_table[#item_table + 1] = {

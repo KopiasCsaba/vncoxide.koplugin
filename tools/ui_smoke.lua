@@ -670,20 +670,16 @@ check("zoom_modes_follow_the_keyboard", function()
     local size = Screen:getSize()
     local function near(a, b) return math.abs(a - b) < 1e-9 end
 
-    -- the menu offers both fitted modes, under the names users are looking for
-    app:open_menu()
-    local labels
-    for _, item in ipairs(app.menu.item_table) do
-        if item.text == "Zoom…" then
-            labels = {}
-            for _, sub in ipairs(item.sub_item_table) do labels[#labels + 1] = sub.text end
-        end
+    -- the display panel offers both fitted modes, under the names users are looking for
+    local panel = app:open_display_panel()
+    local labels = {}
+    for _, row in ipairs(panel.buttons) do
+        for _, btn in ipairs(row) do labels[#labels + 1] = btn.text end
     end
-    assert_true(labels ~= nil, "the menu must offer a zoom submenu")
-    assert_true(labels[1] == "Fit screen", "the first choice is \"Fit screen\", got " .. tostring(labels[1]))
+    assert_true(labels[1] == "✓ Fit screen", "the first choice is \"Fit screen\", got " .. tostring(labels[1]))
     assert_true(labels[2] == "Fit (with keyboard)",
         "the second choice is \"Fit (with keyboard)\", got " .. tostring(labels[2]))
-    app:close_menu()
+    app:close_display_panel()
     UIManager:_checkTasks()
 
     app:zoom_to("fit")
@@ -1648,7 +1644,7 @@ check("scaling_setting_defaults_and_validates", function()
     os.remove(path)
 end)
 
-check("sharp_scaling_menu_entry_applies_live", function()
+check("display_panel_scaling_applies_live", function()
     local app, remote = new_app()
     local s = app.plugin.settings.data.settings
     s.scaling = "smooth"
@@ -1659,18 +1655,11 @@ check("sharp_scaling_menu_entry_applies_live", function()
     remote.set_scaling = function(self, mode) modes[#modes + 1] = mode return real_set(self, mode) end
     local real_change = app._wholesale_change
     app._wholesale_change = function(self) repaints = repaints + 1 return real_change(self) end
-    app:open_menu()
-    local entry
-    for _, item in ipairs(app.menu.item_table) do
-        if item.text == "Sharp scaling (faster)" then entry = item end
-    end
-    assert_true(entry, "the viewer menu must have a 'Sharp scaling (faster)' entry")
-    assert_true(entry.help_text and entry.help_text:find("repeating pixels", 1, true)
-        and entry.help_text:find("Much faster redraws when the zoom is not 100%", 1, true), "the entry has a help text")
-    assert_true(entry.mandatory ~= "✓", "smooth is the start state")
+    local panel = app:open_display_panel()
+    find_button(panel, "✓ Smooth")
     local before = #stack()
-    entry.callback()
-    assert_true(s.scaling == "sharp", "toggling stores sharp, got " .. tostring(s.scaling))
+    find_button(panel, "Sharp").callback()
+    assert_true(s.scaling == "sharp", "tapping Sharp stores sharp, got " .. tostring(s.scaling))
     assert_true(flushed >= 1, "settings are flushed")
     assert_true(modes[#modes] == "sharp" and remote.scaling == "sharp", "the live remote is switched to sharp")
     assert_true(repaints == 1, "the view is repainted")
@@ -1678,19 +1667,53 @@ check("sharp_scaling_menu_entry_applies_live", function()
         assert_true(w.text ~= "Reconnect to apply the new settings.", "no reconnect notice")
     end
     assert_true(#stack() <= before, "no notice widget was added")
-    app:open_menu()
-    for _, item in ipairs(app.menu.item_table) do
-        if item.text == "Sharp scaling (faster)" then entry = item end
-    end
-    assert_true(entry.mandatory == "✓", "the entry shows sharp as on")
-    entry.callback()
-    assert_true(s.scaling == "smooth" and modes[#modes] == "smooth", "toggling again goes back to smooth")
+    assert_true(app.display_panel ~= nil, "the panel stays open")
+    find_button(app.display_panel, "✓ Sharp")
+    find_button(app.display_panel, "Smooth").callback()
+    assert_true(s.scaling == "smooth" and modes[#modes] == "smooth", "tapping Smooth goes back")
+    app:close_display_panel()
+    app:onCloseWidget()
+    remote:free()
+end)
+
+check("display_panel_marks_and_applies_choices", function()
+    local app, remote = new_app()
+    app.plugin.settings.flush = function() end
+    local panel = app:open_display_panel()
+    find_button(panel, "✓ Fit screen")
+    find_button(panel, "200%").callback()
+    assert_true(app.settings.zoom_mode == 2 and app.display_panel ~= nil, "applied, panel still open")
+    find_button(app.display_panel, "✓ 200%")
+    find_button(app.display_panel, "Fast").callback()
+    assert_true(app.settings.pointer_speed == "fast")
+    find_button(app.display_panel, "✓ Fast")
+    app:toggle_display_panel()
+    assert_true(app.display_panel == nil and count(function(w) return w == panel end) == 0)
+    app:onCloseWidget()
+    remote:free()
+end)
+
+check("display_panel_anchors_and_closes_by_tap_outside", function()
+    local app, remote = new_app()
+    local panel = app:open_display_panel()
+    assert_true(type(panel.anchor) == "function", "the panel is anchored")
+    local anchor = panel.anchor()
+    assert_true(anchor.y == 0, "without a toolbar it hangs from the top of the screen")
+    assert_true(app:open_display_panel() == panel, "opening twice returns the same panel")
+    panel:onTapClose(nil, { pos = require("ui/geometry"):new{ x = 1, y = Screen:getSize().h - 1, w = 0, h = 0 } })
+    UIManager:_checkTasks()
+    assert_true(app.display_panel == nil and count(function(w) return w == panel end) == 0, "tap outside closes it")
+    app:open_display_panel()
+    app:close_display_panel()
+    assert_true(app.display_panel == nil, "close_display_panel closes it")
+    app:onCloseWidget()
+    remote:free()
 end)
 
 check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
     local app, remote = new_app()
     local s = app.plugin.settings.data.settings
-    s.scaling, s.page_buttons, s.keyboard_always_visible = "smooth", "keys", false
+    s.page_buttons, s.keyboard_always_visible = "keys", false
     app.plugin.settings.flush = function() end
     local menu = app:open_menu()
     local function entry(text) return find_item(menu.item_table, text) end
@@ -1699,12 +1722,6 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
         UIManager:_checkTasks()
     end
     local function on_top() return top() == menu end
-
-    tap(entry("Sharp scaling (faster)"))
-    assert_true(s.scaling == "sharp", "the tap toggles the setting")
-    assert_true(app.menu == menu and on_top(), "Sharp scaling leaves the menu on top")
-    assert_true(entry("Sharp scaling (faster)").mandatory == "✓", "and the item shows the new state")
-    assert_true(app._needs_flash, "the view is flashed when the menu closes")
 
     tap(entry("Keyboard always visible"))
     assert_true(s.keyboard_always_visible == true and app.menu == menu and on_top(), "keyboard toggle keeps the menu")
@@ -1730,9 +1747,6 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
 
     -- items that need the canvas still close it
     menu = app:open_menu()
-    tap(find_item(find_item(menu.item_table, "Zoom…").sub_item_table, "100%"))
-    assert_true(app.menu == nil, "a zoom choice closes the menu")
-    menu = app:open_menu()
     tap(find_item(menu.item_table, "Send keys…"))
     assert_true(app.menu == nil and app.key_panel ~= nil, "Send keys… closes the menu and opens the panel")
     app:close_key_panel()
@@ -1741,22 +1755,22 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
     remote:free()
 end)
 
-check("menu_orientation_choice_closes_menu", function()
+check("display_panel_orientation_choice_closes_it", function()
     local app, remote = new_app()
     app.plugin.settings.flush = function() end
-    local menu = app:open_menu()
+    local panel = app:open_display_panel()
     local start = Screen:getRotationMode()
     local target = (start + 1) % 4
     local labels = { [0] = "Portrait", "Landscape", "Portrait inverted", "Landscape inverted" }
-    menu:onMenuSelect(find_item(menu.item_table, "Screen orientation"))
-    menu:onMenuSelect(find_item(menu.item_table, labels[target]))
+    find_button(panel, labels[target]).callback()
     UIManager:_checkTasks()
     assert_true(Screen:getRotationMode() == target, "the viewer rotated")
-    assert_true(app.menu == nil, "the menu closed on an orientation choice")
-    menu = app:open_menu()
-    assert_true(find_item(menu.item_table, "Screen orientation").mandatory == labels[target], "label follows")
-    menu:onMenuSelect(find_item(menu.item_table, "Use current orientation as default"))
-    assert_true(app.settings.orientation == target and app.menu == menu, "default stored, menu kept")
+    assert_true(app.display_panel == nil, "the panel closed on an orientation choice")
+    panel = app:open_display_panel()
+    find_button(panel, "✓ " .. labels[target])
+    find_button(panel, "Use current orientation as default").callback()
+    assert_true(app.settings.orientation == target and app.display_panel ~= nil, "default stored, panel re-opened")
+    app:close_display_panel()
     app:set_rotation_mode(start)
     app:onCloseWidget()
     remote:free()
@@ -1775,9 +1789,9 @@ check("every_menu_close_path_repaints_the_viewer_after_a_toggle", function()
     for name, close in pairs(paths) do
         local app, remote = new_app()
         app.plugin.settings.flush = function() end
-        app.settings.scaling = "smooth"
+        app.settings.keyboard_always_visible = false
         local menu = app:open_menu()
-        menu:onMenuSelect(find_item(menu.item_table, "Sharp scaling (faster)"))
+        menu:onMenuSelect(find_item(menu.item_table, "Keyboard always visible"))
         UIManager:_checkTasks()
         local modes = {}
         local real_dirty, real_refresh = UIManager.setDirty, UIManager._refresh
