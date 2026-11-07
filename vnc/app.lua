@@ -35,6 +35,7 @@ local time = require("ui/time")
 local Keyboard = require("vnc/keyboard")
 local Keysyms = require("vnc/keysyms")
 local Settings = require("vnc/settings")
+local Toolbar = require("vnc/toolbar")
 local Util = require("vnc/util")
 
 local Screen = Device.screen
@@ -78,6 +79,9 @@ function ViewerApp:init()
     -- Mouse mode: a tap's click waits out the double-tap interval (see `_mouse_tap`)
     self._deferred_click = nil
     self._deferred_click_task = function() self:_flush_deferred_click() end
+    -- shown on open, so it is discoverable; a swipe down in the top zone hides it
+    self.toolbar = Toolbar:new{ app = self }
+    self.toolbar_visible = true
 
     self:init_menu_zones()
     self:init_gestures()
@@ -89,16 +93,16 @@ function ViewerApp:_screen_signature()
     return string.format("%dx%d", size.w, size.h)
 end
 
--- ---------------------------------------------------------------- menu activation
+-- ---------------------------------------------------------------- toolbar activation
 
 --[[--
-Registers the "show the menu" gesture: a **swipe down** inside KOReader's own top menu zone
-(`DTAP_ZONE_MENU`, plus its taller middle extension).
+Registers the "show/hide the toolbar" gesture: a **swipe down** inside KOReader's own top menu
+zone (`DTAP_ZONE_MENU`, plus its taller middle extension).
 
 Taps are deliberately *not* registered: every single tap must stay a click on the remote
 desktop, so the top zone is only taken away from the canvas for that one swipe. This also
-ignores KOReader's global *activate menu on* preference on purpose — under "tap only" the menu
-would otherwise become unreachable here.
+ignores KOReader's global *activate menu on* preference on purpose. The menu itself is reached
+from the toolbar's More button or the Menu key.
 ]]
 function ViewerApp:init_menu_zones()
     if not Device:isTouchDevice() then return end
@@ -111,28 +115,77 @@ function ViewerApp:init_menu_zones()
 
     self:registerTouchZones({
         {
-            id = "vnc_menu_swipe",
+            id = "vnc_toolbar_swipe",
             ges = "swipe",
             screen_zone = zone_ratios(zone),
-            handler = function(ges) return self:onMenuSwipe(ges) end,
+            handler = function(ges) return self:onTopSwipe(ges) end,
         },
         {
-            id = "vnc_menu_swipe_ext",
+            id = "vnc_toolbar_swipe_ext",
             ges = "swipe",
             screen_zone = zone_ratios(zone_ext),
-            overrides = { "vnc_menu_swipe" },
-            handler = function(ges) return self:onMenuSwipe(ges) end,
+            overrides = { "vnc_toolbar_swipe" },
+            handler = function(ges) return self:onTopSwipe(ges) end,
         },
     })
 end
 
---- A swipe down in the top menu zone opens the menu; anything else falls through to the canvas.
-function ViewerApp:onMenuSwipe(ges)
+--- A swipe down in the top menu zone shows or hides the toolbar; anything else falls through to
+--- the canvas. A swipe that ends one of our drags is that drag's end, not a request for the bar.
+function ViewerApp:onTopSwipe(ges)
+    local dragging = self._drag_active or self._mouse_moving
     self:_end_quick_drag(ges)
-    if self.menu then return nil end
+    if dragging or not self:_input_target() then return nil end
     if BD.flipDirectionIfMirroredUILayout(ges.direction) ~= "south" then return nil end
-    self:open_menu()
+    self:toggle_toolbar()
     return true
+end
+
+--- Shows or hides the toolbar, repainting only its area.
+function ViewerApp:set_toolbar_visible(on)
+    on = on and true or false
+    if on == self.toolbar_visible then return end
+    self.toolbar_visible = on
+    local area = self.toolbar.dimen
+    UIManager:setDirty(self, function() return "ui", area end)
+end
+
+function ViewerApp:toggle_toolbar()
+    self:set_toolbar_visible(not self.toolbar_visible)
+end
+
+--- Rebuilds the toolbar (mode label, scroll buttons) and repaints the area it covered before and
+--- covers now.
+function ViewerApp:_toolbar_changed()
+    local old = self.toolbar.dimen
+    self.toolbar:relayout()
+    if not self.toolbar_visible then return end
+    local area = old:combine(self.toolbar.dimen)
+    UIManager:setDirty(self, function() return "ui", area end)
+end
+
+--[[--
+True when gesture `ges` belongs to the toolbar: it is up and the gesture started on it. Never
+while a drag or long press of ours is under way (its end is ours wherever the finger lifts), and
+never for a swipe (the top-zone toggle, the end of a quick drag) or a two-finger gesture.
+]]
+function ViewerApp:_toolbar_owns(ges)
+    if not (self.toolbar_visible and self.toolbar and ges and ges.pos) then return false end
+    if self._drag_active or self._hold_active or self._mouse_moving then return false end
+    local kind = ges.ges or ""
+    if kind == "swipe" or kind:sub(1, 11) == "two_finger_" then return false end
+    local rel = ges.relative or { x = 0, y = 0 }
+    local start = Geom:new{ x = ges.pos.x - (rel.x or 0), y = ges.pos.y - (rel.y or 0), w = 0, h = 0 }
+    return self.toolbar.dimen:contains(start)
+end
+
+--- Gestures that start on the toolbar go to it and nowhere else.
+function ViewerApp:handleEvent(event)
+    if event.handler == "onGesture" and self:_toolbar_owns(event.args and event.args[1]) then
+        self.toolbar:handleEvent(event)
+        return true
+    end
+    return InputContainer.handleEvent(self, event)
 end
 
 --- Opens the menu, or closes it when it is already open.
@@ -277,6 +330,7 @@ function ViewerApp:onScreenResize(dimen)
     if dimen then self.dimen = dimen end
     -- the panel's height goes into the canvas: lay it out for the new size first
     if self.key_panel then self.key_panel:relayout() end
+    self.toolbar:relayout()
     self:_reflow()
     self:_refresh_keyboard()
     self:updateTouchZonesOnScreenResize(self.dimen)
@@ -332,6 +386,7 @@ function ViewerApp:paintTo(bb, x, y)
     else
         bb:paintRect(x, y, size.w, size.h, BB.COLOR_BLACK)
     end
+    if self.toolbar_visible then self.toolbar:paintTo(bb, x, y) end
     if timing then
         local r = self.remote
         local line = string.format("vnc-timing: paint ms=%.1f canvas=%dx%d scale=%s mode=%s recomputed_px=%d",
@@ -622,8 +677,8 @@ end
 --[[--
 A drag whose finger lifts within `ges_swipe_interval` of its last move ends as a swipe, not a
 pan_release (GestureDetector's Contact:isSwipe): let go of the button and the modifiers at the
-last pointer position. The swipe itself goes on to whatever else wants it (the keyboard and menu
-swipes, which end the drag themselves too, as they may get it first).
+last pointer position. The swipe itself goes on to whatever else wants it (the top-zone toolbar
+swipe, which ends the drag itself too, as it gets the swipe first and then ignores it).
 ]]
 function ViewerApp:onSwipe(_, ges)
     self:_end_quick_drag(ges)
@@ -712,6 +767,12 @@ function ViewerApp:set_pointer_mode(mode)
         profile.pointer_mode = mode
         self.session:set_profile(profile)
     end
+end
+
+--- Flips Touch <-> Mouse; the toolbar's Mode button follows.
+function ViewerApp:toggle_pointer_mode()
+    self:set_pointer_mode(self:get_pointer_mode() == "mouse" and "touch" or "mouse")
+    self:_toolbar_changed()
 end
 
 --- Mouse-mode cursor speed: remote pixels per screen pixel dragged.
@@ -1272,6 +1333,8 @@ end
 
 function ViewerApp:open_menu()
     if self.menu then return self.menu end
+    -- a pending Mouse-mode click belongs to the remote, before the menu covers it
+    self:_flush_deferred_click()
     self.menu = require("vnc/menu").open(self)
     -- The menu is on the window stack now: it owns the screen, so the keyboard gets out of the
     -- way (it is part of the framebuffer view, not of the menu).

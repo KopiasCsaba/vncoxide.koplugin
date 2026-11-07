@@ -10,7 +10,6 @@ session state.
 local _ = require("gettext")
 local T = require("ffi/util").template
 
-local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
@@ -173,20 +172,6 @@ function MenuBuilder.open(app)
     }
 
     -- ---- session
-    item_table[#item_table + 1] = {
-        text = _("Disconnect"),
-        callback = action(function()
-            UIManager:show(ConfirmBox:new{
-                text = profile and T(_("Disconnect from %1?"), profile.name) or _("Disconnect?"),
-                ok_text = _("Disconnect"),
-                dismissable = false,
-                ok_callback = function() app:disconnect_session() end,
-                cancel_callback = function() app:_sync_keyboard_later() end,
-            })
-            -- the confirmation is above the view now: it owns the screen too
-            app:_sync_keyboard_later()
-        end),
-    }
     item_table[#item_table + 1] = {
         text = _("Leave (keep connection)"),
         callback = action(function() app:leave() end),

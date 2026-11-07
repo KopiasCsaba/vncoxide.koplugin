@@ -625,7 +625,32 @@ local function new_app(plane_w, plane_h, opts)
     }
     -- Shown the way main.lua shows it: a full-screen widget asks for its own refresh.
     UIManager:show(app, "full")
+    -- most checks tap near the top of the screen: the toolbar stays out of their way
+    if not (opts and opts.toolbar) then app:set_toolbar_visible(false) end
     return app, remote, sent
+end
+
+--- The centre of toolbar button `id`, after a repaint (a button only learns where it is when it
+--- is painted).
+local function toolbar_button_centre(app, id)
+    UIManager:setDirty(app, "ui")
+    UIManager:forceRePaint()
+    local button = app.toolbar.button_by_id[id]
+    assert_true(button ~= nil, "no toolbar button " .. id)
+    local d = button.dimen
+    return Geom:new{ x = d.x + math.floor(d.w / 2), y = d.y + math.floor(d.h / 2) }
+end
+
+--- Taps toolbar button `id` where a finger would: through the real widget stack.
+local function tap_toolbar(app, id)
+    UIManager:sendEvent(Event:new("Gesture", { ges = "tap", pos = toolbar_button_centre(app, id) }))
+end
+
+--- Long-presses toolbar button `id`, then lifts the finger there.
+local function hold_toolbar(app, id)
+    local pos = toolbar_button_centre(app, id)
+    UIManager:sendEvent(Event:new("Gesture", { ges = "hold", pos = pos }))
+    UIManager:sendEvent(Event:new("Gesture", { ges = "hold_release", pos = pos }))
 end
 
 check("pointer_mode_is_cleaned_and_kept_per_profile", function()
@@ -641,14 +666,14 @@ check("pointer_mode_is_cleaned_and_kept_per_profile", function()
     assert_true(s.data.settings.pointer_speed == "normal" and s.data.settings.toolbar_scroll_buttons == false)
 end)
 check("canvas_covers_the_screen", function()
-    local app, remote = new_app()
+    local app, remote = new_app(nil, nil, { toolbar = true })
     local size = Screen:getSize()
     assert_true(app.canvas.x == 0 and app.canvas.y == 0,
         string.format("the canvas must start at the top left, got %s", tostring(app.canvas)))
     assert_true(app.canvas.w == size.w and app.canvas.h == size.h,
         string.format("the canvas (%dx%d) must cover the whole screen (%dx%d)",
             app.canvas.w, app.canvas.h, size.w, size.h))
-    assert_true(app.top_bar == nil, "there is no permanent toolbar any more")
+    assert_true(app.toolbar_visible, "the toolbar floats over the canvas, it does not shrink it")
 
     -- and it follows a rotation
     local before = { w = app.canvas.w, h = app.canvas.h }
@@ -827,46 +852,50 @@ check("keyboard_follows_rotation", function()
     remote:free()
 end)
 
-check("menu_opens_on_swipe_only", function()
+check("toolbar_toggles_on_top_swipe_only", function()
     local app, remote, sent = new_app()
 
     -- no tap zone may exist: the top strip must stay available to the remote desktop
-    assert_true(not app:checkRegisterTouchZone("vnc_menu_tap"),
-        "there must be no menu tap zone")
-    assert_true(not app:checkRegisterTouchZone("vnc_menu_tap_ext"),
-        "there must be no menu tap zone")
-    assert_true(app:checkRegisterTouchZone("vnc_menu_swipe"),
-        "the menu swipe zone must be registered")
-    assert_true(app:checkRegisterTouchZone("vnc_menu_swipe_ext"),
-        "the extended menu swipe zone must be registered")
+    assert_true(not app:checkRegisterTouchZone("vnc_menu_tap"), "there must be no menu tap zone")
+    assert_true(not app:checkRegisterTouchZone("vnc_menu_tap_ext"), "there must be no menu tap zone")
+    assert_true(app:checkRegisterTouchZone("vnc_toolbar_swipe"), "the toolbar swipe zone must be registered")
+    assert_true(app:checkRegisterTouchZone("vnc_toolbar_swipe_ext"),
+        "the extended toolbar swipe zone must be registered")
+    assert_true(app.onMenuSwipe == nil, "no swipe opens the menu any more")
 
     local zone = G_defaults:readSetting("DTAP_ZONE_MENU")
     local size = Screen:getSize()
-    local gs_range = app._zones["vnc_menu_swipe"].gs_range
+    local gs_range = app._zones["vnc_toolbar_swipe"].gs_range
     assert_true(math.abs(gs_range.range.w - size.w * zone.w) < 1,
-        "the menu swipe zone must cover KOReader's DTAP_ZONE_MENU width")
+        "the toolbar swipe zone must cover KOReader's DTAP_ZONE_MENU width")
     assert_true(math.abs(gs_range.range.h - size.h * zone.h) < 1,
-        "the menu swipe zone must cover KOReader's DTAP_ZONE_MENU height")
+        "the toolbar swipe zone must cover KOReader's DTAP_ZONE_MENU height")
 
-    -- dispatch: a tap inside that zone must click the remote, not open the menu
+    -- a tap inside that zone clicks the remote
     local inside = Geom:new{ x = 10, y = 10 }
-    app.menu = nil
     sent.pointer = {}
-    app:onGesture({ ges = "tap", pos = inside })
-    assert_true(app.menu == nil, "a tap must never open the menu")
+    dispatch_gesture{ ges = "tap", pos = inside }
+    assert_true(app.menu == nil and not app.toolbar_visible, "a tap opens nothing")
     assert_true(#sent.pointer == 3, "a tap in the top zone must click the remote, got "
         .. #sent.pointer .. " pointer events")
 
-    -- dispatch: a south swipe there opens the menu, other directions do not
-    app:onGesture({ ges = "swipe", direction = "south", pos = inside })
-    assert_true(app.menu ~= nil, "a swipe down in the top zone must open the menu")
-    app:close_menu()
-    app:onGesture({ ges = "swipe", direction = "north", pos = inside })
-    assert_true(app.menu == nil, "only a south swipe opens the menu")
+    -- a south swipe there flips the toolbar both ways
+    dispatch_gesture{ ges = "swipe", direction = "south", pos = inside }
+    assert_true(app.toolbar_visible == true, "a swipe down in the top zone shows the toolbar")
+    dispatch_gesture{ ges = "swipe", direction = "south", pos = inside }
+    assert_true(app.toolbar_visible == false, "and the next one hides it")
+    -- other directions, or lower down, do nothing
+    for _, dir in ipairs({ "north", "east" }) do
+        dispatch_gesture{ ges = "swipe", direction = dir, pos = inside }
+        assert_true(app.toolbar_visible == false, dir .. " swipe must not toggle the toolbar")
+    end
+    dispatch_gesture{ ges = "swipe", direction = "south", pos = Geom:new{ x = 10, y = math.floor(size.h / 2) } }
+    assert_true(app.toolbar_visible == false, "a swipe down below the zone must not toggle the toolbar")
+    assert_true(app.menu == nil, "no swipe opens the menu")
 
     -- and a tap anywhere else is a click too
     sent.pointer = {}
-    app:onGesture({ ges = "tap", pos = Geom:new{ x = 10, y = size.h - 10 } })
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 10, y = size.h - 10 } }
     assert_true(#sent.pointer == 3, "a tap below the zone must click the remote")
     assert_true(app.menu == nil, "and must not open the menu")
 
@@ -2634,8 +2663,8 @@ check("two_finger_pan_moves_the_picture_past_its_edges", function()
     remote:free()
 end)
 
-check("viewer_menu_disconnect_returns_to_the_list", function()
-    local app, remote = new_app()
+check("toolbar_close_confirms_then_returns_to_the_list", function()
+    local app, remote = new_app(nil, nil, { toolbar = true })
     local session = app.session
     local disconnected = false
     session.disconnect = function() disconnected = true end
@@ -2644,9 +2673,14 @@ check("viewer_menu_disconnect_returns_to_the_list", function()
     plugin.app = app
     app.plugin = plugin
     app:open_menu()
-    find_item(app.menu.item_table, "Disconnect").callback()
+    assert_true(not pcall(find_item, app.menu.item_table, "Disconnect"), "Disconnect moved to the toolbar")
+    app:close_menu()
+    tap_toolbar(app, "close")
     local confirm = top()
     assert_true(confirm.ok_callback, "a confirmation, stack: " .. stack_desc())
+    assert_true(confirm.text == "Disconnect from test?" and confirm.ok_text == "Disconnect",
+        "the menu's old confirmation: " .. tostring(confirm.text) .. " / " .. tostring(confirm.ok_text))
+    assert_true(plugin.sessions.test == session and not disconnected, "nothing happens before the answer")
     answer_confirm(confirm, true)
     UIManager:close(confirm)
     assert_true(plugin.sessions.test == nil and disconnected, "the session is gone")
@@ -3343,10 +3377,13 @@ local function take_keys(sent)
     return table.concat(out, ",")
 end
 
---- Opens the panel the way a user does: from the viewer menu.
+--- Opens the panel the way a user does: a long press on the toolbar's keyboard button (the toolbar
+--- is shown for it and hidden again when it was hidden).
 local function open_key_panel(app)
-    local menu = app:open_menu()
-    menu:onMenuSelect(find_item(menu.item_table, "Send keys…"))
+    local shown = app.toolbar_visible
+    if not shown then app:set_toolbar_visible(true) end
+    hold_toolbar(app, "keyboard")
+    if not shown then app:set_toolbar_visible(false) end
     UIManager:_checkTasks()
     return app.key_panel
 end
@@ -3409,7 +3446,7 @@ check("set_pointer_mode_persists_through_the_plugin", function()
     close_viewer(app, remote)
 end)
 
-check("key_panel_opens_from_the_menu_and_leaves_the_canvas_usable", function()
+check("key_panel_opens_from_the_toolbar_and_leaves_the_canvas_usable", function()
     local app, remote, sent = new_app()
     local panel = open_key_panel(app)
     local size = Screen:getSize()
@@ -4207,6 +4244,147 @@ check("touch_tap_stays_immediate", function()
     assert_true(got == "p0,p1,p0", "clicked at once: " .. got)
     assert_true(#UIManager._task_queue == n, "nothing scheduled")
     assert_true(app._deferred_click == nil)
+    close_viewer(app, remote)
+end)
+
+-- ---------------------------------------------------------------- toolbar
+
+check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    assert_true(app.toolbar_visible, "shown on open")
+    local Toolbar = require("vnc/toolbar")
+    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,mode,keyboard,rotate,scroll_up,scroll_down,more")
+    local before = Screen:getRotationMode()
+    tap_toolbar(app, "rotate")
+    assert_true(Screen:getRotationMode() == (before + 1) % 4, "rotated a quarter turn clockwise")
+    app:set_rotation_mode(before)
+    tap_toolbar(app, "mode")
+    assert_true(app:get_pointer_mode() == "mouse", "mode switches to mouse")
+    tap_toolbar(app, "mode")
+    assert_true(app:get_pointer_mode() == "touch", "and back to touch")
+    tap_toolbar(app, "keyboard"); assert_true(app.vk_wanted == true, "keyboard tap toggles the keyboard")
+    hold_toolbar(app, "keyboard"); assert_true(app.key_panel ~= nil, "keyboard hold opens the key panel")
+    tap_toolbar(app, "display"); assert_true(app.display_panel ~= nil, "display opens the display panel")
+    -- the display panel hangs under the toolbar
+    UIManager:forceRePaint()
+    local bar = app.toolbar.dimen
+    local panel_top = app.display_panel.movable.dimen.y
+    assert_true(panel_top >= bar.y + bar.h,
+        string.format("the display panel (top %d) sits below the toolbar (bottom %d)", panel_top, bar.y + bar.h))
+    assert_true(#sent.pointer == 0, "no toolbar tap reached the canvas, got " .. #sent.pointer .. " pointer events")
+    app:close_display_panel()
+    app:close_key_panel()
+    app:set_keyboard_visible(false)
+    assert_true(app.toolbar.button_by_id.scroll_up == nil, "scroll buttons hidden by default")
+    app.settings.toolbar_scroll_buttons = true; app.toolbar:relayout()
+    tap_toolbar(app, "scroll_down")
+    local masks = {}
+    for _, e in ipairs(sent.pointer) do masks[#masks + 1] = e.mask end
+    assert_true(table.concat(masks, ",") == "16,0", "exactly one notch down, got " .. table.concat(masks, ","))
+    sent.pointer = {}
+    tap_toolbar(app, "scroll_up")
+    masks = {}
+    for _, e in ipairs(sent.pointer) do masks[#masks + 1] = e.mask end
+    assert_true(table.concat(masks, ",") == "8,0", "exactly one notch up, got " .. table.concat(masks, ","))
+    app.settings.toolbar_scroll_buttons = false
+    close_viewer(app, remote)
+end)
+
+check("toolbar_more_opens_the_menu", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "more")
+    assert_true(app.menu ~= nil, "the menu is open")
+    app:close_menu()
+    close_viewer(app, remote)
+end)
+
+check("toolbar_does_not_eat_a_canvas_drag_release", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local wire = wire_log(app)
+    local bar = app.toolbar.dimen
+    local over_bar = Geom:new{ x = bar.x + math.floor(bar.w / 2), y = bar.y + math.floor(bar.h / 2) }
+    local size = Screen:getSize()
+    local mid = Geom:new{ x = math.floor(size.w / 2), y = math.floor(size.h / 2) }
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = mid.x, y = mid.y - 20 }, relative = { x = 0, y = -20 } }
+    dispatch_gesture{ ges = "pan", pos = over_bar, relative = { x = over_bar.x - mid.x, y = over_bar.y - mid.y } }
+    dispatch_gesture{ ges = "pan_release", pos = over_bar }
+    local log = wire()
+    assert_true(log:sub(-2) == "p0", "the drag's release reached the remote: " .. log)
+    assert_true(app:has_pointer_action() == false, "nothing held after the drag")
+    dispatch_gesture{ ges = "hold", pos = mid }
+    dispatch_gesture{ ges = "hold_release", pos = over_bar }
+    log = wire()
+    assert_true(log == "p4,p0", "the long press let go over the toolbar: " .. log)
+    assert_true(app:has_pointer_action() == false, "nothing held after the long press")
+    close_viewer(app, remote)
+end)
+
+check("toolbar_recentres_after_rotation", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local before = Screen:getRotationMode()
+    local y0 = app.toolbar.dimen.y
+    assert_true(app.toolbar.dimen.x == math.floor((Screen:getWidth() - app.toolbar.dimen.w) / 2), "centred")
+    app:rotate(1)
+    local d = app.toolbar.dimen
+    assert_true(d.x == math.floor((Screen:getWidth() - d.w) / 2),
+        string.format("re-centred for width %d, got x=%d w=%d", Screen:getWidth(), d.x, d.w))
+    assert_true(d.y == y0, "same distance from the top")
+    app:set_rotation_mode(before)
+    close_viewer(app, remote)
+end)
+
+check("toolbar_toggle_repaints_only_its_area", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    UIManager:forceRePaint()
+    local real = UIManager.setDirty
+    local seen = {}
+    UIManager.setDirty = function(self_, widget, mode, region)
+        if type(mode) == "function" then mode, region = mode() end
+        seen[#seen + 1] = { mode = mode, region = region }
+        return real(self_, widget, mode, region)
+    end
+    local ok, err = pcall(function()
+        for _, want in ipairs({ false, true }) do
+            seen = {}
+            app:toggle_toolbar()
+            assert_true(app.toolbar_visible == want, "toggled to " .. tostring(want))
+            local d, hit = app.toolbar.dimen, false
+            for _, r in ipairs(seen) do
+                assert_true(r.mode ~= "full" and r.mode ~= "flashui", "no flashing refresh: " .. tostring(r.mode))
+                local g = r.region
+                if r.mode == "ui" and g and g.x == d.x and g.y == d.y and g.w == d.w and g.h == d.h then hit = true end
+            end
+            assert_true(hit, "a ui refresh of exactly the toolbar's area")
+        end
+    end)
+    UIManager.setDirty = real
+    assert_true(ok, tostring(err))
+    close_viewer(app, remote)
+end)
+
+check("toolbar_settles_a_pending_mouse_click_first", function()
+    local app, remote = new_app(400, 300, { mode = "mouse", toolbar = true })
+    local wire = wire_log(app)
+    local size = Screen:getSize()
+    local seen
+    local open_display_panel = app.open_display_panel
+    app.open_display_panel = function(self_)
+        seen = wire()
+        return open_display_panel(self_)
+    end
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = math.floor(size.w / 2), y = math.floor(size.h / 2) } }
+    assert_true(wire() == "", "the click waits")
+    tap_toolbar(app, "display")
+    assert_true(app.display_panel ~= nil, "the panel opened")
+    assert_true(seen == "p0,p1,p0", "the click went out before the panel opened: " .. tostring(seen))
+    assert_true(scheduled_delay(app._deferred_click_task) == nil, "nothing left scheduled")
+    app:close_display_panel()
+    -- the menu too
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = math.floor(size.w / 2), y = math.floor(size.h / 2) } }
+    app:open_menu()
+    assert_true(wire() == "p0,p1,p0", "open_menu sends the pending click first")
+    assert_true(scheduled_delay(app._deferred_click_task) == nil, "nothing left scheduled")
+    app:close_menu()
     close_viewer(app, remote)
 end)
 

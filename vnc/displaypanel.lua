@@ -136,7 +136,7 @@ function DisplayPanel.open(app)
         -- under the toolbar when it is up, else from the top edge; the true asks to pop down
         anchor = function()
             local bar = app.toolbar
-            if bar and bar.dimen and not bar.hidden then
+            if bar and app.toolbar_visible then
                 return Geom:new{ x = bar.dimen.x, y = bar.dimen.y, w = bar.dimen.w, h = bar.dimen.h }, true
             end
             return Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = 0 }, true
