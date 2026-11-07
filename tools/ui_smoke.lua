@@ -2642,6 +2642,25 @@ check("retry_mode_keeps_wifi_on_until_the_loop_ends", function()
     assert_true(offs == 1 and s.wifi_was_on == nil, "the loop ending restores it once")
     s.wifi_was_on = false; s:set_keep_wifi(true); s:hangup()
     assert_true(offs == 1 and s:get_state() == "disconnected")
+    assert_true(ons == 0, "Wi-Fi was already on, so it was never turned on")
+end)
+
+check("a_retrying_session_inherits_the_wifi_duty", function()
+    local Session = require("vnc/session")
+    local offs = 0
+    local net = { isWifiOn = function() return true end, turnOffWifi = function() offs = offs + 1 end }
+    local plugin = { sessions = {} }
+    local a = Session.new{ profile = { name = "a", host = "127.0.0.1", port = 1 }, plugin = plugin }
+    local b = Session.new{ profile = { name = "b", host = "127.0.0.1", port = 2 }, plugin = plugin }
+    a._net, b._net = function() return net end, function() return net end
+    plugin.sessions = { a = a, b = b }
+    b.wifi_was_on, b.state = false, "connected" -- b turned Wi-Fi on
+    a.state, a.keep_wifi = "error", true         -- a is between retry attempts
+    b:disconnect()
+    assert_true(offs == 0, "a's retry loop still needs the Wi-Fi")
+    assert_true(a.wifi_was_on == false, "a inherits turning it off")
+    a:set_keep_wifi(false)
+    assert_true(offs == 1, "the loop ending turns it off exactly once")
 end)
 
 check("hardware_keys_stay_local_under_a_popup_but_held_keys_are_released", function()

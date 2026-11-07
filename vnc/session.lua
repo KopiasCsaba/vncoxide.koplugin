@@ -664,7 +664,7 @@ function Session:_restore_wifi()
         local sessions = self.plugin and self.plugin.sessions
         if sessions then
             for _, s in pairs(sessions) do
-                if s ~= self and (s.state == "connected" or s.state == "connecting") then
+                if s ~= self and (s.state == "connected" or s.state == "connecting" or s.keep_wifi) then
                     heir = s
                     break
                 end
