@@ -905,6 +905,8 @@ function ViewerApp:onKeyPress(key)
         self:on_back()
         return true
     end
+    -- a key a popup of ours above us did not take is not for the remote
+    if not self:_input_target() then return nil end
     local wheel = self:_wheel_direction(key)
     if wheel then
         self:scroll_wheel(wheel)
@@ -913,6 +915,8 @@ function ViewerApp:onKeyPress(key)
     local keysym = Keysyms.special[key.key]
     if keysym then
         self:send_key(keysym, true)
+        self._keys_down = self._keys_down or {}
+        self._keys_down[keysym] = true
         return true
     end
     -- printable characters come through onTextInput, exactly once
@@ -929,6 +933,13 @@ function ViewerApp:onKeyRelease(key)
     if self:_wheel_direction(key) then return true end
     local keysym = Keysyms.special[key.key]
     if keysym then
+        -- a key pressed on the remote is always let go there, even if a popup opened meanwhile
+        local down = self._keys_down
+        if down and down[keysym] then
+            down[keysym] = nil
+        elseif not self:_input_target() then
+            return nil
+        end
         self:send_key(keysym, false)
         return true
     end
@@ -938,6 +949,7 @@ end
 --- Auto-repeat is just another key press as far as the remote is concerned.
 function ViewerApp:onKeyRepeat(key)
     if self:_is_menu_key(key) or self:_back_leaves(key) then return true end
+    if not self:_input_target() then return nil end
     local wheel = self:_wheel_direction(key)
     if wheel then
         self:scroll_wheel(wheel)

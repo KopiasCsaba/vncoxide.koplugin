@@ -2657,6 +2657,28 @@ check("wifi_is_turned_off_by_the_last_connection_only", function()
     assert_true(offs == 1, "the last connection turns it off")
 end)
 
+check("hardware_keys_stay_local_under_a_popup_but_held_keys_are_released", function()
+    local Key = require("device/key")
+    local InfoMessage = require("ui/widget/infomessage")
+    local app, remote, sent = new_app()
+    -- held before the popup opens: its release must still reach the remote
+    app:onKeyPress(Key:new("Left", {}))
+    local popup = InfoMessage:new{ text = "popup" }
+    UIManager:show(popup)
+    sent.key = {}
+    assert_true(app:onKeyPress(Key:new("Right", {})) == nil, "a press under a popup is not ours")
+    assert_true(app:onKeyRepeat(Key:new("Right", {})) == nil, "nor a repeat")
+    assert_true(app:onKeyRelease(Key:new("Right", {})) == nil, "nor the release of a key never sent")
+    assert_true(#sent.key == 0, "nothing reached the remote under the popup")
+    assert_true(app:onKeyRelease(Key:new("Left", {})) == true, "the held key's release is ours")
+    assert_true(#sent.key == 1 and sent.key[1].keysym == 0xFF51 and sent.key[1].down == false,
+        "and it lets the remote's key go")
+    UIManager:close(popup)
+    app:onCloseWidget()
+    UIManager:close(app)
+    remote:free()
+end)
+
 check("viewer_menu_disconnect_returns_to_the_list", function()
     local app, remote = new_app()
     local session = app.session
