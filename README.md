@@ -88,7 +88,8 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
 | tap | left click at the finger | left click at the pointer |
 | long press | right click at the finger | right click at the pointer |
 | one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed) |
-| double tap, then move | not used (a plain drag already drags) | drag with the left button held from the pointer |
+| tap, then drag | not used (a plain drag already drags) | drag with the left button held from the pointer |
+| tap, then long press | right click at the finger (the tap clicked first) | hold the left button at the pointer: moving drags, lifting lets go |
 | two-finger drag | pan the view (with **scroll lock** on: scroll the remote, see below): the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
 | two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |
@@ -96,8 +97,11 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
 
 In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
 x11vnc, `-cursor arrow`); the viewer draws none. A tap's click waits out KOReader's double-tap
-interval before it is sent, so that a double tap followed by a move can become a drag instead of a
-click and a press; two quick taps still give two clicks. Touch mode clicks are sent at once. Three-finger
+interval before it is sent, so that a tap followed by a drag or a long press near it can become a
+drag with the left button instead of a click and a press; two quick taps still give two clicks. A
+finger that comes down near the tap and is still down when that interval runs out keeps the click
+waiting (up to 1.5 seconds after the tap) until it turns into a tap, a drag or a long press, so a
+slow second touch still drags. Touch mode clicks are sent at once. Three-finger
 gestures are not used.
 
 **Scroll lock.** With the toolbar's scroll lock on, a two-finger drag, and the quick flick that

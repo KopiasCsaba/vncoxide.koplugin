@@ -35,7 +35,8 @@ Help.ROWS = {
         { _("Tap"), _("Left click at the pointer") },
         { _("Long press"), _("Right click at the pointer") },
         { _("Drag"), _("Move the pointer") },
-        { _("Double tap and drag"), _("Drag with the left button") },
+        { _("Tap, then drag"), _("Drag with the left button") },
+        { _("Tap, then long press"), _("Hold the left button: move to drag, lift to let go") },
     },
 }
 
