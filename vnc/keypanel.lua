@@ -21,7 +21,8 @@ all; nothing stays down on the remote between actions. That action is either
 
 The same module also makes the key strip (`variant = "strip"`): one row above the on-screen keyboard
 with the panel's modifier buttons and a few keys (`STRIP_KEYS`), no title, tabs or combo display.
-Its modifiers arm and are taken exactly like the panel's; the viewer also hands it the keyboard's
+Its modifiers arm and are taken exactly like the panel's, but what it sends is not added to the
+recent combos; the viewer also hands it the keyboard's
 keys while a modifier is armed (`ViewerApp:send_osk_key`). It sits `bottom_offset` pixels above the
 bottom of the screen, i.e. on top of the keyboard.
 
@@ -310,6 +311,8 @@ end
 
 --- Moves `combo` to the front of the recent list (dropping its older copy) and saves the list.
 function KeyPanel:_remember(combo)
+    -- the strip's keys are everyday typing, not hotkeys: they would only push the panel's out
+    if self.variant == "strip" then return end
     local list = { { mods = combo.mods, keysym = combo.keysym, label = combo.label } }
     for _i, c in ipairs(self:_recent()) do
         if #list >= Settings.RECENT_COMBOS_MAX then break end

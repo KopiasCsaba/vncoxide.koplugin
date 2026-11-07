@@ -4119,6 +4119,11 @@ check("key_strip_modifiers_apply_to_osk_strip_and_canvas", function()
     app:set_toolbar_visible(false)
     local strip = app.key_strip
     local wire = wire_log(app)
+    -- nothing sent from the strip (or through it) is remembered or written to disk
+    local flushes = 0
+    app.plugin.settings.flush = function() flushes = flushes + 1 end
+    app.settings.recent_combos = { { mods = { "Ctrl" }, keysym = 0x74, label = "T" } }
+    local recent = app.settings.recent_combos
     -- an on-screen keyboard key
     app.vk.inputbox:addChars("c")
     assert_true(wire() == "+0x63,-0x63", "a plain OSK key")
@@ -4144,6 +4149,9 @@ check("key_strip_modifiers_apply_to_osk_strip_and_canvas", function()
     got = wire()
     assert_true(got == "+0xFFE9,p0,p1,p0,-0xFFE9", "Alt+click, got " .. got)
     assert_true(strip:modifier_state("Alt") == nil, "Alt is disarmed after the click")
+    assert_true(app.settings.recent_combos == recent and #recent == 1 and recent[1].label == "T",
+        "the recent combos are left alone")
+    assert_true(flushes == 0, "and no settings were written, got " .. flushes .. " flush(es)")
     -- the strip itself never clicks the remote
     dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 1, y = strip.dimen.y + 1 } }
     got = wire()
