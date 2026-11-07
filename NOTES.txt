@@ -484,12 +484,25 @@ canvas size or that type changes. The session calls `Remote:mark_dirty(x, y, w, 
 rect; `draw_to` rescales (vnc/scaler.lua) only `Scaler.dst_rect_for` of those rects, merged, and
 recomputes the whole buffer after a pan/zoom, a canvas resize, a scaling-mode change
 (`Remote:set_scaling`), a plane resize or `mark_dirty()` without arguments. Every paint then blits
-the whole buffer (dithered when sw_dithering is on), so a popup closing or the keyboard going away
-needs no special handling: only the scaling is partial. At scale 1 the view offset is rounded to a
+the whole buffer, so a popup closing or the keyboard going away needs no special handling: only the
+scaling is partial. With sw_dithering on, the canvas is dithered into a second persistent buffer
+(`_dither_bb`) only where it was recomputed, and that buffer is what gets blitted: KOReader's
+ordered dither is indexed by the source position, so this is exactly the whole canvas dithered
+(desktop, 1264x1680 BB8: a small update's paint went from ~4 ms, a full-canvas ditherblitFrom, to
+under 0.1 ms). Into BB8 the smooth downscale (box filter) averages grey values, i.e. it is the
+floored grey of the exact colour mean. At scale 1 the view offset is rounded to a
 whole pixel so the canvas is a plain copy of the plane. Taps map the canvas pixel's centre
-(`floor(view + (c + 0.5) / scale)`), which is the remote pixel the sharp mode draws there. Desktop
-measurement of the dithered full-canvas blit (1264x1680 BB8 -> BB8): about 5 ms (plain blit under
-1 ms); the device's `blit_ms` in the timing trace shows whether that needs a dithered-rect buffer.
+(`floor(view + (c + 0.5) / scale)`), which is the remote pixel the sharp mode draws there.
+
+Decoder hot path (LuaJIT): no per-pixel or per-field strings, closures or tables. The protocol
+reader's fixed-size reads and `ptr(n)` take a pointer straight into the session's receive buffer
+(`io.read_ptr` / `Session:_read_ptr`) instead of a `rx:sub` string each; ZRLE's RLE tiles are read
+through a local pointer/position into the inflated buffer, and runs are filled in bulk (memset when
+grey, doubling copies when long). Measured with recorded x11vnc streams replayed offline: Hextile
+24-bit 14.0 -> 7.6 ms/frame, ZRLE 16-bit 24 -> 12 ms, ZRLE 8-bit 8.7 -> 3.1 ms (1264x1680); what
+is left of ZRLE/Tight is mostly zlib itself. One trap seen while doing this: LuaJIT miscompiled
+`ffi.cast(ptr_type, s) + off` when `s` was a constant (immutable upvalue) string - the load used
+the bare offset as the address and crashed. Keep such strings in a table field (as `self.rx` is).
 
 
 TIMING TRACE (finding out where a lag goes)
