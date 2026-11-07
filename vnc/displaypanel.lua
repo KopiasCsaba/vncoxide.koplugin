@@ -131,10 +131,11 @@ function DisplayPanel.open(app)
         local quality_buttons = {}
         for _i, preset in ipairs(Settings.QUALITY_PRESETS) do
             quality_buttons[#quality_buttons + 1] = {
-                text = mark(_(preset.label), current == preset.id),
+                text = mark(preset.label, current == preset.id),
                 callback = function() app:apply_quality_preset(preset.id) end,
             }
         end
+        buttons[#buttons + 1] = {{ text = _("Picture quality (reconnects)"), enabled = false }}
         buttons[#buttons + 1] = quality_buttons
         if current == "custom" then
             buttons[#buttons + 1] = {{ text = "✓ " .. _("Custom"), enabled = false }}
@@ -148,6 +149,7 @@ function DisplayPanel.open(app)
             callback = stays(function() settings.pointer_speed = speed.value end),
         }
     end
+    buttons[#buttons + 1] = {{ text = _("Pointer speed (mouse mode)"), enabled = false }}
     buttons[#buttons + 1] = speed_buttons
 
     panel = ButtonDialog:new{

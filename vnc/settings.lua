@@ -11,6 +11,8 @@ dropped, and profiles that cannot be used are dropped - so a hand-edited file st
 @module vnc.settings
 ]]
 
+local _ = require("gettext")
+
 local LuaSettings = require("luasettings")
 local logger = require("logger")
 
@@ -236,11 +238,11 @@ end
 --- The picture-quality presets of the viewer's Display panel, each a set of the four profile
 --- fields above (false = the server's default). Documented in README.md.
 Settings.QUALITY_PRESETS = {
-    { id = "best", label = "Best", color_depth = 24, enable_tight = false, jpeg_quality = false,
+    { id = "best", label = _("Best"), color_depth = 24, enable_tight = false, jpeg_quality = false,
       compress_level = false },
-    { id = "balanced", label = "Balanced", color_depth = 16, enable_tight = true, jpeg_quality = 6,
+    { id = "balanced", label = _("Balanced"), color_depth = 16, enable_tight = true, jpeg_quality = 6,
       compress_level = 6 },
-    { id = "fast", label = "Fast", color_depth = 8, enable_tight = true, jpeg_quality = 3,
+    { id = "fast", label = _("Fast"), color_depth = 8, enable_tight = true, jpeg_quality = 3,
       compress_level = 9 },
 }
 
