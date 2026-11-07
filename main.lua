@@ -297,6 +297,16 @@ end
 
 --- Opens (or reopens) the viewer app for `session` and attaches it.
 function VNC:_open_app(session)
+    if self.app and self.app.session ~= session then
+        -- Another connection (e.g. picked in the viewer's own menu): the viewer is built around
+        -- one session, so it is replaced. The old connection stays up in the background, exactly
+        -- as after Leave.
+        local old = self.app.session
+        self.app:restore_rotation()
+        UIManager:close(self.app)
+        self.app = nil
+        old:detach()
+    end
     if not self.app then
         self.app = ViewerApp:new{ plugin = self, session = session }
         -- A full-screen widget must ask for the refresh it needs: `UIManager:show` only queues

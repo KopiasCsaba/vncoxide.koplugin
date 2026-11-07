@@ -2582,6 +2582,30 @@ check("session_teardown_drops_the_timing_state", function()
     assert_true(session.tm == nil, "a torn-down connection keeps no timing state")
 end)
 
+check("opening_another_connection_replaces_the_viewer", function()
+    -- a connection picked from the viewer's own menu must get a viewer of its own; the one shown
+    -- so far is detached (it stays connected, as after Leave)
+    local old_app, old_remote = new_app()
+    local other_app, other_remote = new_app()
+    local a, b = old_app.session, other_app.session
+    UIManager:close(other_app)
+    local log = {}
+    a.detach = function() log[#log + 1] = "detach a" end
+    b.attach = function(_, app) log[#log + 1] = "attach b"; b.attached_to = app end
+    plugin.app = old_app
+    plugin:_open_app(b)
+    local now = plugin.app
+    assert_true(now ~= old_app and now.session == b, "the viewer must be the new session's")
+    assert_true(now.remote == other_remote, "and show the new session's remote")
+    assert_true(table.concat(log, ",") == "detach a,attach b", "the old session detached first: " .. table.concat(log, ","))
+    assert_true(b.attached_to == now, "the new session is attached to the new viewer")
+    for _, w in ipairs(stack()) do assert_true(w ~= old_app, "the old viewer is still on the stack") end
+    now:onCloseWidget()
+    UIManager:close(now)
+    plugin.app = nil
+    old_remote:free(); other_remote:free()
+end)
+
 check("viewer_menu_disconnect_returns_to_the_list", function()
     local app, remote = new_app()
     local session = app.session
