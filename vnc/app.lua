@@ -25,7 +25,6 @@ local Device = require("device")
 local Event = require("ui/event")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
-local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
@@ -34,6 +33,7 @@ local time = require("ui/time")
 
 local Keyboard = require("vnc/keyboard")
 local Keysyms = require("vnc/keysyms")
+local Reconnect = require("vnc/reconnect")
 local Settings = require("vnc/settings")
 local Toolbar = require("vnc/toolbar")
 local Util = require("vnc/util")
@@ -83,6 +83,8 @@ function ViewerApp:init()
     -- shown on open, so it is discoverable; a swipe down in the top zone hides it
     self.toolbar = Toolbar:new{ app = self }
     self.toolbar_visible = true
+    -- the box that retries a dropped connection (see `on_session_error`)
+    self.reconnect = Reconnect.new(self)
 
     self:init_menu_zones()
     self:init_gestures()
@@ -505,6 +507,8 @@ end
 function ViewerApp:onCloseWidget()
     -- never leave our own menu orphaned on the window stack
     self:close_menu()
+    -- the reconnect loop lives with the open viewer only
+    self.reconnect:stop()
     self:close_display_panel(true)
     self:close_cheat_sheet(true)
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
@@ -1098,6 +1102,20 @@ function ViewerApp:onShow()
     -- A (re-)shown viewer is a wholesale change: whoever showed us may have passed no refreshtype
     -- (`UIManager:show` refreshes nothing by itself), and our first paint is the whole canvas.
     self:_wholesale_change()
+    -- reopened on a connection that dropped while we were away: offer a Retry, but retry nothing
+    -- by itself
+    if self.session:get_state() == "error" and not self.reconnect:is_running() then
+        self.reconnect:start{ auto = false }
+    end
+end
+
+--- Back from sleep with the reconnect box up: retry at once instead of waiting out the backoff.
+function ViewerApp:onResume()
+    local state = self.session:get_state()
+    if self.reconnect:is_running() and (state == "error" or state == "disconnected") then
+        self.reconnect:retry_now()
+    end
+    -- (nil: everyone else still hears of the resume)
 end
 
 --[[--
@@ -1552,14 +1570,20 @@ function ViewerApp:disconnect_session()
     self.plugin:show_connection_list()
 end
 
-function ViewerApp:on_session_error(err)
-    local message = self.session:get_state() == "error" and self.session:get_error() or err
-    UIManager:show(InfoMessage:new{
-        text = _("VNC connection lost: ") .. tostring(message),
-        timeout = 4,
-    })
-    -- it is above the framebuffer view now, and owns the screen until it goes away
-    self:_sync_keyboard_later()
+--[[--
+The connection dropped: nothing stays down or armed (a reconnect must not carry a half-finished
+action over to the new connection), our other popups go, and the reconnect box takes over. A failed
+attempt of the running loop lands here too, and changes nothing.
+]]
+function ViewerApp:on_session_error(_err)
+    if self.reconnect:is_running() then return end
+    self:_end_pointer_action()
+    self:_drop_deferred_click()
+    local armed = self:_armed_source()
+    if armed then armed:take_armed() end
+    self:close_cheat_sheet(true)
+    self:close_display_panel(true)
+    self.reconnect:start{ auto = true }
 end
 
 --- Leaves the app, keeping the connection alive.

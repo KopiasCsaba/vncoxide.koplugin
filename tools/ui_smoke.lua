@@ -590,7 +590,8 @@ local function new_app(plane_w, plane_h, opts)
     local ViewerApp = require("vnc/app")
     local Remote = require("vnc/framebuffer")
     local remote = Remote.new(plane_w or 400, plane_h or 300)
-    local sent = { pointer = {}, key = {}, input = 0, areas = {}, profile_updates = {}, full_updates = 0 }
+    local sent = { pointer = {}, key = {}, input = 0, areas = {}, profile_updates = {}, full_updates = 0,
+                   connects = {}, attaches = 0, hangups = 0 }
     local profile = { name = "test", pointer_mode = opts and opts.mode or "touch" }
     local app = ViewerApp:new{
         plugin = {
@@ -619,7 +620,13 @@ local function new_app(plane_w, plane_h, opts)
             note_input = function() sent.input = sent.input + 1 end,
             request_full_update = function() sent.full_updates = sent.full_updates + 1 end,
             set_view_area = function(_, rect) sent.areas[#sent.areas + 1] = rect end,
-            get_state = function() return "connected" end,
+            state = opts and opts.state or "connected",
+            get_state = function(s_) return s_.state end,
+            is_connected = function(s_) return s_.state == "connected" end,
+            connect = function(_, cb) sent.connects[#sent.connects + 1] = cb end,
+            attach = function() sent.attaches = sent.attaches + 1 end,
+            set_keep_wifi = function(_, on) sent.keep_wifi = on end,
+            hangup = function() sent.hangups = sent.hangups + 1 end,
             get_error = function() return nil end,
             get_profile = function() return profile end,
         },
@@ -4673,6 +4680,170 @@ check("toolbar_settles_a_pending_mouse_click_first", function()
     assert_true(scheduled_delay(app._deferred_click_task) == nil, "nothing left scheduled")
     app:close_menu()
     close_viewer(app, remote)
+end)
+
+-- ---------------------------------------------------------------- reconnect
+
+--- How many times `action` is in UIManager's task queue.
+local function scheduled_count(action)
+    local n = 0
+    for _, task in ipairs(UIManager._task_queue) do
+        if task.action == action then n = n + 1 end
+    end
+    return n
+end
+
+local function near(a, b) return a ~= nil and math.abs(a - b) < 0.5 end
+
+--- The latest connect callback the fake session got.
+local function last_connect(sent) return sent.connects[#sent.connects] end
+
+check("reconnect_backoff_and_success", function()
+    local app, remote, sent = new_app()
+    local r = app.reconnect
+    app.session.state = "error"
+    app:on_session_error("x")
+    assert_true(r:is_running() and top() == r.box, "the box is up")
+    assert_true(r.box.title == "Connection lost — reconnecting… (attempt 1, next in 2 s)",
+        "title: " .. tostring(r.box.title))
+    find_button(r.box, "Retry now"); find_button(r.box, "Close")
+    assert_true(near(scheduled_delay(r._retry_task), 2), "first attempt in 2 s")
+    -- a second drop while the loop runs starts no second one
+    app:on_session_error("x")
+    assert_true(scheduled_count(r._retry_task) == 1, "one scheduled attempt")
+    assert_true(count(function(w) return w == r.box or (w.buttons and w.title
+        and w.title:find("Connection lost", 1, true)) end) == 1, "one box: " .. stack_desc())
+    run_scheduled(r._retry_task)
+    assert_true(#sent.connects == 1 and sent.keep_wifi == true, "attempt 1 keeps Wi-Fi on")
+    assert_true(r.box.title == "Connection lost — reconnecting… (attempt 1)", "in flight: " .. r.box.title)
+    for i, want in ipairs({ 4, 8, 15, 30, 30 }) do
+        last_connect(sent)(false, "refused")
+        assert_true(near(scheduled_delay(r._retry_task), want),
+            string.format("after failure %d: %s, want %d", i, tostring(scheduled_delay(r._retry_task)), want))
+        assert_true(r.box.title == string.format("Connection lost — reconnecting… (attempt %d, next in %d s)",
+            i + 1, want), "title: " .. r.box.title)
+        run_scheduled(r._retry_task)
+        assert_true(#sent.connects == i + 1, "one connect per attempt")
+    end
+    last_connect(sent)(true)
+    assert_true(not r:is_running() and r.box == nil, "the box closed")
+    assert_true(count(function(w) return w.title and w.title:find("Connection lost", 1, true) end) == 0,
+        "no box on the stack: " .. stack_desc())
+    assert_true(sent.attaches == 1 and sent.keep_wifi == false, "attached, Wi-Fi duty handed back")
+    assert_true(scheduled_delay(r._retry_task) == nil, "nothing left scheduled")
+    close_viewer(app, remote)
+end)
+
+check("reconnect_close_and_back_disconnect_without_confirm", function()
+    local Key = require("device/key")
+    for _, how in ipairs({ "Back", "Close" }) do
+        local app, remote, sent = new_app()
+        local r = app.reconnect
+        local disconnected = 0
+        app.plugin.disconnect_session = function() disconnected = disconnected + 1 end
+        app.plugin.show_connection_list = function() end
+        app.session.state = "error"
+        app:on_session_error("x")
+        if how == "Back" then
+            UIManager:sendEvent(Event:new("KeyPress", Key:new("Back", {})))
+        else
+            find_button(r.box, "Close").callback()
+        end
+        assert_true(disconnected == 1, how .. ": disconnected, got " .. disconnected)
+        assert_true(not r:is_running() and scheduled_delay(r._retry_task) == nil, how .. ": loop stopped")
+        assert_true(sent.keep_wifi == false, how .. ": Wi-Fi duty handed back")
+        assert_true(count(function(w) return w.ok_callback end) == 0, how .. ": no confirmation: " .. stack_desc())
+        close_viewer(app, remote)
+    end
+end)
+
+check("reopening_on_an_error_session_waits_for_retry", function()
+    local app, remote, sent = new_app(400, 300, { state = "error" })
+    local r = app.reconnect
+    app:onShow()
+    assert_true(r:is_running() and r.box.title == "Connection lost", "title: " .. tostring(r.box and r.box.title))
+    assert_true(count(function(w) return w == r.box end) == 1, "one box: " .. stack_desc())
+    find_button(r.box, "Close")
+    assert_true(scheduled_delay(r._retry_task) == nil and #sent.connects == 0, "no automatic retry")
+    find_button(r.box, "Retry").callback()
+    assert_true(#sent.connects == 1, "Retry connects now")
+    last_connect(sent)(false, "refused")
+    assert_true(near(scheduled_delay(r._retry_task), 4), "and the loop goes on by itself")
+    find_button(r.box, "Retry now")
+    close_viewer(app, remote)
+end)
+
+check("resume_retries_at_once_and_leaving_stops_the_loop", function()
+    local app, remote, sent = new_app()
+    local r = app.reconnect
+    app.session.state = "error"
+    app:on_session_error("x")
+    run_scheduled(r._retry_task); last_connect(sent)(false)
+    run_scheduled(r._retry_task); last_connect(sent)(false)
+    assert_true(near(scheduled_delay(r._retry_task), 8), "waiting 8 s")
+    assert_true(app:onResume() == nil, "Resume is not consumed")
+    assert_true(#sent.connects == 3 and scheduled_delay(r._retry_task) == nil, "a connect now, timer cancelled")
+    -- leaving with that attempt still on its way gives it up
+    app.session.state = "connecting"
+    app:onCloseWidget()
+    assert_true(scheduled_count(r._retry_task) == 0 and not r:is_running(), "no timer survives the viewer")
+    assert_true(sent.keep_wifi == false and sent.hangups == 1, "Wi-Fi duty handed back, the attempt hung up")
+    last_connect(sent)(true)
+    assert_true(sent.attaches == 0 and not r:is_running(), "its late callback is ignored")
+    remote:free()
+end)
+
+check("a_drop_mid_drag_ends_it_and_reconnect_sends_nothing_stale", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "keyboard")
+    app:set_toolbar_visible(false)
+    local strip = app.key_strip
+    local log = wire_log(app)
+    touch(strip, "mod:Ctrl")
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
+    touch(strip, "mod:Shift")
+    assert_true(app:has_pointer_action() and strip:modifier_state("Shift") == "armed", "drag held, Shift armed")
+    app:open_display_panel()
+    app:show_cheat_sheet()
+    app.session.state = "error"
+    app:on_session_error("x")
+    assert_true(not app:has_pointer_action(), "the drag ended")
+    assert_true(not strip:has_armed(), "nothing armed")
+    assert_true(app.cheat_sheet == nil and app.display_panel == nil, "the other popups closed")
+    UIManager:_checkTasks()                    -- the keyboard makes way for the box
+    assert_true(not app.vk_visible and top() == app.reconnect.box, "the box is on top: " .. stack_desc())
+    log()
+    run_scheduled(app.reconnect._retry_task)
+    last_connect(sent)(true)
+    assert_true(log() == "", "nothing stale sent after the reconnect")
+    close_viewer(app, remote)
+end)
+
+check("show_opens_the_viewer_on_a_single_errored_session", function()
+    local tmp_app, remote, sent = new_app()
+    local session = tmp_app.session
+    close_viewer(tmp_app, { free = function() end })
+    UIManager:close(tmp_app)
+    local saved = plugin.sessions
+    local ok, err = pcall(function()
+        session.state = "error"
+        plugin.sessions = { test = session }
+        plugin:show()
+        assert_true(plugin.app ~= nil and plugin.app.session == session, "the viewer opened")
+        assert_true(sent.attaches == 0, "an errored session is not attached")
+        assert_true(plugin.app.reconnect:is_running() and plugin.app.reconnect.box.title == "Connection lost",
+            "the manual box is up")
+        plugin:_close_app_if(session)
+        session.state = "connected"
+        plugin:show()
+        assert_true(plugin.app ~= nil and sent.attaches == 1, "a connected session is attached")
+        assert_true(not plugin.app.reconnect:is_running(), "no box")
+    end)
+    if plugin.app then plugin:_close_app_if(plugin.app.session) end
+    plugin.sessions = saved
+    remote:free()
+    assert_true(ok, tostring(err))
 end)
 
 if failures > 0 then

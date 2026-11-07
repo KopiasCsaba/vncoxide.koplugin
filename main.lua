@@ -261,7 +261,8 @@ function VNC:show(profile_name)
     for name in pairs(self.sessions) do names[#names + 1] = name end
     if #names == 1 then
         local session = self.sessions[names[1]]
-        if session:is_connected() then
+        -- (one that dropped while the viewer was away opens on the reconnect box)
+        if session:is_connected() or session:get_state() == "error" then
             self:_open_app(session)
             return
         end
@@ -318,7 +319,8 @@ function VNC:_open_app(session)
     else
         UIManager:show(self.app, "full")
     end
-    session:attach(self.app)
+    -- a dropped connection is attached by the reconnect box, once it is back
+    if session:is_connected() then session:attach(self.app) end
 end
 
 --[[--
