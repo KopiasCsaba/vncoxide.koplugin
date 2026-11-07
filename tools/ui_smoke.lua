@@ -1613,6 +1613,24 @@ check("page_buttons_wheel_clamps_to_a_shrunk_remote", function()
     end
 end)
 
+--- A reconnect (and a DesktopSize that changes nothing) reports the same size again: that is not a
+--- new desktop, so a numeric zoom and the place it shows stay, and the plane is not reallocated.
+check("remote_resize_to_the_same_size_keeps_the_view", function()
+    local Remote = require("vnc/framebuffer")
+    local remote = Remote.new(800, 600)
+    remote:fit_view(400, 300)
+    remote:set_scale(2)
+    remote:pan_by(-100, -50)
+    local scale, vx, vy, plane = remote:get_scale(), remote.view_x, remote.view_y, remote:get_plane()
+    remote:resize(800, 600)
+    assert_true(remote:get_scale() == scale, "the zoom must stay, got " .. remote:get_scale())
+    assert_true(remote.view_x == vx and remote.view_y == vy, "and so must the view")
+    assert_true(remote:get_plane() == plane, "the plane is not reallocated")
+    remote:resize(400, 300)
+    assert_true(remote:get_plane() ~= plane and remote:get_size() == 400, "a real resize still reallocates")
+    remote:free()
+end)
+
 check("page_buttons_send_keys_in_keys_mode", function()
     local Key = require("device/key")
     local app, _, sent = new_app()

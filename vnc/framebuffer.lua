@@ -130,8 +130,17 @@ end
 
 --[[--
 Replaces the plane with one of the new size and re-fits the view.
+
+The same size again (a reconnect, a DesktopSize that changes nothing) is not a new desktop: the
+plane and the view - a numeric zoom and where it looks - are kept, the view only re-clamped, and
+everything is marked stale for the full update that follows.
 ]]
 function Remote:resize(w, h)
+    if w == self.w and h == self.h and self.plane then
+        self:mark_dirty()
+        if self.cw and self.ch and self.cw > 0 and self.ch > 0 then self:_clamp() end
+        return
+    end
     self.plane:free()
     self.plane = BB.new(w, h, BB.TYPE_BBRGB24)
     self.w, self.h = w, h
