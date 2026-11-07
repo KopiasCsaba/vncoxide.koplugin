@@ -295,4 +295,17 @@ function Util.timing_enabled()
     return require("dbg").is_on == true
 end
 
+--- Gives `widget` the tap interval KOReader's on-screen keyboard uses (the "tap interval on
+--- keyboard" setting, 0 by default) instead of the global `ges_tap_interval_ms`: with that one set,
+--- the gesture detector drops a second tap that follows the first within the interval as a bounce,
+--- and a quick double tap on the canvas is exactly that. UIManager applies a widget's
+--- `tap_interval_override` while it is the topmost one, so every widget the viewer keeps up over
+--- the live view carries it. Read each time, so a settings change applies from the next show.
+--- @return the widget
+function Util.keyboard_tap_interval(widget)
+    widget.tap_interval_override = require("ui/time").ms(
+        G_reader_settings:readSetting("ges_tap_interval_on_keyboard_ms", 0))
+    return widget
+end
+
 return Util

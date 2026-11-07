@@ -273,7 +273,7 @@ start right below it instead of covering it. (The refresh region is the frame's 
 is set where the frame is drawn, so it follows the shift.)
 ]]
 function ViewerApp:show_toast(text, timeout)
-    local toast = Notification:new{ text = text, timeout = timeout }
+    local toast = Util.keyboard_tap_interval(Notification:new{ text = text, timeout = timeout })
     if self.toolbar_visible and self.toolbar then
         local d = self.toolbar.dimen
         local span = toast[1][1]   -- the leading RectSpan of the toast's VerticalGroup
@@ -1263,6 +1263,8 @@ function ViewerApp:_apply_keep_screen_on(closing)
 end
 
 function ViewerApp:onShow()
+    -- UIManager reads the override right after this event
+    Util.keyboard_tap_interval(self)
     self:_apply_keep_screen_on()
     self:_ensure_text_input()
     self:evaluate_keyboard()
@@ -1734,7 +1736,7 @@ function ViewerApp:open_key_panel()
     if strip then
         for name, state in pairs(strip.mods) do mods[name] = state end
     end
-    self.key_panel = require("vnc/keypanel"):new{ app = self, mods = mods }
+    self.key_panel = Util.keyboard_tap_interval(require("vnc/keypanel"):new{ app = self, mods = mods })
     UIManager:show(self.key_panel, "ui")
     self:_bottom_cover_changed()
     return self.key_panel
@@ -1760,11 +1762,11 @@ end
 --- Shows the key strip on top of the keyboard (with it, in `evaluate_keyboard`).
 function ViewerApp:_show_key_strip()
     if self.key_strip then return end
-    self.key_strip = require("vnc/keypanel"):new{
+    self.key_strip = Util.keyboard_tap_interval(require("vnc/keypanel"):new{
         app = self,
         variant = "strip",
         bottom_offset = self.vk:getSize().h or 0,
-    }
+    })
     UIManager:show(self.key_strip, "ui", self.key_strip.dimen)
 end
 
