@@ -43,6 +43,9 @@ Server.__index = Server
 -- moving mouse (dozens of motion messages per second) could never keep up. 10 ms gives ~100
 -- messages per second, and the short socket timeout keeps an idle poll cheap.
 Server.POLL_INTERVAL = 0.01          -- seconds between socket services
+--- The poll interval while nobody is connected: all an idle poll does is look for a connection, so
+--- a connect waits for this long at most, and an idle e-reader is not woken 100 times a second.
+Server.IDLE_POLL_INTERVAL = 0.5
 -- Client sockets use a short *blocking* timeout rather than a non-blocking zero one: LuaSocket's
 -- receive(n) demands all n bytes and returns nil (with "timeout") even when some of them are
 -- already waiting, so a zero timeout would never read anything. Reads only happen while the
@@ -973,10 +976,74 @@ function Server:_answer_held(client)
     end
 end
 
-function Server:_poll()
-    self._poll_task_scheduled = false
-    if not self.running then return end
+--- One poll tick's work for one client: its messages, then whatever the driver answers or pushes
+--- for it, its buffered contact and the stall watchdog. Called under a pcall (c.f., Server:_poll).
+function Server:_tick_client(client)
+    self:_service_client(client)
+    -- Continuous Updates: what a client asked to be kept up to date without asking has to be
+    -- pushed to it, and flushed here so it leaves in this tick. Deliberately after the
+    -- client's own messages have been serviced: a request it did send is answered first, and
+    -- the two paths share `sent_gen`, so the same change never goes out twice. A request the
+    -- client left *held* is answered the same way, and first, since it is the older claim on
+    -- whatever changed.
+    if not client.dropped then
+        self:_answer_held(client)
+        self:_push_continuous(client)
+        self:_flush_client(client)
+    end
+    -- A press whose client has not released or moved yet is a long press once a full hold
+    -- interval has passed; that is decided here, on the poll, because while the contact is
+    -- buffered no core timer keeps this task from running (c.f., Server:_on_pointer). The
+    -- buffer lives on the connection's *input state* - the bag the protocol hands to the
+    -- pointer callback - not on this bookkeeping record.
+    if not client.dropped then
+        self:_flush_pointer(client.server.client)
+    end
+    -- A message that is *partially* received and then goes quiet means we are waiting for
+    -- bytes that are never coming (a length we mis-read, so every later message is being
+    -- swallowed as its payload). Waiting for a client's *next* message is normal and must not
+    -- count, hence the `rx_len > 0` requirement.
+    if not client.dropped and client.state == "reading" and client.pending
+            and client.rx_len > 0 and client.rx_len < client.pending then
+        client.pending_since = client.pending_since or socket.gettime()
+        if socket.gettime() - client.pending_since >= Server.STALL_TIMEOUT then
+            self:_drop_client(client, string.format(
+                "stuck on a client message: %d of %d bytes arrived in %ds",
+                client.rx_len, client.pending, Server.STALL_TIMEOUT))
+            return
+        end
+    else
+        client.pending_since = nil
+    end
+end
 
+--[[--
+The poll task. UIManager runs its tasks unprotected, so everything the poll does - including the
+input it injects, whose widget handlers run inside it - is under a pcall here: an error must
+neither take KOReader down nor stop the poll from being rescheduled. A failure while serving one
+client drops that client (c.f., @{Server:_tick_client}); anything else is logged, and the poll goes
+on either way.
+]]
+function Server:_poll()
+    if not self.running then return end
+    local ok, err = pcall(self._poll_once, self)
+    if not ok then logger.err("vnc: server poll failed:", tostring(err)) end
+    if self.running then
+        UIManager:scheduleIn(self:_next_poll_interval(), self._poll_task)
+    end
+end
+
+--- @{Server.POLL_INTERVAL} while anybody is connected (or a pointer injected through
+--- @{Server:inject_pointer} is waiting to be judged a hold), @{Server.IDLE_POLL_INTERVAL} otherwise:
+--- with nobody connected the poll only has to notice a connection.
+function Server:_next_poll_interval()
+    if next(self.clients) ~= nil or self._inject_client.buffered then
+        return Server.POLL_INTERVAL
+    end
+    return Server.IDLE_POLL_INTERVAL
+end
+
+function Server:_poll_once()
     -- The conversions the clients served in this tick may share (c.f., @{Server:_encode}).
     self._conv_cache = {}
 
@@ -1001,47 +1068,11 @@ function Server:_poll()
     end
 
     for _, client in pairs(self.clients) do
-        local ok, err = pcall(self._service_client, self, client)
+        local ok, err = pcall(self._tick_client, self, client)
         if not ok then
             logger.err("vnc: servicing a client failed:", tostring(err))
             self:_drop_client(client, tostring(err))
         end
-        -- Continuous Updates: what a client asked to be kept up to date without asking has to be
-        -- pushed to it, and flushed here so it leaves in this tick. Deliberately after the
-        -- client's own messages have been serviced: a request it did send is answered first, and
-        -- the two paths share `sent_gen`, so the same change never goes out twice. A request the
-        -- client left *held* is answered the same way, and first, since it is the older claim on
-        -- whatever changed.
-        if not client.dropped then
-            self:_answer_held(client)
-            self:_push_continuous(client)
-            self:_flush_client(client)
-        end
-        -- A press whose client has not released or moved yet is a long press once a full hold
-        -- interval has passed; that is decided here, on the poll, because while the contact is
-        -- buffered no core timer keeps this task from running (c.f., Server:_on_pointer). The
-        -- buffer lives on the connection's *input state* - the bag the protocol hands to the
-        -- pointer callback - not on this bookkeeping record.
-        if not client.dropped then
-            self:_flush_pointer(client.server.client)
-        end
-        -- A message that is *partially* received and then goes quiet means we are waiting for
-        -- bytes that are never coming (a length we mis-read, so every later message is being
-        -- swallowed as its payload). Waiting for a client's *next* message is normal and must not
-        -- count, hence the `rx_len > 0` requirement.
-        if not client.dropped and client.state == "reading" and client.pending
-                and client.rx_len > 0 and client.rx_len < client.pending then
-            client.pending_since = client.pending_since or socket.gettime()
-            if socket.gettime() - client.pending_since >= Server.STALL_TIMEOUT then
-                self:_drop_client(client, string.format(
-                    "stuck on a client message: %d of %d bytes arrived in %ds",
-                    client.rx_len, client.pending, Server.STALL_TIMEOUT))
-                goto continue_client
-            end
-        else
-            client.pending_since = nil
-        end
-        ::continue_client::
     end
 
     -- The state bag Server:inject_pointer drives (KOReader's HTTP inspector, the tests) goes
@@ -1051,9 +1082,6 @@ function Server:_poll()
     -- The dirty list is deliberately *not* cleared here: each client remembers the generation it
     -- was last served (`sent_gen`), and the list's eviction age tells us when a client has to be
     -- given a full frame instead.
-    if self.running then
-        UIManager:scheduleIn(Server.POLL_INTERVAL, self._poll_task)
-    end
 end
 
 -- ---------------------------------------------------------------- client input

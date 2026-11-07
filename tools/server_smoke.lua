@@ -2888,6 +2888,68 @@ check("a_dropped_client_lifts_its_contact_and_releases_its_keys", function()
     assert_true(state2.buffered == nil, "... and its buffer is gone")
 end)
 
+--- When the poll task is next due, or nil when it is not scheduled.
+local function poll_due(server)
+    for _, task in ipairs(UIManager._task_queue) do
+        if task.action == server._poll_task then return task.time end
+    end
+end
+
+--- The poll is a UIManager task, and those run unprotected: anything that raises in it - a
+--- widget's handler under an injected event included - would take KOReader down, and a poll that
+--- raised would never be rescheduled. A failure for one client drops that client; the poll goes on.
+check("a_failure_in_the_poll_drops_the_client_and_keeps_polling", function()
+    local Server = require("vnc/server")
+    local server = Server.new{ settings = { ip = "127.0.0.1", port = 0, password = "" } }
+    assert_true(server:start(), "the server must start: " .. tostring(server.last_error))
+    local ok, err = pcall(function()
+        local record = { key = "fake", server = { client = {} }, state = "reading", rx_len = 0 }
+        server.clients.fake = record
+        server._service_client = function() end
+        server._answer_held = function() error("boom in a handler") end
+        UIManager:unschedule(server._poll_task)
+        local polled, perr = pcall(server._poll, server)
+        assert_true(polled, "the poll must not raise: " .. tostring(perr))
+        assert_true(record.dropped, "the client whose servicing failed must be dropped")
+        assert_true(poll_due(server) ~= nil, "the poll must be rescheduled")
+        -- and a failure outside any client (the listener, say) still reschedules
+        server._accept = function() error("boom in accept") end
+        UIManager:unschedule(server._poll_task)
+        polled, perr = pcall(server._poll, server)
+        assert_true(polled, "the poll must not raise: " .. tostring(perr))
+        assert_true(poll_due(server) ~= nil, "the poll must be rescheduled after a failed accept")
+    end)
+    server:stop()
+    if not ok then error(err, 0) end
+end)
+
+--- With nobody connected the poll only has to notice a connection, so it runs slowly - a 100 Hz
+--- timer on an idle e-reader is a battery drain; once a client is in, it is back at the fast rate.
+check("an_idle_server_polls_slowly", function()
+    local Server = require("vnc/server")
+    local server = Server.new{ settings = { ip = "127.0.0.1", port = 0, password = "" } }
+    assert_true(server:start(), "the server must start: " .. tostring(server.last_error))
+    local ok, err = pcall(function()
+        UIManager:unschedule(server._poll_task)
+        local now = require("ui/time").now()
+        server:_poll()
+        local due = poll_due(server)
+        assert_true(due and due - now >= require("ui/time").s(Server.IDLE_POLL_INTERVAL or 1) - require("ui/time").s(0.05),
+            "with no clients the next poll must be an idle interval away")
+        server.clients.fake = { key = "fake", server = { client = {} }, state = "reading", rx_len = 0 }
+        server._tick_client = function() end
+        UIManager:unschedule(server._poll_task)
+        now = require("ui/time").now()
+        server:_poll()
+        due = poll_due(server)
+        assert_true(due and due - now <= require("ui/time").s(Server.POLL_INTERVAL + 0.05),
+            "with a client the poll must be back at the fast rate")
+        server.clients.fake = nil
+    end)
+    server:stop()
+    if not ok then error(err, 0) end
+end)
+
 check("a_client_click_over_the_wire_reaches_a_widget", function()
     -- The wire end of the chain: a PointerEvent that arrives over the socket, through the
     -- protocol's per-client state, must make a *real widget* on the window stack react.
