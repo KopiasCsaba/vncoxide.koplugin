@@ -258,7 +258,8 @@ local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
                 local g00, g10 = ga[a], gb[a]
                 local top = g00 * 256 + (ga[b] - g00) * wx
                 local bot = g10 * 256 + (gb[b] - g10) * wx
-                out[x] = floor((top * 256 + (bot - top) * wy) / 16777216)
+                -- a non-negative double stored into a uint8_t is truncated, i.e. floored
+                out[x] = (top * 256 + (bot - top) * wy) / 16777216
             end
         end
     else
@@ -271,7 +272,7 @@ local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
                     local p00, p10 = r0[a + k], r1[a + k]
                     local top = p00 * 256 + (r0[b + k] - p00) * wx
                     local bot = p10 * 256 + (r1[b + k] - p10) * wx
-                    out[d + k] = floor((top * 256 + (bot - top) * wy) / 65536)
+                    out[d + k] = (top * 256 + (bot - top) * wy) / 65536
                 end
                 if bpp == 4 then out[d + 3] = 255 end
             end
