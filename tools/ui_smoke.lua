@@ -4831,17 +4831,35 @@ check("mouse_click_waits_for_a_finger_down_only_up_to_the_cap", function()
     local wire = wire_log(app)
     local c = app.canvas
     local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
-    local cap = app.MOUSE_CLICK_WAIT_CAP
-    assert_true(type(cap) == "number" and cap >= 1 and cap <= 2, "a cap of about 1.5 s: " .. tostring(cap))
-    app.MOUSE_CLICK_WAIT_CAP = 0
-    local lift = finger_down(P)
+    -- the cap leaves room for a finger that lands as late as the click falls due to become a long
+    -- press: double-tap interval + hold interval + a margin, after the tap
+    local gd = Device.input.gesture_detector
+    local saved = rawget(gd, "ges_hold_interval")
     local ok, err = pcall(function()
+        for _, hold_s in ipairs{ 0.5, 2 } do
+            gd.ges_hold_interval = time.s(hold_s)
+            local cap = app:mouse_click_wait_cap()
+            local want = app.mouse_click_delay() + hold_s
+            assert_true(cap > want and cap <= want + 0.5, string.format("hold %.1f s: cap %.2f vs %.2f", hold_s, cap, want))
+        end
+        gd.ges_hold_interval = time.s(2)
+        local before = time.now()
+        dispatch_gesture{ ges = "tap", pos = P }
+        local left = time.to_s(app._deferred_click.deadline - before)
+        assert_true(left > app.mouse_click_delay() + 2, "the deadline follows the hold interval: " .. left)
+        app:_drop_deferred_click()
+    end)
+    gd.ges_hold_interval = saved
+    if not ok then error(err, 0) end
+    app.mouse_click_wait_cap = function() return 0 end
+    local lift = finger_down(P)
+    ok, err = pcall(function()
         dispatch_gesture{ ges = "tap", pos = P }
         run_scheduled(app._deferred_click_task)
         assert_true(wire() == "p0,p1,p0", "past the cap the click goes")
         assert_true(app._deferred_click == nil and scheduled_delay(app._deferred_click_task) == nil)
     end)
-    app.MOUSE_CLICK_WAIT_CAP = nil
+    app.mouse_click_wait_cap = nil
     lift()
     if not ok then error(err, 0) end
     close_viewer(app, remote)
@@ -5104,6 +5122,115 @@ check("a_canvas_drag_ending_over_a_keyboard_key_is_ours", function()
         close_viewer(app, remote)
     end
 end)
+check("a_hold_drag_turning_two_finger_ends_cleanly", function()
+    -- GestureDetector renames a two-finger pan seen in hold state to hold_pan (with no relative
+    -- for an inward/outward pan), and a hold whose contact gets a buddy ends as a
+    -- two_finger_hold(_pan)_release or is voided by a two_finger_hold, never a hold_release
+    local enders = {
+        { ges = "hold_pan", span = 80 },                 -- an inward_pan renamed: no relative
+        { ges = "two_finger_hold" },
+        { ges = "two_finger_hold_pan", relative = { x = 30, y = 0 } },
+        { ges = "two_finger_hold_release" },
+        { ges = "two_finger_hold_pan_release" },
+    }
+    for _, ender in ipairs(enders) do
+        for _, kind in ipairs{ "hold-drag", "right" } do
+            local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+            local wire = wire_log(app)
+            local c = app.canvas
+            local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+            if kind == "hold-drag" then dispatch_gesture{ ges = "tap", pos = P } end
+            dispatch_gesture{ ges = "hold", pos = P }
+            if kind == "hold-drag" then
+                dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 120, y = P.y + 40 }, relative = { x = 120, y = 40 } }
+            end
+            local before = last_pointer(sent)
+            wire()
+            local ev = { pos = Geom:new{ x = P.x + 60, y = P.y } }
+            for k, v in pairs(ender) do ev[k] = v end
+            dispatch_gesture(ev)
+            local what = kind .. " / " .. ender.ges .. (ender.span and " (no relative)" or "")
+            local got = wire()
+            assert_true(got == "p0", what .. ": one release, no move: " .. got)
+            local e = last_pointer(sent)
+            assert_true(e.x == before.x and e.y == before.y, what .. ": let go at the pointer")
+            assert_true(not app:has_pointer_action(), what .. ": nothing held")
+            dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 10, y = P.y }, relative = { x = 10, y = 0 } }
+            dispatch_gesture{ ges = "hold_release", pos = P }
+            assert_true(wire() == "", what .. ": the rest of it sends nothing")
+            close_viewer(app, remote)
+        end
+    end
+end)
+
+check("a_hold_drag_under_a_foreign_popup_ends", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local wire = wire_log(app)
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+    dispatch_gesture{ ges = "tap", pos = P }
+    dispatch_gesture{ ges = "hold", pos = P }
+    wire()
+    local InfoMessage = require("ui/widget/infomessage")
+    local popup = InfoMessage:new{ text = "server says hi" }
+    UIManager:show(popup)
+    local x, y = last_pointer(sent).x, last_pointer(sent).y
+    dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+    local got = wire()
+    assert_true(got == "p0" and last_pointer(sent).x == x and last_pointer(sent).y == y,
+        "ended at the pointer, not dragged blind: " .. got)
+    assert_true(not app:has_pointer_action())
+    UIManager:close(popup)
+    close_viewer(app, remote)
+end)
+
+check("the_release_watch_follows_the_finger_that_started_it", function()
+    local gd = Device.input.gesture_detector
+    for _, case in ipairs{ "other finger", "same slot, new contact" } do
+        local app, remote, sent = new_app(400, 300, { mode = "touch" })
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+        local lift = finger_down(P, 3)
+        dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+        assert_true(scheduled_delay(app._release_watch_task) ~= nil, case .. ": watched")
+        local lift2
+        if case == "other finger" then
+            -- another finger lands (on a popup that ate our release) and stays down
+            lift(); lift2 = finger_down(Geom:new{ x = c.x + 300, y = c.y + 200 }, 4)
+        else
+            lift(); lift2 = finger_down(P, 3)
+        end
+        run_scheduled(app._release_watch_task)
+        assert_true(last_pointer(sent).mask == 0 and not app:has_pointer_action(),
+            case .. ": the drag's own finger is gone: let go")
+        lift2()
+        close_viewer(app, remote)
+    end
+end)
+
+check("a_new_pan_never_continues_a_stale_drag", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+        if mode == "mouse" then dispatch_gesture{ ges = "tap", pos = P } end
+        dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+        assert_true(app:has_pointer_action(), mode .. ": dragging")
+        wire() -- its release never comes
+        local Q = Geom:new{ x = c.x + 200, y = c.y + 150 }
+        dispatch_gesture{ ges = "pan", pos = Geom:new{ x = Q.x + 30, y = Q.y }, relative = { x = 30, y = 0 } }
+        local got = wire()
+        local want = mode == "mouse" and "p0,p0" or "p0,p1,p1"
+        assert_true(got == want, mode .. ": the old drag is let go first, then a new gesture: " .. got)
+        if mode == "mouse" then
+            assert_true(app._drag_active == nil and app._mouse_moving, "mouse: a pointer move now, no button")
+        end
+        dispatch_gesture{ ges = "pan_release", pos = Q }
+        close_viewer(app, remote)
+    end
+end)
+
 check("touch_double_tap_clicks_at_one_spot", function()
     local time = require("ui/time")
     local app, remote, sent = new_app()

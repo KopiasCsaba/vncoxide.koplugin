@@ -100,13 +100,14 @@ x11vnc, `-cursor arrow`); the viewer draws none. A tap's click waits out KOReade
 interval before it is sent, so that a tap followed by a drag or a long press near it can become a
 drag with the left button instead of a click and a press; two quick taps still give two clicks. A
 finger that comes down near the tap and is still down when that interval runs out keeps the click
-waiting (up to 1.5 seconds after the tap) until it turns into a tap, a drag or a long press, so a
-slow second touch still drags. Touch mode clicks are sent at once. Three-finger
+waiting (at most the double-tap interval plus KOReader's long-press interval plus a quarter second
+after the tap) until it turns into a tap, a drag or a long press, so a slow second touch still
+drags. A second finger joining a long press or a tap-then-hold drag lets go of its button. Touch mode clicks are sent at once. Three-finger
 gestures are not used.
 
 The end of a drag or long press is the viewer's wherever the finger lifts: over the toolbar, the
 **Send keys** panel or the on-screen keyboard (no key is typed then). Should that end still not
-arrive, the button is let go as soon as KOReader sees no finger on the screen any more, and opening
+arrive, the button is let go as soon as the finger that started it is off the screen, and opening
 the menu, the display panel or the help ends a drag first. Every button press and release sent is
 written to KOReader's debug log (`vnc-pointer: <buttons> <x> <y> <reason>`).
 
