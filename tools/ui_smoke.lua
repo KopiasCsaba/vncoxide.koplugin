@@ -859,112 +859,8 @@ check("menu_opens_on_swipe_only", function()
     remote:free()
 end)
 
-check("keyboard_shows_on_a_swipe_up_from_the_bottom", function()
-    local app, remote, sent = new_app()
-    -- the same quick upward swipe the menu uses at the top, started in the canvas' bottom strip
-    local function bottom()
-        local canvas = app:canvas_geom()
-        return Geom:new{ x = math.floor(canvas.x + canvas.w / 2), y = canvas.y + canvas.h - 2 }
-    end
-    local function middle()
-        local canvas = app:canvas_geom()
-        return Geom:new{ x = math.floor(canvas.x + canvas.w / 2), y = math.floor(canvas.y + canvas.h / 2) }
-    end
 
-    dispatch_gesture{ ges = "swipe", direction = "north", pos = bottom() }
-    assert_true(app.vk_visible, "a swipe up from the bottom edge must show the keyboard")
-    assert_true(app:is_keyboard_wanted(), "and it must be remembered as the user's wish")
 
-    app:set_keyboard_visible(false)
-    assert_true(not app.vk_visible, "the keyboard must hide again for the next case")
-
-    -- the same swipe higher up is an ordinary canvas gesture: the strip is not the whole screen
-    dispatch_gesture{ ges = "swipe", direction = "north", pos = middle() }
-    assert_true(not app.vk_visible, "a swipe up away from the bottom strip must not show the keyboard")
-
-    -- and only an upward swipe is the keyboard gesture
-    dispatch_gesture{ ges = "swipe", direction = "south", pos = bottom() }
-    assert_true(not app.vk_visible, "a swipe down in the bottom strip must not show the keyboard")
-    dispatch_gesture{ ges = "swipe", direction = "east", pos = bottom() }
-    assert_true(not app.vk_visible, "nor must a horizontal one")
-
-    -- the strip stays a live part of the canvas: a tap there is still a click on the remote
-    sent.pointer = {}
-    dispatch_gesture{ ges = "tap", pos = bottom() }
-    assert_true(#sent.pointer == 3,
-        "a tap in the bottom strip must click the remote, got " .. #sent.pointer .. " pointer events")
-    assert_true(not app.vk_visible, "and must not show the keyboard")
-
-    -- the strip follows a rotation (it is recomputed from the canvas, not cached)
-    local mode = Screen:getRotationMode()
-    app:set_rotation_mode((mode + 1) % 4)
-    dispatch_gesture{ ges = "swipe", direction = "north", pos = bottom() }
-    assert_true(app.vk_visible, "the gesture must still work after a rotation")
-
-    -- ...and a keyboard height change, which reflows the canvas under the strip
-    app:on_keyboard_height_changed()
-    app:set_keyboard_visible(false)
-    dispatch_gesture{ ges = "swipe", direction = "north", pos = bottom() }
-    assert_true(app.vk_visible, "and after the keyboard height changed")
-
-    app:set_rotation_mode(mode)
-    app:set_keyboard_visible(false)
-    app:onCloseWidget()
-    remote:free()
-end)
-
-check("keyboard_swipe_honours_the_always_visible_setting", function()
-    local app, remote = new_app()
-    app.settings.keyboard_always_visible = true
-    app:set_keyboard_visible(true)
-    assert_true(app.vk_visible, "with the setting on the keyboard is up")
-
-    -- the showing swipe cannot make it "more visible", and must not touch the setting
-    local canvas = app:canvas_geom()
-    dispatch_gesture{ ges = "swipe", direction = "north",
-        pos = Geom:new{ x = math.floor(canvas.x + canvas.w / 2), y = canvas.y + canvas.h - 2 } }
-    assert_true(app.vk_visible and app:is_keyboard_wanted(),
-        "a swipe up must leave the always-visible keyboard up")
-    assert_true(app.settings.keyboard_always_visible, "and must not change the setting")
-
-    -- and the hiding swipe must lose against it
-    canvas = app:canvas_geom()
-    dispatch_gesture{ ges = "swipe", direction = "south",
-        pos = Geom:new{ x = math.floor(canvas.x + canvas.w / 2), y = math.floor(canvas.y + canvas.h / 2) } }
-    assert_true(app.vk_visible, "the setting wins over a swipe that would hide the keyboard")
-    assert_true(app.settings.keyboard_always_visible, "and it stays on")
-
-    -- the menu's toggle is what turns it off, exactly as before
-    app:toggle_keyboard()
-    assert_true(not app.settings.keyboard_always_visible and not app.vk_visible,
-        "toggling from the menu must still turn it off")
-
-    app:onCloseWidget()
-    remote:free()
-end)
-
-check("keyboard_hides_on_a_swipe_down_above_it", function()
-    local app, remote = new_app()
-    app:set_keyboard_visible(true)
-    assert_true(app.vk_visible, "the keyboard must be up")
-
-    -- the canvas above the keyboard is the space a hiding swipe can start in
-    local canvas = app:canvas_geom()
-    dispatch_gesture{ ges = "swipe", direction = "south",
-        pos = Geom:new{ x = math.floor(canvas.x + canvas.w / 2), y = math.floor(canvas.y + canvas.h / 2) } }
-    assert_true(not app.vk_visible, "a swipe down above the keyboard must hide it")
-    assert_true(not app:is_keyboard_wanted(), "and the wish must follow it")
-
-    app:set_keyboard_visible(true)
-    canvas = app:canvas_geom()
-    dispatch_gesture{ ges = "swipe", direction = "north",
-        pos = Geom:new{ x = math.floor(canvas.x + canvas.w / 2), y = math.floor(canvas.y + canvas.h / 2) } }
-    assert_true(app.vk_visible, "only a downward swipe hides the keyboard")
-
-    app:set_keyboard_visible(false)
-    app:onCloseWidget()
-    remote:free()
-end)
 
 check("server_section_is_in_the_network_menu", function()
     -- The plugin's own menu table, as `addToMainMenu` builds it.
@@ -3634,7 +3530,7 @@ check("key_panel_two_finger_gesture_ends_a_drag_and_its_modifiers", function()
         outward_pan = function(app) app:onOutwardPan(nil, { pos = Geom:new{ x = 50, y = 50 }, span = 110, start_span = 100 }) end,
         pinch = function(app) app:onPinch(nil, { pos = Geom:new{ x = 50, y = 50 } }) end,
         spread = function(app) app:onSpread(nil, { pos = Geom:new{ x = 50, y = 50 } }) end,
-        rotate = function(app) app:onRotate(nil, { direction = "cw", pos = Geom:new{ x = 50, y = 50 } }) end,
+        two_finger_tap = function(app) app:onTwoFingerTap(nil, { pos = Geom:new{ x = 50, y = 50 } }) end,
         two_finger_swipe = function(app)
             app:onTwoFingerSwipe(nil, { direction = "south", pos = Geom:new{ x = 50, y = 50 } })
         end,
@@ -3686,61 +3582,6 @@ check("stale_drag_is_ended_before_the_next_action_or_key", function()
     end
 end)
 
-check("two_finger_flick_scrolls_the_wheel", function()
-    local app, remote, sent = new_app()
-    local c = app:canvas_geom()
-    app:onTap(nil, { pos = { x = c.x + 50, y = c.y + 40 } })
-    local rx, ry = app:_to_remote(c.x + 50, c.y + 40)
-    local function masks()
-        local out = {}
-        for _, e in ipairs(sent.pointer) do out[#out + 1] = e.mask end
-        sent.pointer = {}
-        return table.concat(out, ",")
-    end
-    local function notches(mask, n)
-        return string.rep(mask .. ",0,", n):sub(1, -2)
-    end
-    masks()
-    local half = Screen:getHeight() / 2
-    local pos = Geom:new{ x = 50, y = 50 }
-    assert_true(app:onTwoFingerSwipe(nil, { direction = "north", distance = half, pos = pos }) == true)
-    local got = masks()
-    assert_true(got == notches(16, 5), "north half screen: 5 notches down, got " .. got)
-    app:onTwoFingerSwipe(nil, { direction = "south", distance = half, pos = pos })
-    got = masks()
-    assert_true(got == notches(8, 5), "south: wheel up, got " .. got)
-    app:onTwoFingerSwipe(nil, { direction = "north", distance = 1, pos = pos })
-    assert_true(masks() == notches(16, 1), "tiny flick: at least 1 notch")
-    app:onTwoFingerSwipe(nil, { direction = "north", distance = Screen:getHeight() * 3, pos = pos })
-    assert_true(masks() == notches(16, 10), "huge flick: at most 10 notches")
-    for _, dir in ipairs({ "east", "west" }) do
-        assert_true(app:onTwoFingerSwipe(nil, { direction = dir, distance = half, pos = pos }) == nil)
-        assert_true(#sent.pointer == 0, dir .. ": nothing sent")
-    end
-    app:onTwoFingerSwipe(nil, { direction = "north", distance = half, pos = pos })
-    for _, e in ipairs(sent.pointer) do
-        assert_true(e.x == rx and e.y == ry, "the wheel goes to the last pointer position")
-    end
-    sent.pointer = {}
-    -- a slow two-finger drag still pans and sends nothing
-    app:onTwoFingerPan(nil, { relative = { x = 5, y = 5 } })
-    assert_true(#sent.pointer == 0 and #sent.key == 0, "two_finger_pan sends nothing")
-    close_viewer(app, remote)
-end)
-
-check("two_finger_flick_leaves_armed_modifiers_alone", function()
-    local app, remote = new_app()
-    local panel = open_key_panel(app)
-    local wire = wire_log(app)
-    touch(panel, "mod:Shift")
-    UIManager:forceRePaint()
-    wire()
-    app:onTwoFingerSwipe(nil, { direction = "north", distance = 100, pos = Geom:new{ x = 50, y = 50 } })
-    local got = wire()
-    assert_true(not got:find("0x", 1, true), "a flick sends no keys, got " .. got)
-    assert_true(#panel:take_armed() == 1, "Shift is still armed after a flick")
-    close_viewer(app, remote)
-end)
 
 check("quick_drag_ending_as_a_swipe_ends_it", function()
     -- A contact that lifts within ges_swipe_interval of moving ends as a swipe, not a pan_release
@@ -3761,19 +3602,6 @@ check("quick_drag_ending_as_a_swipe_ends_it", function()
     assert_true(wire() == "", "nothing more at close")
 end)
 
-check("quick_drag_up_the_keyboard_strip_still_shows_the_keyboard", function()
-    local app, remote = new_app()
-    local wire = wire_log(app)
-    local c = app:canvas_geom()
-    local x, y = math.floor(c.x + c.w / 2), c.y + c.h - 2
-    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = x, y = y - 20 }, relative = { x = 0, y = -20 } }
-    dispatch_gesture{ ges = "swipe", direction = "north", distance = 20, pos = Geom:new{ x = x, y = y } }
-    local got = wire()
-    assert_true(got == "p1,p1,p0", "the swipe ends the drag, got " .. got)
-    assert_true(app.vk_visible, "and still shows the keyboard")
-    app:set_keyboard_visible(false)
-    close_viewer(app, remote)
-end)
 
 check("key_panel_quick_drag_does_not_keep_the_next_gesture", function()
     local app, remote = new_app()
@@ -3834,47 +3662,6 @@ check("key_panel_release_all_ends_a_pending_drag_or_long_press", function()
     end
 end)
 
-check("two_finger_flick_scrolls_only_when_the_view_did_not_move", function()
-    local function masks(sent)
-        local out = {}
-        for _, e in ipairs(sent.pointer) do out[#out + 1] = e.mask end
-        sent.pointer = {}
-        return table.concat(out, ",")
-    end
-    local half = Screen:getHeight() / 2
-    -- GestureDetector: two_finger_pan events, then (a quick lift) two_finger_swipe, no release
-    local function flick(app)
-        local pos = Geom:new{ x = 100, y = 200 }
-        dispatch_gesture{ ges = "two_finger_pan", direction = "north", pos = pos, relative = { x = 0, y = -40 } }
-        dispatch_gesture{ ges = "two_finger_swipe", direction = "north", distance = half, pos = pos }
-    end
-    for _, case in ipairs({ "fit", "zoomed at the bottom edge", "zoomed, the view moves" }) do
-        local app, remote, sent = new_app()
-        if case ~= "fit" then
-            app:zoom_to(4)
-            if case == "zoomed, the view moves" then remote:pan_by(100, 100) end -- off the bottom edge
-            if case == "zoomed at the bottom edge" then remote:pan_by(0, -100000) end
-        end
-        app:_view_settled()
-        UIManager:forceRePaint()
-        sent.pointer, sent.areas = {}, {}
-        local vx, vy = remote.view_x, remote.view_y
-        flick(app)
-        local moved = remote.view_x ~= vx or remote.view_y ~= vy
-        local got = masks(sent)
-        if case == "zoomed, the view moves" then
-            assert_true(moved, case .. ": the view moved")
-            assert_true(got == "", case .. ": a flick that moved the view only pans, got " .. got)
-        else
-            assert_true(not moved, case .. ": the view could not move")
-            assert_true(got == string.rep("16,0,", 5):sub(1, -2), case .. ": the flick scrolls, got " .. got)
-        end
-        assert_true(app._view_moving == false, case .. ": the release path ran (the view settled)")
-        UIManager:forceRePaint()
-        if moved then assert_true(#sent.areas > 0, case .. ": the new view area is reported") end
-        close_viewer(app, remote)
-    end
-end)
 
 check("key_panel_combo_order_and_modifiers_only", function()
     local app, remote, sent = new_app()
@@ -4153,6 +3940,39 @@ check("recent_combos_setting_is_kept_in_shape", function()
     store = Settings.open(data_dir .. "/recent_combos_check.lua")
     assert_true(type(store.data.settings.recent_combos) == "table" and #store.data.settings.recent_combos == 0,
         "garbage becomes an empty list")
+end)
+
+check("two_finger_flick_only_ends_the_pan", function()
+    local app, remote, sent = new_app()
+    dispatch_gesture{ ges = "two_finger_pan", pos = Geom:new{x=200,y=400}, start_pos = Geom:new{x=200,y=300}, relative = {x=0,y=100} }
+    dispatch_gesture{ ges = "two_finger_swipe", direction = "south", distance = 400, pos = Geom:new{x=200,y=400} }
+    for _, e in ipairs(sent.pointer) do assert_true(e.mask ~= 8 and e.mask ~= 16, "a flick never scrolls") end
+    assert_true(app._two_finger_pan == nil and not app._view_moving, "the flick ended the pan")
+    close_viewer(app, remote)
+end)
+check("rotate_gesture_and_bottom_swipes_are_not_handled", function()
+    local app, remote = new_app()
+    local before = Screen:getRotationMode()
+    dispatch_gesture{ ges = "rotate", direction = "cw", pos = Geom:new{x=100,y=100}, angle = 90 }
+    assert_true(Screen:getRotationMode() == before, "a two-finger rotate never turns the screen")
+    local s = Screen:getSize()
+    dispatch_gesture{ ges = "swipe", direction = "north", distance = 200, pos = Geom:new{x=s.w/2, y=s.h-10} }
+    assert_true(app.vk_visible == false, "a bottom swipe-up no longer shows the keyboard")
+    assert_true(app.ges_events.Rotate == nil and app.ges_events.KbdShow == nil and app.ges_events.KbdHide == nil)
+    close_viewer(app, remote)
+end)
+check("two_finger_tap_fits_and_recentres", function()
+    local app, remote = new_app()
+    app:zoom_to(2); remote:pan_by(-50, -40)
+    dispatch_gesture{ ges = "two_finger_tap", pos = Geom:new{x=100,y=100}, span = 50 }
+    assert_true(app.settings.zoom_mode == "fit", "fit, the keyboard being down")
+    local vx, vy = remote.view_x, remote.view_y
+    app:zoom_to("fit")
+    assert_true(remote.view_x == vx and remote.view_y == vy, "re-centred like a fresh fit")
+    app:set_keyboard_visible(true)
+    dispatch_gesture{ ges = "two_finger_tap", pos = Geom:new{x=100,y=100}, span = 50 }
+    assert_true(app.settings.zoom_mode == "fit_with_keyboard", "fit with keyboard while it is up")
+    close_viewer(app, remote)
 end)
 
 if failures > 0 then

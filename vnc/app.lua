@@ -145,18 +145,6 @@ function ViewerApp:init_gestures()
     -- The end of a drag or long press is ours wherever the finger lifts (over the key panel, or
     -- beside a view that does not fill the screen): the handlers only act on one we started.
     local function whole_screen() return Geom:new{ x = 0, y = 0, w = self.dimen.w, h = self.dimen.h } end
-    local function bottom_strip()
-        local c = self:canvas_geom()
-        return Geom:new{
-            x = c.x, y = c.y + math.floor(c.h * 0.85),
-            w = c.w, h = math.ceil(c.h * 0.15),
-        }
-    end
-    local function upper_canvas()
-        local c = self:canvas_geom()
-        return Geom:new{ x = c.x, y = c.y, w = c.w, h = math.floor(c.h * 0.75) }
-    end
-
     self.ges_events = {
         Tap = { GestureRange:new{ ges = "tap", range = canvas_range } },
         Hold = { GestureRange:new{ ges = "hold", range = canvas_range } },
@@ -169,12 +157,10 @@ function ViewerApp:init_gestures()
         OutwardPan = { GestureRange:new{ ges = "outward_pan", range = canvas_range } },
         Pinch = { GestureRange:new{ ges = "pinch", range = canvas_range } },
         Spread = { GestureRange:new{ ges = "spread", range = canvas_range } },
-        Rotate = { GestureRange:new{ ges = "rotate", range = canvas_range } },
+        TwoFingerTap = { GestureRange:new{ ges = "two_finger_tap", range = canvas_range } },
         TwoFingerSwipe = { GestureRange:new{ ges = "two_finger_swipe", range = canvas_range } },
         -- a quick drag ends as a swipe wherever the finger lifts (see `onSwipe`)
         Swipe = { GestureRange:new{ ges = "swipe", range = whole_screen } },
-        KbdShow = { GestureRange:new{ ges = "swipe", direction = "north", range = bottom_strip } },
-        KbdHide = { GestureRange:new{ ges = "swipe", direction = "south", range = upper_canvas } },
     }
 end
 
@@ -693,17 +679,13 @@ function ViewerApp:onTwoFingerPan(_, ges)
     local sx, sy = sp and sp.x, sp and sp.y
     local last = self._two_finger_pan
     if not last or last.sx ~= sx or last.sy ~= sy then
-        -- (vx, vy: where the view was, for a fit-mode flick to put it back)
-        last = { sx = sx, sy = sy, x = 0, y = 0, vx = self.remote.view_x, vy = self.remote.view_y }
+        last = { sx = sx, sy = sy, x = 0, y = 0 }
         self._two_finger_pan = last
     end
     local dx, dy = rel.x - last.x, rel.y - last.y
     last.x, last.y = rel.x, rel.y
     -- the picture follows the fingers, like any touch scroll
-    if self.remote:pan_by(dx, dy) then
-        -- this two-finger gesture moved the view: if it ends as a flick, that flick only pans
-        self._two_finger_moved_view = true
-    end
+    self.remote:pan_by(dx, dy)
     self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
@@ -711,10 +693,8 @@ end
 
 function ViewerApp:onTwoFingerPanRelease(_, ges)
     self:_end_pointer_action()
-    self._two_finger_moved_view = nil
     self._two_finger_pan = nil
     self:_view_settled()
-    -- swipe up from the bottom still needs to be able to mean "show keyboard"
     UIManager:setDirty(self, "ui")
     return true
 end
@@ -747,7 +727,6 @@ function ViewerApp:onPinch()
     self:_end_pointer_action()
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
-    self._two_finger_moved_view = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
     self:update_canvas()
     self:_view_settled()
@@ -759,7 +738,6 @@ function ViewerApp:onSpread()
     self:_end_pointer_action()
     self._last_pinch_factor = nil
     self._zoom_start_span = nil
-    self._two_finger_moved_view = nil
     -- the new zoom may put the view above the keyboard (or back on the whole screen)
     self:update_canvas()
     self:_view_settled()
@@ -767,57 +745,26 @@ function ViewerApp:onSpread()
     return nil
 end
 
-function ViewerApp:onRotate(_, ges)
-    self:_end_pointer_action()
-    if not self:_input_target() then return nil end
-    self:rotate(ges.direction == "cw" and 1 or -1)
-    return true
-end
-
 --[[--
-A two-finger flick scrolls the remote wheel like a touch scroll: a flick up (content follows the
-fingers) scrolls the page down, a flick down scrolls it up. One notch per tenth of the screen
-height travelled, 1 to 10. East/west flicks are ignored. A flick is not a modifier action: the
-modifiers armed on the "Send keys" panel are neither sent nor consumed by it.
-
-A quick two-finger drag also ends as a flick (GestureDetector turns its two_finger_pan into a
-two_finger_swipe when the fingers lift soon after moving), so a flick ends the view pan the way
-two_finger_pan_release does, and scrolls only if that pan did not move the view: in fit mode, or
-against an edge, the flick scrolls; zoomed in, a flick that moved the view only pans.
+A quick two-finger drag ends as a flick (GestureDetector turns its two_finger_pan into a
+two_finger_swipe when the fingers lift soon after moving): it only ends the view pan, the way
+two_finger_pan_release does.
 ]]
 function ViewerApp:onTwoFingerSwipe(_, ges)
-    local moved_view = self._two_finger_moved_view
-    local pan = self._two_finger_pan
-    local fitted = self.settings.zoom_mode == "fit" or self.settings.zoom_mode == "fit_with_keyboard"
-    if moved_view and fitted and pan and pan.vx
-            and (ges and (ges.direction == "north" or ges.direction == "south")) then
-        -- fitted, a flick is the wheel: the pan its first moves did is taken back
-        self.remote.view_x, self.remote.view_y = pan.vx, pan.vy
-        moved_view = false
-    end
     self:onTwoFingerPanRelease(nil, ges)
-    if moved_view then return true end
-    local direction = ges and ges.direction
-    if direction ~= "north" and direction ~= "south" then return nil end
+    return true
+end
+
+--- Fits the picture to the screen (or to the space above the keyboard while it is up), centred.
+function ViewerApp:fit_to_screen()
+    self:zoom_to(self.vk_visible and "fit_with_keyboard" or "fit")
+    self.plugin.settings:flush()
+end
+
+function ViewerApp:onTwoFingerTap(_, ges)
+    self:_end_pointer_action()
     if not self:_input_target() then return nil end
-    local tenth = Screen:getHeight() / 10
-    local notches = math.floor((ges.distance or 0) / tenth + 0.5)
-    notches = math.max(1, math.min(10, notches))
-    self:scroll_wheel(direction == "north" and 1 or -1, notches)
-    return true
-end
-
-function ViewerApp:onKbdShow(_, ges)
-    self:_end_quick_drag(ges)
-    if self.settings.keyboard_always_visible then return nil end
-    self:set_keyboard_visible(true)
-    return true
-end
-
-function ViewerApp:onKbdHide(_, ges)
-    self:_end_quick_drag(ges)
-    if self.settings.keyboard_always_visible then return nil end
-    self:set_keyboard_visible(false)
+    self:fit_to_screen()
     return true
 end
 
