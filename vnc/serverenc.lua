@@ -22,7 +22,6 @@ for a colour-mapped format get the fixed 3-3-2 map in @{Enc.COLOUR_MAP}.
 local BB = require("ffi/blitbuffer")
 local ffi = require("ffi")
 local ZStream = require("vnc/zstream")
-local Util = require("vnc/util")
 local logger = require("logger")
 
 local Enc = {}
@@ -75,7 +74,8 @@ function Enc.new()
         bb24 = nil,
         out = nil,
         values = nil,
-        pixel_buf = ffi.new("uint8_t[8]"),
+        wbuf = nil,                  -- the encoders' output buffer (c.f., reserve)
+        wcap = 0,
         zstream = nil,
         convert_serial = 0,          -- which conversion `values`/`out` currently hold
         values_size = 0,             -- pixels the buffer holds (0 = nothing allocated yet)
@@ -89,7 +89,7 @@ end
 function Enc:free()
     if self.bb24 then self.bb24:free() self.bb24 = nil end
     if self.zstream then self.zstream:free() self.zstream = nil end
-    self.out, self.values = nil, nil
+    self.out, self.values, self.wbuf, self.wcap = nil, nil, nil, 0
 end
 
 -- ---------------------------------------------------------------- pixel format
@@ -361,37 +361,82 @@ function Enc:convert(source, rect, need_values)
     return ffi.string(out, count * bpp), count
 end
 
---- The bytes of one pixel value (used for the few pixels an encoder emits individually).
-function Enc:pixel_bytes(v)
-    local bpp = math.floor(self.fmt.bits_per_pixel / 8)
-    local b = self.pixel_buf
-    if bpp == 4 then
-        b[0], b[1] = v % 256, math.floor(v / 256) % 256
-        b[2], b[3] = math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256
-        if self.fmt.big_endian ~= 0 then b[0], b[1], b[2], b[3] = b[3], b[2], b[1], b[0] end
-    elseif bpp == 3 then
-        b[0], b[1] = v % 256, math.floor(v / 256) % 256
-        b[2] = math.floor(v / 65536) % 256
-        if self.fmt.big_endian ~= 0 then b[0], b[1], b[2] = b[2], b[1], b[0] end
-    elseif bpp == 2 then
-        b[0], b[1] = v % 256, math.floor(v / 256) % 256
-        if self.fmt.big_endian ~= 0 then b[0], b[1] = b[1], b[0] end
-    else
-        b[0] = v % 256
+-- ---------------------------------------------------------------- output buffer
+
+--[[--
+The encoders write into one reusable byte buffer per encoder (`self.wbuf`, 0-based, `self.wcap`
+bytes) and turn it into a string once per rectangle; a writer per field and a string per pixel was
+an allocation for every byte they emitted.
+
+Each writer takes and returns the write position, so an encoder keeps it in a local; @{reserve}
+must have made room first (it returns the buffer, which a growth replaces, keeping `pos` bytes).
+]]
+local function reserve(self, pos, need)
+    local cap = self.wcap or 0
+    if pos + need > cap then
+        if cap == 0 then cap = 4096 end
+        while pos + need > cap do cap = cap * 2 end
+        local buf = ffi.new("uint8_t[?]", cap)
+        if pos > 0 then ffi.copy(buf, self.wbuf, pos) end
+        self.wbuf, self.wcap = buf, cap
     end
-    return ffi.string(b, bpp)
+    return self.wbuf
 end
 
---- The CPIXEL bytes of one pixel value (ZRLE/TRLE omit a 32bpp format's padding byte).
-function Enc:cpixel_bytes_of(v)
-    if not self.cpixel_bytes then
-        return self:pixel_bytes(v)
+local function put_u16(buf, pos, v)
+    buf[pos], buf[pos + 1] = math.floor(v / 256) % 256, v % 256
+    return pos + 2
+end
+
+local function put_u32(buf, pos, v)
+    buf[pos], buf[pos + 1] = math.floor(v / 16777216) % 256, math.floor(v / 65536) % 256
+    buf[pos + 2], buf[pos + 3] = math.floor(v / 256) % 256, v % 256
+    return pos + 4
+end
+
+--- One pixel value as it goes on the wire: `bpp` bytes in the client's byte order (`be`).
+local function put_pixel(buf, pos, v, bpp, be)
+    if bpp == 4 then
+        local b0, b1 = v % 256, math.floor(v / 256) % 256
+        local b2, b3 = math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256
+        if be then
+            buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3] = b3, b2, b1, b0
+        else
+            buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3] = b0, b1, b2, b3
+        end
+    elseif bpp == 3 then
+        local b0, b1, b2 = v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256
+        if be then
+            buf[pos], buf[pos + 1], buf[pos + 2] = b2, b1, b0
+        else
+            buf[pos], buf[pos + 1], buf[pos + 2] = b0, b1, b2
+        end
+    elseif bpp == 2 then
+        local b0, b1 = v % 256, math.floor(v / 256) % 256
+        if be then
+            buf[pos], buf[pos + 1] = b1, b0
+        else
+            buf[pos], buf[pos + 1] = b0, b1
+        end
+    else
+        buf[pos] = v % 256
     end
-    local b = self.pixel_buf
-    b[0], b[1] = v % 256, math.floor(v / 256) % 256
-    b[2], b[3] = math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256
+    return pos + bpp
+end
+
+--- One CPIXEL (ZRLE/TRLE omit a 32bpp format's padding byte, c.f. `cpixel_bytes`).
+local function put_cpixel(self, buf, pos, v, bpp, be)
     local cp = self.cpixel_bytes
-    return string.char(b[cp[1]], b[cp[2]], b[cp[3]])
+    if not cp then return put_pixel(buf, pos, v, bpp, be) end
+    for i = 1, 3 do
+        buf[pos + i - 1] = math.floor(v / 2 ^ (8 * cp[i])) % 256
+    end
+    return pos + 3
+end
+
+--- The client's bytes per pixel and byte order, as the writers above take them.
+local function wire_layout(self)
+    return math.floor(self.fmt.bits_per_pixel / 8), self.fmt.big_endian ~= 0
 end
 
 -- ---------------------------------------------------------------- encoders
@@ -517,18 +562,23 @@ function Enc:encode_rre(values, count, w, h)
         end
     end
 
-    local bpp = math.floor(self.fmt.bits_per_pixel / 8)
-    local estimated = 4 + bpp + #subrects * (bpp + 8)
-    if estimated >= count * bpp then return nil end
+    local bpp, be = wire_layout(self)
+    local n = #subrects
+    local size = 4 + bpp + n * (bpp + 8)
+    if size >= count * bpp then return nil end
 
-    local out = Util.writer()
-    out:u32(#subrects)
-    out:raw(self:pixel_bytes(background))
-    for _, s in ipairs(subrects) do
-        out:raw(self:pixel_bytes(s.value))
-        out:u16(s.x):u16(s.y):u16(s.w):u16(s.h)
+    local buf = reserve(self, 0, size)
+    local pos = put_u32(buf, 0, n)
+    pos = put_pixel(buf, pos, background, bpp, be)
+    for i = 1, n do
+        local r = subrects[i]
+        pos = put_pixel(buf, pos, r.value, bpp, be)
+        pos = put_u16(buf, pos, r.x)
+        pos = put_u16(buf, pos, r.y)
+        pos = put_u16(buf, pos, r.w)
+        pos = put_u16(buf, pos, r.h)
     end
-    return out:tostring()
+    return ffi.string(buf, pos)
 end
 
 --[[--
@@ -538,9 +588,18 @@ subrectangles, and anything that would not pay off is sent Raw.
 function Enc:encode_hextile(values, count, w, h)
     local scratch = self.scratch or new_scratch(w, h)
     self.scratch = scratch
-    local out = Util.writer()
-    local background, foreground          -- carried between tiles, per RFC 6143 §7.7.4
+    local bpp, be = wire_layout(self)
+    local background                      -- carried between tiles, per RFC 6143 §7.7.4
     local first_tile = true               -- ... but never assumed at the start of a rectangle
+    local tile = scratch.tile
+    if not tile then tile = {} scratch.tile = tile end
+    -- the tile's subrectangles, as parallel arrays (x, y, w, value)
+    local rx, ry, rw, rv = scratch.hx_x, scratch.hx_y, scratch.hx_w, scratch.hx_v
+    if not rx then
+        rx, ry, rw, rv = {}, {}, {}, {}
+        scratch.hx_x, scratch.hx_y, scratch.hx_w, scratch.hx_v = rx, ry, rw, rv
+    end
+    local buf, pos = reserve(self, 0, 1), 0     -- never nil, even for an empty rectangle
 
     local ty = 0
     while ty < h do
@@ -550,8 +609,6 @@ function Enc:encode_hextile(values, count, w, h)
             local tw = math.min(Enc.HEXTILE_SIZE, w - tx)
 
             -- gather the tile's values
-            local tile = scratch.tile
-            if not tile then tile = {} scratch.tile = tile end
             local n = 0
             for y = 0, th - 1 do
                 local base = (ty + y) * w + tx
@@ -560,17 +617,20 @@ function Enc:encode_hextile(values, count, w, h)
                     tile[n] = values[base + x + 1]
                 end
             end
+            -- the most a tile can take: mask, both colours, the count, a coloured subrect a pixel
+            buf = reserve(self, pos, 2 + 2 * bpp + n * (bpp + 2))
             -- One call answers both questions: `bg` is the tile's most frequent value and
             -- `uniform_count` its count, which is the whole tile exactly when it is uniform. The
             -- second pass over the same range would recompute the first one's answer.
             local bg, uniform_count = dominant(tile, 1, n, scratch)
             local mask = 0
-            local payload = Util.writer()
+            local mask_pos = pos                     -- written once the payload decided it
+            pos = pos + 1
 
             if uniform_count == n then
                 if first_tile or bg ~= background then
                     mask = mask + 2                          -- BackgroundSpecified
-                    payload:raw(self:pixel_bytes(bg))
+                    pos = put_pixel(buf, pos, bg, bpp, be)
                 end
                 background = bg
                 -- A tile with no subrects is entirely background.
@@ -578,11 +638,11 @@ function Enc:encode_hextile(values, count, w, h)
                 -- subrectangles: one per run of equal pixels, keeping the tile's own geometry
                 if first_tile or bg ~= background then
                     mask = mask + 2
-                    payload:raw(self:pixel_bytes(bg))
+                    pos = put_pixel(buf, pos, bg, bpp, be)
                     background = bg
                 end
 
-                local runs = {}
+                local runs = 0
                 for y = 0, th - 1 do
                     local x = 0
                     while x < tw do
@@ -590,49 +650,51 @@ function Enc:encode_hextile(values, count, w, h)
                         local run = 1
                         while x + run < tw and tile[y * tw + x + run + 1] == v do run = run + 1 end
                         if v ~= background then
-                            runs[#runs + 1] = { x = x, y = y, w = run, value = v }
+                            runs = runs + 1
+                            rx[runs], ry[runs], rw[runs], rv[runs] = x, y, run, v
                         end
                         x = x + run
                     end
                 end
 
                 -- if every subrect shares one colour, an uncoloured (foreground) tile is smaller
-                local single = runs[1] and runs[1].value or nil
-                for i = 2, #runs do
-                    if runs[i].value ~= single then single = nil break end
+                local single = runs > 0 and rv[1] or nil
+                for i = 2, runs do
+                    if rv[i] ~= single then single = nil break end
                 end
                 if single then
                     -- Always specify it: the semantic is "carried over unless specified", but a
                     -- decoder that has not seen a foreground yet would have to reject the tile.
                     mask = mask + 4                          -- ForegroundSpecified
-                    payload:raw(self:pixel_bytes(single))
-                    foreground = single
+                    pos = put_pixel(buf, pos, single, bpp, be)
                 end
-                if #runs > 0 then
+                if runs > 0 then
                     local coloured = not single
                     mask = mask + 8                          -- AnySubrects
                     if coloured then mask = mask + 16 end    -- SubrectsColoured
-                    payload:u8(#runs)
-                    for _, r in ipairs(runs) do
-                        if coloured then payload:raw(self:pixel_bytes(r.value)) end
-                        payload:u8(((r.x % 16) * 16) + (r.y % 16))
-                        payload:u8((((r.w - 1) % 16) * 16))
+                    buf[pos] = runs % 256
+                    pos = pos + 1
+                    for i = 1, runs do
+                        if coloured then pos = put_pixel(buf, pos, rv[i], bpp, be) end
+                        buf[pos] = ((rx[i] % 16) * 16) + (ry[i] % 16)
+                        buf[pos + 1] = ((rw[i] - 1) % 16) * 16
+                        pos = pos + 2
                     end
                 end
             end
-            out:u8(mask):raw(payload:tostring())
+            buf[mask_pos] = mask
             first_tile = false
             tx = tx + tw
         end
         ty = ty + th
     end
-    return out:tostring()
+    return ffi.string(self.wbuf, pos)
 end
 
 -- ---------------------------------------------------------------- ZRLE
 
 --- Packs palette indices, MSB first, one row at a time, padded to whole bytes.
-local function pack_indices(out, indices, w, bits)
+local function pack_indices(buf, pos, indices, w, bits)
     local per_byte = math.floor(8 / bits)
     local x = 0
     while x < w do
@@ -641,21 +703,26 @@ local function pack_indices(out, indices, w, bits)
             local idx = indices[x + i + 1]
             byte = byte * 2 ^ bits + (idx or 0)
         end
-        out:u8(byte)
+        buf[pos] = byte
+        pos = pos + 1
         x = x + per_byte
     end
+    return pos
 end
 
---- One TRLE tile (the subencoding ZRLE is built from), for a 64x64 (or smaller) tile.
-local function zrle_tile(self, out, tile, tw, th, scratch)
+--- One TRLE tile (the subencoding ZRLE is built from), for a 64x64 (or smaller) tile, written at
+--- `pos` of the encoder's buffer; returns the position after it.
+local function zrle_tile(self, pos, tile, tw, th, scratch, bpp, be)
     local n = tw * th
+    local cb = self.cpixel_bytes and 3 or bpp
+    -- the most a tile can take: plain RLE with a run per pixel, or a 16-colour palette
+    local buf = reserve(self, pos, 1 + math.max(16 * cb + n, n * (cb + 1)))
     -- One call answers all three: the most frequent value, its count (the tile is solid exactly
     -- when that count is the whole tile) and how many distinct values there are.
     local uniform, uniform_count, distinct = dominant(tile, 1, n, scratch)
     if uniform_count == n then
-        out:u8(1)                                            -- solid
-        out:raw(self:cpixel_bytes_of(uniform))
-        return
+        buf[pos] = 1                                         -- solid
+        return put_cpixel(self, buf, pos + 1, uniform, bpp, be)
     end
 
     if distinct <= 16 then
@@ -673,8 +740,9 @@ local function zrle_tile(self, out, tile, tw, th, scratch)
                 index_of[v] = size
             end
         end
-        out:u8(size)
-        for i = 1, size do out:raw(self:cpixel_bytes_of(palette[i])) end
+        buf[pos] = size
+        pos = pos + 1
+        for i = 1, size do pos = put_cpixel(self, buf, pos, palette[i], bpp, be) end
         local bits = (size == 2) and 1 or (size <= 4 and 2 or 4)
         local indices = scratch.indices
         if not indices then indices = {} scratch.indices = indices end
@@ -682,27 +750,31 @@ local function zrle_tile(self, out, tile, tw, th, scratch)
             for x = 0, tw - 1 do
                 indices[x + 1] = index_of[tile[y * tw + x + 1]] - 1
             end
-            pack_indices(out, indices, tw, bits)
+            pos = pack_indices(buf, pos, indices, tw, bits)
         end
         for i = 1, size do index_of[palette[i]] = nil end
     else
         -- plain RLE: runs of equal pixels, length = 1 + sum of the length bytes (255 repeats)
-        out:u8(128)
+        buf[pos] = 128
+        pos = pos + 1
         local i = 1
         while i <= n do
             local v = tile[i]
             local run = 1
             while i + run <= n and tile[i + run] == v do run = run + 1 end
-            out:raw(self:cpixel_bytes_of(v))
+            pos = put_cpixel(self, buf, pos, v, bpp, be)
             local len = run - 1
             while len >= 255 do
-                out:u8(255)
+                buf[pos] = 255
+                pos = pos + 1
                 len = len - 255
             end
-            out:u8(len)
+            buf[pos] = len
+            pos = pos + 1
             i = i + run
         end
     end
+    return pos
 end
 
 --[[--
@@ -715,11 +787,13 @@ function Enc:encode_zrle(values, count, w, h)
     if not self.zstream then
         self.zstream = ZStream.new_deflate()
     end
+    local bpp, be = wire_layout(self)
 
-    local raw = Util.writer()
     local tile = scratch.zrle_tile
     if not tile then tile = {} scratch.zrle_tile = tile end
 
+    reserve(self, 0, 1)                          -- never nil, even for an empty rectangle
+    local pos = 0
     local tile_size = Enc.ZRLE_TILE
     local ty = 0
     while ty < h do
@@ -735,20 +809,20 @@ function Enc:encode_zrle(values, count, w, h)
                     tile[n] = values[base + x + 1]
                 end
             end
-            zrle_tile(self, raw, tile, tw, th, scratch)
+            pos = zrle_tile(self, pos, tile, tw, th, scratch, bpp, be)
             tx = tx + tw
         end
         ty = ty + th
     end
 
-    local compressed, err = self.zstream:deflate(raw:tostring())
+    local compressed, err = self.zstream:deflate(ffi.string(self.wbuf, pos))
     if not compressed then
         logger.warn("vnc: ZRLE compression failed:", err)
         return nil
     end
-    local out = Util.writer()
-    out:u32(#compressed):raw(compressed)
-    return out:tostring()
+    local len = #compressed
+    return string.char(math.floor(len / 16777216) % 256, math.floor(len / 65536) % 256,
+        math.floor(len / 256) % 256, len % 256) .. compressed
 end
 
 return Enc

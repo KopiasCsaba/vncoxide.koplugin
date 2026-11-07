@@ -472,6 +472,75 @@ check("rre_sends_one_subrect_per_block", function()
     src:free()
 end)
 
+--- The encoders' exact bytes, pinned per format: how a payload is assembled (a writer per field, a
+--- byte buffer, ...) is an implementation detail, so it must never change what goes on the wire.
+--- The digests are of the payloads the original per-field writers produced.
+check("encoder_output_is_byte_identical", function()
+    local md5 = require("ffi/sha2").md5
+    local formats = {
+        { "32le", CLIENT_FORMAT },
+        { "32be", { bits_per_pixel = 32, depth = 24, big_endian = 1, true_colour = 1,
+            red_max = 255, green_max = 255, blue_max = 255, red_shift = 0, green_shift = 8, blue_shift = 16 } },
+        { "16be", { bits_per_pixel = 16, depth = 15, big_endian = 1, true_colour = 1,
+            red_max = 31, green_max = 31, blue_max = 31, red_shift = 10, green_shift = 5, blue_shift = 0 } },
+        { "24le", { bits_per_pixel = 24, depth = 24, big_endian = 0, true_colour = 1,
+            red_max = 255, green_max = 255, blue_max = 255, red_shift = 16, green_shift = 8, blue_shift = 0 } },
+        { "8map", { bits_per_pixel = 8, depth = 8, big_endian = 0, true_colour = 0,
+            red_max = 7, green_max = 7, blue_max = 3, red_shift = 5, green_shift = 2, blue_shift = 0 } },
+    }
+    local flat = BB.new(160, 96, BB.TYPE_BBRGB24)
+    for y = 0, 95 do for x = 0, 159 do
+        local c = ((math.floor(x / 9) + math.floor(y / 7)) % 5 == 0) and 0 or 255
+        put(flat, x, y, c, (x % 40 < 3) and 0 or c, 255 - c)
+    end end
+    local planes = { { "pattern", pattern_plane(192, 128) }, { "flat", flat } }
+    local got = {}
+    for _, plane in ipairs(planes) do
+        for _, f in ipairs(formats) do
+            for _, e in ipairs({ { "rre", ServerEnc.RRE }, { "hextile", ServerEnc.HEXTILE }, { "zrle", ServerEnc.ZRLE } }) do
+                local key = plane[1] .. "/" .. f[1] .. "/" .. e[1]
+                local encoding, payload, enc = encode(e[2], plane[2], f[2])
+                got[#got + 1] = string.format("%s=%d:%s", key, encoding, md5(payload))
+                enc:free()
+            end
+        end
+        plane[2]:free()
+    end
+    local text = table.concat(got, "\n")
+    assert_true(text == table.concat({
+        "pattern/32le/rre=0:181c46a86dc2e7f6dd4cfc936f70f08a",
+        "pattern/32le/hextile=5:a6e106fb327e7aa7c242defc26d24cd5",
+        "pattern/32le/zrle=16:8cac6eecd933cf49f12d5c8f8da88192",
+        "pattern/32be/rre=0:a34a0439721d467d1074fdae4554496e",
+        "pattern/32be/hextile=5:762cfe16036f218829a619fe8f5779ea",
+        "pattern/32be/zrle=16:b0d06348e750ce08b2485d757e20508b",
+        "pattern/16be/rre=0:1b5c42bddef53c98879030501146a348",
+        "pattern/16be/hextile=5:e0b49f7d8c33848fb80fec1c0ad17008",
+        "pattern/16be/zrle=16:f4099834fc65413f0fa6b299da138695",
+        "pattern/24le/rre=0:42db6ca5932e86521035c4aa8342fb37",
+        "pattern/24le/hextile=5:535ee7a4e865f8668d05d86c3166d2a6",
+        "pattern/24le/zrle=16:b0d06348e750ce08b2485d757e20508b",
+        "pattern/8map/rre=0:f19095c7e381b83027fe8260d4ebff1b",
+        "pattern/8map/hextile=5:b805ada1414e10922b2c0c262593f676",
+        "pattern/8map/zrle=16:156722d46cb0a6b14f76e3a350105cd5",
+        "flat/32le/rre=2:ace9f4e12ed5bff5cfc828fa4525059b",
+        "flat/32le/hextile=5:3197bca6355414ad435f08a9984f1626",
+        "flat/32le/zrle=16:5d830b72e7c9034495db4d0f58872a85",
+        "flat/32be/rre=2:e11a59c5472e0152cba0653f2467f43a",
+        "flat/32be/hextile=5:5b52c067aebbeefa80d6ff124686fdc2",
+        "flat/32be/zrle=16:d3749033c053cc657c2b9c44a1877b7d",
+        "flat/16be/rre=2:f340240e27675d50e1f96145f17e5747",
+        "flat/16be/hextile=5:eb89b2030545955c62cc7256f285bb58",
+        "flat/16be/zrle=16:10312a7ee49d3597485cdf522517c53b",
+        "flat/24le/rre=2:f8a0eb149660480fca30f9e92bf9cfe7",
+        "flat/24le/hextile=5:419b8046035cf4ee29e0cddbdd942cd2",
+        "flat/24le/zrle=16:d3749033c053cc657c2b9c44a1877b7d",
+        "flat/8map/rre=2:84b9151b2f0c76aef8e381c717cd4fa8",
+        "flat/8map/hextile=5:086367583762fad37d9590f5b42a487b",
+        "flat/8map/zrle=16:a9df08e405845f6e02a4162b52998df7",
+    }, "\n"), "encoder output changed:\n" .. text)
+end)
+
 check("zrle_stream_continuity", function()
     -- One encoder (and therefore one zlib stream) across several rectangles, decoded in order by
     -- one client decoder state: this is what breaks if either side mishandles Z_SYNC_FLUSH.
