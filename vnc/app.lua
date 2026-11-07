@@ -75,6 +75,9 @@ function ViewerApp:init()
     -- true while a two-finger pan/zoom moves the view: the visible area is reported once it ends
     self._view_moving = false
     self._view_settle_task = function() self:_view_settled() end
+    -- Mouse mode: a tap's click waits out the double-tap interval (see `_mouse_tap`)
+    self._deferred_click = nil
+    self._deferred_click_task = function() self:_flush_deferred_click() end
 
     self:init_menu_zones()
     self:init_gestures()
@@ -438,6 +441,8 @@ function ViewerApp:onCloseWidget()
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
     self:_drop_key_panel()
     self:_end_pointer_action()
+    -- a click still waiting for a possible second tap is not worth sending any more
+    self:_drop_deferred_click()
     if self._text_input_asserted then
         self._text_input_asserted = false
         Device:stopTextInput()
@@ -516,6 +521,7 @@ end
 --- Sends a key. A drag or long press of ours still pending (its release was eaten by the
 --- on-screen keyboard or the menu) ends first, so its button and modifiers do not stay down.
 function ViewerApp:send_key(keysym, down)
+    self:_flush_deferred_click()
     self:_end_stale_pointer_action()
     self.session:send_key(keysym, down)
 end
@@ -558,6 +564,7 @@ end
 
 function ViewerApp:onTap(_, ges)
     if not self:_input_target() then return nil end
+    if self:get_pointer_mode() == "mouse" then return self:_mouse_tap(ges) end
     self:_end_stale_pointer_action()
     local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:_press_armed()
@@ -571,6 +578,10 @@ end
 
 function ViewerApp:onPan(_, ges)
     if not self:_input_target() then return nil end
+    if self._drag_active == "mouse" or self._mouse_moving
+            or (self._drag_active == nil and self:get_pointer_mode() == "mouse") then
+        return self:_mouse_pan(ges)
+    end
     if self._drag_active == nil then
         self:_end_stale_pointer_action() -- a long press whose release never came
         -- A pan's `relative` is the accumulated delta since the first contact, so this
@@ -589,9 +600,18 @@ function ViewerApp:onPan(_, ges)
 end
 
 function ViewerApp:onPanRelease(_, ges)
+    if self._mouse_moving then
+        self._mouse_moving = nil
+        return true
+    end
     if self._drag_active == nil then return nil end
+    local rx, ry
+    if self._drag_active == "mouse" then
+        rx, ry = self._pointer_x, self._pointer_y -- the button lets go where the pointer is
+    else
+        rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+    end
     self._drag_active = nil
-    local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 0)
     self:_release_action_mods()
     self:_pointer_action_changed()
@@ -611,19 +631,27 @@ end
 
 --- Ends a drag of ours on the swipe that ended its contact (see `onSwipe`); no-op otherwise.
 function ViewerApp:_end_quick_drag(ges)
-    if self._drag_active and ges and ges.ges == "swipe" then
-        self:_end_pointer_action()
+    if ges and ges.ges == "swipe" then
+        self._mouse_moving = nil
+        if self._drag_active then self:_end_pointer_action() end
     end
 end
 
 function ViewerApp:onHold(_, ges)
     if not self:_input_target() then return nil end
+    local mouse = self:get_pointer_mode() == "mouse"
+    if mouse then self:_flush_deferred_click() end
     self:_end_stale_pointer_action()
-    local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+    local rx, ry
+    if mouse then
+        rx, ry = self:_mouse_pointer_px()
+    else
+        rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+    end
     -- a long press is a right click: the armed modifiers go with it, like with a tap
     self:_press_armed()
     self:send_pointer(rx, ry, 4)
-    self._hold_active = true
+    self._hold_active = mouse and "mouse" or true
     self:_pointer_action_changed()
     return true
 end
@@ -633,8 +661,13 @@ end
 --- would otherwise stay down on the remote.
 function ViewerApp:onHoldRelease(_, ges)
     if not self._hold_active then return nil end
+    local rx, ry
+    if self._hold_active == "mouse" then
+        rx, ry = self._pointer_x, self._pointer_y -- (Mouse mode: the finger is not the pointer)
+    else
+        rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+    end
     self._hold_active = nil
-    local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self:send_pointer(rx, ry, 0)
     self:_release_action_mods()
     self:_pointer_action_changed()
@@ -648,6 +681,7 @@ two_finger_pan_release (Contact:handlePanRelease), not the pan_release / hold_re
 waiting for. Let go of the button and the modifiers now, before the two-finger gesture runs.
 ]]
 function ViewerApp:_end_pointer_action()
+    self._mouse_moving = nil
     if self._drag_active or self._hold_active then
         self._drag_active = nil
         self._hold_active = nil
@@ -668,6 +702,7 @@ end
 
 --- Switches the pointer mode and stores it in the profile.
 function ViewerApp:set_pointer_mode(mode)
+    self:_flush_deferred_click()
     self:_end_pointer_action()
     local profile = self.session:get_profile()
     local stored = self.plugin:update_profile_fields(profile.name, { pointer_mode = mode })
@@ -681,6 +716,134 @@ end
 --- Mouse-mode cursor speed: remote pixels per screen pixel dragged.
 function ViewerApp:pointer_speed()
     return Settings.POINTER_SPEEDS[self.settings.pointer_speed] or 1.25
+end
+
+-- ---------------------------------------------------------------- mouse mode
+
+--- Seconds a Mouse-mode click waits for a second tap or a drag: KOReader's double-tap interval.
+function ViewerApp.mouse_click_delay()
+    local gd = Device.input and Device.input.gesture_detector or require("device/gesturedetector")
+    return time.to_s(gd.ges_double_tap_interval)
+end
+
+--- How near (screen pixels) a second tap or a drag's start must land to a pending tap to count
+--- as its double tap.
+local function double_tap_radius() return Screen:scaleByDPI(50) end
+
+--[[--
+The Mouse-mode pointer, in remote coordinates (floats, so that slow drags add up). It starts from
+the last pointer event sent, or the centre of the remote screen, follows a pointer event sent
+from elsewhere (a Touch-mode action before a mode switch), and is kept inside the remote screen,
+which may have shrunk since.
+]]
+function ViewerApp:_mouse_pointer()
+    local w, h = self.remote:get_size()
+    local x, y = self._mouse_x, self._mouse_y
+    if not x or (self._pointer_x and (self._pointer_x ~= math.floor(x + 0.5)
+                                      or self._pointer_y ~= math.floor(y + 0.5))) then
+        x, y = self._pointer_x, self._pointer_y
+        if not x then x, y = w / 2, h / 2 end
+    end
+    x, y = math.max(0, math.min(x, w - 1)), math.max(0, math.min(y, h - 1))
+    self._mouse_x, self._mouse_y = x, y
+    return x, y
+end
+
+--- The Mouse-mode pointer in whole remote pixels.
+function ViewerApp:_mouse_pointer_px()
+    local x, y = self:_mouse_pointer()
+    return math.floor(x + 0.5), math.floor(y + 0.5)
+end
+
+--- Clicks `n` times at the Mouse-mode pointer, the armed modifiers held around all of them.
+function ViewerApp:_mouse_click(n)
+    local x, y = self:_mouse_pointer_px()
+    self:_press_armed()
+    for _i = 1, n do
+        self:send_pointer(x, y, 0)
+        self:send_pointer(x, y, 1)
+        self:send_pointer(x, y, 0)
+    end
+    self:_release_action_mods()
+end
+
+--- Sends the click a Mouse-mode tap left pending now; no-op when there is none.
+function ViewerApp:_flush_deferred_click()
+    if not self._deferred_click then return end
+    self:_drop_deferred_click()
+    self:_mouse_click(1)
+end
+
+--- Forgets the click a Mouse-mode tap left pending, without sending it.
+function ViewerApp:_drop_deferred_click()
+    self._deferred_click = nil
+    UIManager:unschedule(self._deferred_click_task)
+end
+
+--- Whether a screen position is near enough to the pending tap to make a double tap with it.
+function ViewerApp:_near_deferred_click(pos)
+    local pending = self._deferred_click
+    return pending ~= nil and pending.pos:distance(pos) <= double_tap_radius()
+end
+
+--[[--
+Mouse-mode tap: the click goes to the pointer, not the finger, and waits out the double-tap
+interval - a drag starting there in the meantime turns it into a button drag (`_mouse_pan`)
+instead, so the remote never sees click-then-press. A second tap there is a double click, at once.
+]]
+function ViewerApp:_mouse_tap(ges)
+    self:_end_stale_pointer_action()
+    if self:_near_deferred_click(ges.pos) then
+        self:_drop_deferred_click()
+        self:_mouse_click(2)
+        return true
+    end
+    self:_flush_deferred_click()
+    self._deferred_click = { pos = ges.pos:copy() }
+    UIManager:scheduleIn(ViewerApp.mouse_click_delay(), self._deferred_click_task)
+    return true
+end
+
+--[[--
+Mouse-mode one-finger drag: moves the pointer by the finger's movement, converted to remote
+pixels through the zoom and times the pointer speed. Starting where a tap is still pending
+(double tap & move), it drags with the left button held instead, from the pointer.
+]]
+function ViewerApp:_mouse_pan(ges)
+    local rel = ges.relative or { x = 0, y = 0 }
+    -- (`relative` is the delta since the contact began, so this is where its finger came down)
+    local start = Geom:new{ x = ges.pos.x - rel.x, y = ges.pos.y - rel.y }
+    -- a move whose pan_release never came has its own start: a new contact is a new gesture
+    if self._mouse_moving and self._mouse_start:distance(start) > 1 then
+        self._mouse_moving = nil
+    end
+    if self._drag_active == nil and not self._mouse_moving then
+        self:_end_stale_pointer_action()
+        if self:_near_deferred_click(start) then
+            self:_drop_deferred_click()
+            -- armed modifiers stay down for the whole drag, as in Touch mode
+            self:_press_armed()
+            local x, y = self:_mouse_pointer_px()
+            self:send_pointer(x, y, 1)
+            self._drag_active = "mouse"
+            self:_pointer_action_changed()
+        else
+            self:_flush_deferred_click()
+            self._mouse_moving = true
+        end
+        self._mouse_start = start
+        self._mouse_rel = { x = 0, y = 0 }
+    end
+    local prev = self._mouse_rel
+    self._mouse_rel = { x = rel.x, y = rel.y }
+    local k = self:pointer_speed() / self.remote:get_scale()
+    local x, y = self:_mouse_pointer()
+    local w, h = self.remote:get_size()
+    self._mouse_x = math.max(0, math.min(x + (rel.x - prev.x) * k, w - 1))
+    self._mouse_y = math.max(0, math.min(y + (rel.y - prev.y) * k, h - 1))
+    self:send_pointer(math.floor(self._mouse_x + 0.5), math.floor(self._mouse_y + 0.5),
+        self._drag_active == "mouse" and 1 or 0)
+    return true
 end
 
 --- Whether a canvas action still holds something down on the remote: a drag's or long press's

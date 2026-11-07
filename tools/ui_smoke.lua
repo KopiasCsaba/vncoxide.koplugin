@@ -4003,6 +4003,199 @@ check("two_finger_tap_fits_and_recentres", function()
     close_viewer(app, remote)
 end)
 
+-- ---------------------------------------------------------------- mouse mode
+
+local time = require("ui/time")
+
+--- Seconds until `action` is due on UIManager's task queue, or nil when it is not scheduled.
+local function scheduled_delay(action)
+    for _, task in ipairs(UIManager._task_queue) do
+        if task.action == action then return time.to_s(task.time - time.now()) end
+    end
+    return nil
+end
+
+--- Runs a scheduled action now, the way UIManager would when it falls due.
+local function run_scheduled(action)
+    UIManager:unschedule(action)
+    action()
+end
+
+local function last_pointer(sent) return sent.pointer[#sent.pointer] end
+
+check("mouse_drag_moves_the_pointer_relatively_with_speed", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local c = app.canvas
+    local p = Geom:new{ x = c.x + 100, y = c.y + 100 }
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = p.x + 40, y = p.y }, relative = { x = 40, y = 0 } }
+    assert_true(#sent.pointer == 1, "one event, got " .. #sent.pointer)
+    local e = sent.pointer[1]
+    local want = math.floor(200 + 40 / remote:get_scale() * 1.25 + 0.5)
+    assert_true(e.mask == 0 and e.x == want and e.y == 150,
+        string.format("expected (%d,150) mask 0, got (%d,%d) mask %d", want, e.x, e.y, e.mask))
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = p.x + 40, y = p.y } }
+    -- faster
+    app.settings.pointer_speed = "fast"
+    local fx = app._mouse_x
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = p.x + 40, y = p.y }, relative = { x = 40, y = 0 } }
+    want = math.floor(fx + 40 / remote:get_scale() * 2.0 + 0.5)
+    assert_true(last_pointer(sent).x == want, "fast: expected " .. want .. ", got " .. last_pointer(sent).x)
+    -- and clamped at the edge
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = p.x + 40, y = p.y }, relative = { x = 40000, y = 0 } }
+    assert_true(last_pointer(sent).x == 399, "clamped, got " .. last_pointer(sent).x)
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = p.x + 40, y = p.y } }
+    for _, ev in ipairs(sent.pointer) do assert_true(ev.mask == 0, "no button: mask " .. ev.mask) end
+    assert_true(app:has_pointer_action() == false, "nothing held")
+    close_viewer(app, remote)
+end)
+
+check("mouse_tap_click_is_deferred_and_lands_at_the_pointer", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local wire = wire_log(app)
+    local c = app.canvas
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 10, y = c.y + 10 } }
+    assert_true(#sent.pointer == 0, "the click waits")
+    local delay = scheduled_delay(app._deferred_click_task)
+    assert_true(delay and math.abs(delay - app.mouse_click_delay()) <= 0.05,
+        "deferred by the double-tap interval: " .. tostring(delay) .. " vs " .. app.mouse_click_delay())
+    run_scheduled(app._deferred_click_task)
+    local got = wire()
+    assert_true(got == "p0,p1,p0", "a click, got " .. got)
+    for _, e in ipairs(sent.pointer) do
+        assert_true(e.x == 200 and e.y == 150, string.format("at the pointer, got (%d,%d)", e.x, e.y))
+    end
+    close_viewer(app, remote)
+end)
+
+check("mouse_double_tap_and_move_drags_from_the_pointer", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local wire = wire_log(app)
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+    dispatch_gesture{ ges = "tap", pos = P }
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 30, y = 0 } }
+    local got = wire()
+    assert_true(got == "p1,p1", "a press then a drag move, no click: " .. got)
+    assert_true(sent.pointer[1].x == 200 and sent.pointer[1].y == 150, "pressed at the pointer")
+    local want = math.floor(200 + 30 / remote:get_scale() * 1.25 + 0.5)
+    assert_true(sent.pointer[2].x == want, "dragged relatively: " .. sent.pointer[2].x .. " vs " .. want)
+    assert_true(app._drag_active == "mouse")
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = P.x + 40, y = P.y } }
+    got = wire()
+    assert_true(got == "p0", "released: " .. got)
+    assert_true(last_pointer(sent).x == want, "released at the pointer")
+    assert_true(scheduled_delay(app._deferred_click_task) == nil, "no click left over")
+    assert_true(app:has_pointer_action() == false)
+    close_viewer(app, remote)
+end)
+
+check("mouse_tap_tap_is_two_clicks_at_the_pointer", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local wire = wire_log(app)
+    local c = app.canvas
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 50, y = c.y + 50 } }
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 55, y = c.y + 50 } }
+    local got = wire()
+    assert_true(got == "p0,p1,p0,p0,p1,p0", "a double click straight away: " .. got)
+    for _, e in ipairs(sent.pointer) do assert_true(e.x == 200 and e.y == 150, "at the pointer") end
+    assert_true(scheduled_delay(app._deferred_click_task) == nil, "nothing left scheduled")
+    close_viewer(app, remote)
+end)
+
+check("mouse_long_press_right_clicks_at_the_pointer", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local c = app.canvas
+    local far = Geom:new{ x = c.x + 5, y = c.y + 5 }
+    dispatch_gesture{ ges = "hold", pos = far }
+    local e = last_pointer(sent)
+    assert_true(#sent.pointer == 1 and e.mask == 4 and e.x == 200 and e.y == 150,
+        "a right press at the pointer, got " .. #sent.pointer .. " event(s)")
+    dispatch_gesture{ ges = "hold_release", pos = far }
+    e = last_pointer(sent)
+    assert_true(#sent.pointer == 2 and e.mask == 0 and e.x == 200 and e.y == 150, "released at the pointer")
+    assert_true(app:has_pointer_action() == false)
+    close_viewer(app, remote)
+end)
+
+check("mouse_pending_click_is_settled_by_key_mode_switch_and_close", function()
+    local c
+    do
+        local app, remote = new_app(400, 300, { mode = "mouse" })
+        c = app.canvas
+        local wire = wire_log(app)
+        dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 50, y = c.y + 50 } }
+        app:send_key(0x61, true)
+        local got = wire()
+        assert_true(got == "p0,p1,p0,+0x61", "the click goes before the key: " .. got)
+        assert_true(scheduled_delay(app._deferred_click_task) == nil)
+        close_viewer(app, remote)
+    end
+    do
+        local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+        local wire = wire_log(app)
+        local mode_at_click
+        local send_pointer = app.session.send_pointer
+        app.session.send_pointer = function(...)
+            mode_at_click = mode_at_click or app:get_pointer_mode()
+            return send_pointer(...)
+        end
+        dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 50, y = c.y + 50 } }
+        app:set_pointer_mode("touch")
+        local got = wire()
+        assert_true(got == "p0,p1,p0", "the click is sent: " .. got)
+        assert_true(mode_at_click == "mouse", "before the switch")
+        assert_true(scheduled_delay(app._deferred_click_task) == nil, "unscheduled")
+        assert_true(#sent.pointer == 3)
+        close_viewer(app, remote)
+    end
+    do
+        local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+        dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 50, y = c.y + 50 } }
+        local task = app._deferred_click_task
+        app:onCloseWidget()
+        assert_true(#sent.pointer == 0, "nothing sent on close")
+        assert_true(scheduled_delay(task) == nil, "unscheduled")
+        assert_true(app:has_pointer_action() == false)
+        remote:free()
+    end
+end)
+
+check("mouse_pointer_is_clamped_after_the_remote_shrinks", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local c = app.canvas
+    local p = Geom:new{ x = c.x + 100, y = c.y + 100 }
+    local s = remote:get_scale() / 1.25
+    dispatch_gesture{ ges = "pan", pos = p, relative = { x = 190 * s, y = 140 * s } }
+    dispatch_gesture{ ges = "pan_release", pos = p }
+    local e = last_pointer(sent)
+    assert_true(e.x == 390 and e.y == 290, string.format("moved to (390,290), got (%d,%d)", e.x, e.y))
+    remote:resize(200, 100)
+    app:on_remote_resized()
+    dispatch_gesture{ ges = "pan", pos = p, relative = { x = 0, y = 0 } }
+    dispatch_gesture{ ges = "pan_release", pos = p }
+    e = last_pointer(sent)
+    assert_true(e.x <= 199 and e.y <= 99, string.format("pan clamped, got (%d,%d)", e.x, e.y))
+    dispatch_gesture{ ges = "tap", pos = p }
+    run_scheduled(app._deferred_click_task)
+    for i = #sent.pointer - 2, #sent.pointer do
+        e = sent.pointer[i]
+        assert_true(e.x <= 199 and e.y <= 99, string.format("click clamped, got (%d,%d)", e.x, e.y))
+    end
+    close_viewer(app, remote)
+end)
+
+check("touch_tap_stays_immediate", function()
+    local app, remote = new_app()
+    local wire = wire_log(app)
+    local n = #UIManager._task_queue
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = app.canvas.x + 50, y = app.canvas.y + 50 } }
+    local got = wire()
+    assert_true(got == "p0,p1,p0", "clicked at once: " .. got)
+    assert_true(#UIManager._task_queue == n, "nothing scheduled")
+    assert_true(app._deferred_click == nil)
+    close_viewer(app, remote)
+end)
+
 if failures > 0 then
     print(string.format("%d check(s) failed", failures))
     os.exit(1)
