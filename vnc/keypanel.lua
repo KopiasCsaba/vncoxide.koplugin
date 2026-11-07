@@ -20,7 +20,8 @@ all; nothing stays down on the remote between actions. That action is either
   in the middle of a drag.
 
 The same module also makes the key strip (`variant = "strip"`): one row above the on-screen keyboard
-with the panel's modifier buttons and a few keys (`STRIP_KEYS`), no title, tabs or combo display.
+with the panel's modifier buttons, a few keys (`STRIP_KEYS`) and `Keys…` (opens the full panel), no
+title, tabs or combo display.
 Its modifiers arm and are taken exactly like the panel's, but what it sends is not added to the
 recent combos; the viewer also hands it the keyboard's
 keys while a modifier is armed (`ViewerApp:send_osk_key`). It sits `bottom_offset` pixels above the
@@ -149,7 +150,7 @@ function KeyPanel.row_height()
 end
 
 function KeyPanel:init()
-    self.mods = {}        -- modifier name -> "armed"
+    self.mods = self.mods or {} -- modifier name -> "armed" (given: armed from the start)
     self.tab = self.tab or 1
     if self.variant == "strip" then
         -- The keyboard is modal, so it stays above the strip on the window stack and is the one
@@ -517,20 +518,27 @@ function KeyPanel:_bottom_row(width, row_height)
     return self:_button_row(entries, row_height)
 end
 
---- The strip's single row: the modifiers, then `STRIP_KEYS`; the last key absorbs the rounding.
+--- The strip's single row: the modifiers, `STRIP_KEYS`, then `Keys…`, which opens the full panel
+--- (sending nothing, the armed modifiers go along) and absorbs the rounding.
 function KeyPanel:_strip_row(width, row_height)
-    local count = #Keysyms.modifiers + #KeyPanel.STRIP_KEYS
+    local count = #Keysyms.modifiers + #KeyPanel.STRIP_KEYS + 1
     local unit, rest = unit_width(width, count, count)
     local entries = self:_modifier_entries({}, unit)
-    for i, key in ipairs(KeyPanel.STRIP_KEYS) do
+    for _i, key in ipairs(KeyPanel.STRIP_KEYS) do
         local label, keysym = key[1], key[2]
         entries[#entries + 1] = {
             id = "key:" .. label,
             text = label,
-            width = i < #KeyPanel.STRIP_KEYS and unit or unit + rest,
+            width = unit,
             callback = function() self:send_key(label, keysym) end,
         }
     end
+    entries[#entries + 1] = {
+        id = "key:panel",
+        text = _("Keys…"),
+        width = unit + rest,
+        callback = function() self.app:open_key_panel() end,
+    }
     return self:_button_row(entries, row_height)
 end
 

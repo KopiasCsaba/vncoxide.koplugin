@@ -1346,21 +1346,25 @@ function ViewerApp:set_keyboard_visible(want)
     self:evaluate_keyboard()
 end
 
---- Flips the keyboard, and keeps the "always visible" setting in sync: that setting wins over
---- the wish, so asking for the keyboard to go away while it is on would silently do nothing.
+--[[--
+The toolbar's keyboard button: shows the keyboard (with the key strip) when nothing is up, hides
+it when it is up, and closes the "Send keys" panel when that is up, leaving nothing in its place.
+Keeps the "always visible" setting in sync: that setting wins over the wish, so asking for the
+keyboard to go away while it is on would silently do nothing.
+]]
 function ViewerApp:toggle_keyboard()
-    -- the panel sits where the keyboard goes: closing it is the way back to the keyboard
-    if self.key_panel then
-        self.vk_wanted = true
-        self:close_key_panel()
-        return
-    end
-    local want = not self:is_keyboard_wanted()
+    local panel_open = self.key_panel ~= nil
+    local want = not panel_open and not self:is_keyboard_wanted()
     if not want and self.settings.keyboard_always_visible then
         self.settings.keyboard_always_visible = false
         self.plugin.settings:flush()
     end
-    self:set_keyboard_visible(want)
+    if panel_open then
+        self.vk_wanted = false
+        self:close_key_panel() -- re-evaluates the keyboard, which stays down
+    else
+        self:set_keyboard_visible(want)
+    end
 end
 
 --- How often the window stack is re-checked while the viewer is shown.
@@ -1551,10 +1555,16 @@ function ViewerApp:_display_panel_dismissed(panel)
     self:_sync_keyboard_later()
 end
 
---- Opens the "Send keys" panel (see @{vnc.keypanel}), or returns the one already open.
+--- Opens the "Send keys" panel (see @{vnc.keypanel}), or returns the one already open. It takes
+--- the keyboard's place, and the modifiers armed on the key strip stay armed on it.
 function ViewerApp:open_key_panel()
     if self.key_panel then return self.key_panel end
-    self.key_panel = require("vnc/keypanel"):new{ app = self }
+    local strip = self.key_strip
+    local mods = {}
+    if strip then
+        for name, state in pairs(strip.mods) do mods[name] = state end
+    end
+    self.key_panel = require("vnc/keypanel"):new{ app = self, mods = mods }
     UIManager:show(self.key_panel, "ui")
     self:_bottom_cover_changed()
     return self.key_panel

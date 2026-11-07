@@ -4283,8 +4283,97 @@ check("key_strip_and_panel_are_exclusive", function()
         "the panel replaces the keyboard and the strip")
     tap_toolbar(app, "keyboard")
     UIManager:_checkTasks()
-    assert_true(app.key_panel == nil and app.key_strip ~= nil and app.vk_visible,
-        "the keyboard tap closes the panel and brings keyboard and strip back")
+    assert_true(app.key_panel == nil and app.key_strip == nil and not app.vk_visible,
+        "the keyboard tap closes the panel, and nothing comes back in its place")
+    close_viewer(app, remote)
+end)
+
+--- Whether the real VirtualKeyboard or the key strip is on the window stack.
+local function keyboard_on_stack(app)
+    return count(function(w) return w == app.vk or (w.variant == "strip") end) > 0
+end
+
+check("keyboard_button_shows_then_hides_and_closes_the_panel", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    -- tap, tap: shown, then hidden (the real keyboard and the strip both leave the stack)
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.vk_visible and app.key_strip ~= nil and keyboard_on_stack(app), "first tap shows both")
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(not app.vk_visible and app.key_strip == nil and not keyboard_on_stack(app),
+        "second tap hides both")
+    -- keyboard up, long press: the panel; then a tap closes it and shows nothing
+    tap_toolbar(app, "keyboard")
+    hold_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel ~= nil and not keyboard_on_stack(app), "long press: the panel alone")
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel == nil and not app.vk_visible and app.key_strip == nil
+        and not keyboard_on_stack(app), "with the panel open a tap closes it and shows nothing")
+    -- the next tap shows the keyboard again
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.vk_visible and app.key_strip ~= nil, "then a tap shows the keyboard again")
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    -- with "keyboard always visible" on: the panel's close also turns the setting off
+    app.settings.keyboard_always_visible = true
+    app:evaluate_keyboard()
+    hold_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel ~= nil, "panel open")
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel == nil and not app.vk_visible and not keyboard_on_stack(app),
+        "always visible: the tap still leaves nothing shown")
+    assert_true(app.settings.keyboard_always_visible == false, "and turns the setting off")
+    close_viewer(app, remote)
+end)
+
+check("key_strip_keys_button_opens_the_panel_keeping_armed_modifiers", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "keyboard")
+    app:set_toolbar_visible(false)
+    local strip = app.key_strip
+    local last = strip.button_by_id["key:panel"]
+    assert_true(last ~= nil, "the strip has a Keys… button")
+    assert_true(last.text == "Keys…", "labelled Keys…, got " .. tostring(last.text))
+    local wire = wire_log(app)
+    touch(strip, "mod:Ctrl")
+    UIManager:forceRePaint()
+    assert_true(last.dimen.x + last.dimen.w >= strip.dimen.w - 2, "it is the strip's last button")
+    touch(strip, "key:panel")
+    UIManager:_checkTasks()
+    local panel = app.key_panel
+    assert_true(panel ~= nil and panel.variant == nil, "the full Send keys panel opens")
+    assert_true(app.key_strip == nil and not app.vk_visible and not keyboard_on_stack(app),
+        "keyboard and strip go away")
+    assert_true(wire() == "", "nothing is sent")
+    assert_true(panel:modifier_state("Ctrl") == "armed", "Ctrl stays armed on the panel")
+    close_viewer(app, remote)
+end)
+
+check("toolbar_keyboard_button_uses_the_plugin_icon", function()
+    local Icons = require("vnc/icons")
+    local path = Icons.path("keyboard")
+    assert_true(path:sub(1, 1) == "/", "an absolute path: " .. path)
+    local here, there = lfs.attributes(path), lfs.attributes(plugin_dir .. "/icons/keyboard.svg")
+    assert_true(here and there and here.ino == there.ino and here.dev == there.dev,
+        "the plugin's icons/keyboard.svg: " .. path)
+    local f = io.open(path, "rb")
+    assert_true(f ~= nil, "the icon file exists")
+    local svg = f:read("*a"); f:close()
+    assert_true(svg:find('viewBox="0 0 48 48"', 1, true), "the mdlight viewBox")
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local button = app.toolbar.button_by_id.keyboard
+    assert_true(button.text == nil, "no text glyph")
+    assert_true(button.label_widget.file == path, "the button draws the icon file, got "
+        .. tostring(button.label_widget.file))
+    UIManager:setDirty(app, "ui")
+    UIManager:forceRePaint()
+    assert_true(button.label_widget._bb ~= nil, "and renders it")
     close_viewer(app, remote)
 end)
 

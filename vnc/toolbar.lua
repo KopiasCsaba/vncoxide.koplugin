@@ -7,9 +7,9 @@ canvas beside and below it stays fully interactive. A swipe down in the top menu
 hides it (`ViewerApp:toggle_toolbar`).
 
 Buttons, left to right: Close (disconnect, after a confirmation), Display (the display panel),
-Mode (Touch/Mouse; the label shows the current one), Keyboard (tap: the on-screen keyboard, long
-press: the "Send keys" panel), Rotate, Scroll up/down (only with the `toolbar_scroll_buttons`
-setting) and More (the menu).
+Mode (Touch/Mouse; the label shows the current one), Keyboard (tap: shows or hides the on-screen
+keyboard with the key strip, or closes the "Send keys" panel; long press: that panel), Rotate,
+Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More (the menu).
 
 @module vnc.toolbar
 ]]
@@ -25,6 +25,7 @@ local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
+local Icons = require("vnc/icons")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Size = require("ui/size")
 local UIManager = require("ui/uimanager")
@@ -38,9 +39,8 @@ local Toolbar = InputContainer:extend{
 Toolbar.IDS = { "close", "display", "mode", "keyboard", "rotate", "scroll_up", "scroll_down", "more" }
 
 -- Labels for the buttons without a fitting icon: these glyphs come from KOReader's default UI font
--- fallbacks (FreeSerif has all three).
+-- fallbacks (FreeSerif has both).
 local MODE_GLYPHS = { touch = "☝", mouse = "🖱" }
-local KEYBOARD_GLYPH = "⌨"
 
 --- Asks before disconnecting; the answer lands on the connection list (`ViewerApp:disconnect_session`).
 local function confirm_disconnect(app)
@@ -56,14 +56,15 @@ local function confirm_disconnect(app)
     app:_sync_keyboard_later()
 end
 
---- Per button: an icon from KOReader's set or a text label, and what a tap (and a long press) does.
+--- Per button: an icon from KOReader's set (`icon`), one of the plugin's own (`icon_file`) or a text
+--- label, and what a tap (and a long press) does.
 local function specs(app)
     return {
         close = { icon = "close", callback = function() confirm_disconnect(app) end },
         display = { icon = "appbar.pagefit", callback = function() app:toggle_display_panel() end },
         mode = { text = MODE_GLYPHS[app:get_pointer_mode()], callback = function() app:toggle_pointer_mode() end },
         keyboard = {
-            text = KEYBOARD_GLYPH,
+            icon_file = Icons.path("keyboard"),
             callback = function() app:toggle_keyboard() end,
             hold_callback = function() app:open_key_panel() end,
         },
@@ -109,7 +110,8 @@ function Toolbar:relayout()
             end
         end
         local button = Button:new{
-            icon = spec.icon,
+            -- a plugin icon starts as KOReader's placeholder, then gets its file (below)
+            icon = spec.icon or (spec.icon_file and "icon-not-found"),
             icon_width = icon_size,
             icon_height = icon_size,
             text = spec.text,
@@ -124,6 +126,12 @@ function Toolbar:relayout()
             hold_callback = act(spec.hold_callback),
             show_parent = app,
         }
+        if spec.icon_file then
+            -- Button only takes icon names, which KOReader resolves in its own folders: point the
+            -- image at our file instead (same size), to be rendered on the next paint
+            button.label_widget:free()
+            button.label_widget.file = spec.icon_file
+        end
         self.button_by_id[id] = button
         group[#group + 1] = CenterContainer:new{ dimen = Geom:new{ w = cell, h = cell }, button }
     end
