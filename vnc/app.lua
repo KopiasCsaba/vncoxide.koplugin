@@ -91,6 +91,8 @@ function ViewerApp:init()
     self._deferred_click_task = function() self:_deferred_click_due() end
     -- ends a drag or long press whose end went to a widget above us (see `_watch_release`)
     self._release_watch_task = function() self:_release_watch_tick() end
+    -- keeps the idle clocks (dim, standby, suspend) from running out, see `_apply_keep_screen_on`
+    self._keep_awake_task = function() self:_keep_awake_tick() end
     -- a long press waits for its confirmation (see `onHold`), a false one for what follows it
     self._hold_pending = nil
     self._hold_confirm_task = function() self:_hold_confirm_due() end
@@ -1656,9 +1658,15 @@ function ViewerApp:reassert_text_input()
     self:_ensure_text_input()
 end
 
---- Hold off (or give back) KOReader's auto-suspend: AutoSuspend only sees input events, and the
---- remote screen changing is not one. Idempotent; the flag's previous value is restored, and only
---- if we were the one who set it (another owner, e.g. Keep-alive, keeps its pause).
+-- Seconds between the synthetic input events of "Keep screen on". AutoDim's shortest idle
+-- setting is 30 s, so 20 s keeps every idle clock from running out.
+ViewerApp.KEEP_AWAKE_INTERVAL = 20
+
+--- Hold off (or give back) KOReader's auto-suspend, standby and light dimming: those plugins only
+--- see input events, and the remote screen changing is not one. Auto-suspend is paused through its
+--- flag (the previous value is restored, and only if we were the one who set it: another owner,
+--- e.g. Keep-alive, keeps its pause); AutoDim has no such flag, so while on we also fire the
+--- "InputEvent" hook every `KEEP_AWAKE_INTERVAL` s, which resets all their idle clocks. Idempotent.
 function ViewerApp:_apply_keep_screen_on(closing)
     local share = require("pluginshare")
     local want = not closing and self.settings.keep_screen_on and true or false
@@ -1670,6 +1678,15 @@ function ViewerApp:_apply_keep_screen_on(closing)
         share.pause_auto_suspend = self._pause_prev
         self._pause_taken, self._pause_prev = nil, nil
     end
+    UIManager:unschedule(self._keep_awake_task)
+    if want then
+        UIManager:scheduleIn(self.KEEP_AWAKE_INTERVAL, self._keep_awake_task)
+    end
+end
+
+function ViewerApp:_keep_awake_tick()
+    UIManager.event_hook:execute("InputEvent")
+    UIManager:scheduleIn(self.KEEP_AWAKE_INTERVAL, self._keep_awake_task)
 end
 
 function ViewerApp:onShow()

@@ -154,7 +154,7 @@ and the connection list (**Connectionsâ€¦**, to switch or add one), **Send textâ
 and send it to the remote as key presses; characters with no key are skipped and counted),
 **Refresh** (asks for a full picture and flashes the screen), **Ctrl+Alt+Del**, **Lock screen**
 (Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel), **Keyboard always visible**,
-**Keep screen on** (default on: the device does not auto-suspend while the viewer is open),
+**Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Show scroll buttons on toolbar**, **Help** and **Leave (keep connection)**. Switches keep the menu open;
 anything else closes it.
 
@@ -306,7 +306,7 @@ return {
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)
         ["keyboard_always_visible"] = false,
-        ["keep_screen_on"] = true,         -- no auto-suspend while the viewer is open
+        ["keep_screen_on"] = true,         -- no auto-suspend, standby or light dimming while the viewer is open
         ["zoom_mode"] = "fit",             -- "fit", "fit_with_keyboard" or 0.25 .. 4
         ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
         ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the Display panel's switch)

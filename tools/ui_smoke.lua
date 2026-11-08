@@ -4640,6 +4640,42 @@ local function run_scheduled(action)
     action()
 end
 
+check("keep_screen_on_feeds_the_idle_clocks_so_the_light_does_not_dim", function()
+    local ticks = 0
+    local fake = function() ticks = ticks + 1 end
+    UIManager.event_hook:register("InputEvent", fake)
+    local app, remote = new_app()
+    local tick = app._keep_awake_task
+    assert_true(type(tick) == "function", "has a keep-awake task")
+    local d = scheduled_delay(tick)
+    assert_true(d and d > 0 and d <= 20, "scheduled within 20 s while shown, got " .. tostring(d))
+    run_scheduled(tick)
+    assert_true(ticks == 1, "the task fires InputEvent, got " .. ticks)
+    assert_true(scheduled_delay(tick) ~= nil, "and re-arms itself")
+    -- applying twice does not double up
+    app:_apply_keep_screen_on()
+    local n = 0
+    for _, t in ipairs(UIManager._task_queue) do if t.action == tick then n = n + 1 end end
+    assert_true(n == 1, "one scheduled copy, got " .. n)
+    -- setting off
+    app.settings.keep_screen_on = false
+    app:_apply_keep_screen_on()
+    assert_true(scheduled_delay(tick) == nil, "off unschedules")
+    local before = ticks
+    UIManager:_checkTasks()
+    assert_true(ticks == before, "no further calls once off")
+    -- back on, then close
+    app.settings.keep_screen_on = true
+    app:_apply_keep_screen_on()
+    assert_true(scheduled_delay(tick) ~= nil, "on schedules again")
+    app:onCloseWidget()
+    assert_true(scheduled_delay(tick) == nil, "close unschedules")
+    app:onCloseWidget()
+    assert_true(scheduled_delay(tick) == nil, "close is idempotent")
+    UIManager.event_hook:unregister("InputEvent", fake)
+    remote:free()
+end)
+
 local function last_pointer(sent) return sent.pointer[#sent.pointer] end
 
 check("mouse_drag_moves_the_pointer_relatively_with_speed", function()
