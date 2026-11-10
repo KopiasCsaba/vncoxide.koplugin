@@ -62,6 +62,9 @@ Server.STALL_TIMEOUT = 10
 --- or no bytes: a connection that says nothing would otherwise keep one of the
 --- @{Server.MAX_CLIENTS} slots forever (the stall watchdog only looks at half-received messages).
 Server.HANDSHAKE_TIMEOUT = 10
+--- How long a client may stay backlogged (c.f., @{Server:_backlogged}) without taking a single byte
+--- before it is dropped.
+Server.TX_STALL_TIMEOUT = 10
 --- How long an incremental request may be *held* before the client is sent an empty update as a
 --- sign of life (c.f., @{Server:_answer_held}). Measured from the client's latest request, so a
 --- client that keeps asking while nothing changes is never answered with an empty update at all -
@@ -671,6 +674,18 @@ function Server:_adopt_client(sock)
     self:_client_step(client)
 end
 
+--[[--
+Whether `client` has more queued than about two full frames. A client that stops reading while it
+keeps asking for non-incremental updates would otherwise have a frame encoded and queued for every
+request, without bound. While it is backlogged its messages are neither read nor parsed (its
+requests wait, in the kernel and in `rx`, until it has caught up), held requests and continuous
+updates are not answered, and only the flush runs.
+]]
+function Server:_backlogged(client)
+    local sw, sh = self:_screen_size()
+    return client.tx_len > 2 * sw * sh * 4
+end
+
 function Server:_drop_client(client, why)
     if client.dropped then return end
     client.dropped = true
@@ -708,6 +723,8 @@ function Server:_client_step(client)
     local first = true
     while not client.dropped do
         local kind, arg
+        -- A request answered now would only grow a queue the client is not taking.
+        if self:_backlogged(client) then return end
         if client.state == "reading" then
             -- Only ever resume a byte-hungry coroutine with its bytes; anything else would make the
             -- protocol's reader error out with "transport returned nil bytes".
@@ -818,6 +835,10 @@ end
 --- Reads from the socket, advances the state machine, flushes outgoing data.
 function Server:_service_client(client)
     if client.dropped then return end
+    if self:_backlogged(client) then
+        self:_flush_client(client)
+        return
+    end
     local sock = client.sock
 
     -- Read, parse, and read once more. The reads do not block (c.f., @{Server:_read_available}):
@@ -857,7 +878,10 @@ function Server:_flush_client(client)
     -- Reads run with a zero timeout; writes keep the short blocking one they always had (a
     -- timed-out send still reports its progress in `last`, c.f. below, so nothing is lost when it
     -- does time out).
-    sock:settimeout(Server.IO_TIMEOUT)
+    -- A client whose last flush could not send a single byte (its socket buffer is full: it is not
+    -- reading) is tried without blocking, so it does not cost the UI thread IO_TIMEOUT per poll.
+    sock:settimeout(client.tx_blocked and 0 or Server.IO_TIMEOUT)
+    local progressed = false
     while client.tx_len > 0 and not client.dropped do
         local chunk = client.tx[1]
         local sent, err, last = sock:send(chunk, 1)
@@ -875,7 +899,11 @@ function Server:_flush_client(client)
                 client.tx[1] = chunk:sub(sent + 1)
             end
             client.tx_len = client.tx_len - sent
+            client.tx_progress_at = socket.gettime()
+            progressed = true
+            client.tx_blocked = false
         elseif err == "timeout" then
+            client.tx_blocked = not progressed
             break
         else
             self:_drop_client(client, "write failed: " .. tostring(err))
@@ -1008,10 +1036,17 @@ function Server:_tick_client(client)
     -- the two paths share `sent_gen`, so the same change never goes out twice. A request the
     -- client left *held* is answered the same way, and first, since it is the older claim on
     -- whatever changed.
-    if not client.dropped then
+    if not client.dropped and not self:_backlogged(client) then
         self:_answer_held(client)
         self:_push_continuous(client)
         self:_flush_client(client)
+    end
+    if not client.dropped and self:_backlogged(client)
+            and socket.gettime() - (client.tx_progress_at or client.accepted_at)
+                >= Server.TX_STALL_TIMEOUT then
+        self:_drop_client(client, string.format("took none of its %d queued bytes in %gs",
+            client.tx_len, Server.TX_STALL_TIMEOUT))
+        return
     end
     -- A press whose client has not released or moved yet is a long press once a full hold
     -- interval has passed; that is decided here, on the poll, because while the contact is

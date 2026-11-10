@@ -4449,5 +4449,51 @@ check("silent_connections_do_not_hold_the_client_slots", function()
     if not ok then error(err, 0) end
 end)
 
+check("a_client_that_stops_reading_has_a_bounded_queue_and_is_dropped", function()
+    -- A client that never read and kept sending non-incremental requests had a full frame queued
+    -- for every one of them (1.5 GB in 200 polls), and every poll blocked IO_TIMEOUT in send.
+    local Server = require("vnc/server")
+    local socket = require("socket")
+    local saved = Server.TX_STALL_TIMEOUT
+    Server.TX_STALL_TIMEOUT = 0.5
+    local ok, err = pcall(with_hostile_server, "", function(server, port)
+        local cli = hostile_connect(port)
+        hostile_handshake(cli, server)
+        local sw, sh = server:_screen_size()
+        local frame = sw * sh * 4
+        local req = string.char(3, 0, 0, 0, 0, 0, 0x0f, 0xff, 0x0f, 0xff):rep(4)
+        local client = select(2, next(server.clients))
+        local peak, slow_polls = 0, 0
+        for _ = 1, 100 do
+            cli:send(req)
+            local t0 = socket.gettime()
+            server:_poll()
+            if socket.gettime() - t0 >= Server.IO_TIMEOUT then slow_polls = slow_polls + 1 end
+            peak = math.max(peak, client.tx_len)
+        end
+        print(string.format("   peak queue %.1f MB (frame %.1f MB), %d of 100 polls took >= %d ms",
+            peak / 1e6, frame / 1e6, slow_polls, Server.IO_TIMEOUT * 1000))
+        assert_true(peak <= 3 * frame, string.format("the queue must stay within ~2 frames plus the"
+            .. " one being encoded: %d bytes, frame %d", peak, frame))
+        assert_true(slow_polls <= 10, "a stalled client must not block most polls in send ("
+            .. slow_polls .. " of 100 did)")
+        -- it catches up: what was held back is served, and it is kept
+        local got = drain_socket(cli, 1.5, server)
+        assert_true(#got > 0 and server:client_count() == 1,
+            "a client that reads again must be served and kept")
+        -- it stops reading for good: dropped once nothing has left for TX_STALL_TIMEOUT
+        local deadline = socket.gettime() + 5
+        while socket.gettime() < deadline and server:client_count() > 0 do
+            cli:send(req)
+            server:_poll()
+            socket.sleep(0.01)
+        end
+        assert_true(server:client_count() == 0, "a client that takes nothing must be dropped")
+        cli:close()
+    end)
+    Server.TX_STALL_TIMEOUT = saved
+    if not ok then error(err, 0) end
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
