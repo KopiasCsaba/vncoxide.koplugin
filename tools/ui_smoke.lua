@@ -5411,6 +5411,25 @@ check("mouse_click_does_not_wait_for_a_finger_far_away", function()
     close_viewer(app, remote)
 end)
 
+--- The click a Mouse-mode tap left pending takes the modifiers armed when the tap came; one armed
+--- while it waits is for the next action (it used to be pressed, and disarmed, with that click).
+check("mouse_deferred_click_takes_only_the_modifiers_armed_at_its_tap", function()
+    local app, remote = new_app(400, 300, { mode = "mouse" })
+    local panel = open_key_panel(app)
+    local wire = wire_log(app)
+    panel:tap_modifier("Shift")
+    local c = app.canvas
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 20, y = c.y + 20 } }
+    assert_true(app._deferred_click ~= nil and wire() == "", "the click waits")
+    panel:tap_modifier("Ctrl")
+    run_scheduled(app._deferred_click_task)
+    local got = wire()
+    assert_true(got == "+0xFFE1,p0,p1,p0,-0xFFE1", "Shift-click only: " .. got)
+    assert_true(panel:modifier_state("Ctrl") == "armed" and panel:modifier_state("Shift") == nil,
+        "Ctrl stays armed for the next action")
+    close_viewer(app, remote)
+end)
+
 check("mouse_tap_then_hold_drags_with_the_left_button", function()
     local app, remote, sent = new_app(400, 300, { mode = "mouse" })
     local wire = wire_log(app)
