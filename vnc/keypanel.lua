@@ -1,12 +1,13 @@
 --[[--
 The "Send keys" panel: any hotkey for the remote desktop, from a touch screen.
 
-A bottom-anchored panel (full width, as tall as it needs) built from KOReader's own pieces: a
-TitleBar with ✕ (close) and, right of it, a keyboard icon (back to the on-screen keyboard and its
-strip, armed modifiers included) at the left, rows of borderless Buttons separated by grey lines (the ButtonTable
-look), and the ToggleSwitch of the bottom configuration panel for the tabs. The remote stays
-visible above it and keeps updating; taps there still click the remote (the viewer does not count
-the panel as a popup, c.f. `ViewerApp:_input_target`).
+A bottom-anchored panel (full width, as tall as it needs) built from KOReader's own pieces: rows
+of borderless Buttons separated by grey lines (the ButtonTable look), and the ToggleSwitch of the
+bottom configuration panel for the tabs. Its top row is the key strip's row (`_top_row`, below)
+with two different buttons at the left: ✕ (closes the panel) and a keyboard icon (back to the
+on-screen keyboard and its strip, armed modifiers included). The remote stays visible above it and
+keeps updating; taps there still click the remote (the viewer does not count the panel as a popup,
+c.f. `ViewerApp:_input_target`).
 
 Modifiers (Ctrl, Shift, Alt, Super) are sticky for exactly one action. A tap arms one (it turns
 black), another tap disarms it. The next action takes every armed modifier and then disarms them
@@ -14,7 +15,7 @@ all; nothing stays down on the remote between actions. That action is either
 
 * a key from the panel: armed modifier downs in Ctrl, Shift, Alt, Super order, key down, key up,
   modifier ups in reverse;
-* the combo display, with only modifiers armed: those modifiers alone (Super on its own);
+* "Modifiers only" (Keys tab), with only modifiers armed: those modifiers alone (Super on its own);
 * a tap, long press or drag on the remote canvas (Ctrl+click, Shift+click, Alt+drag): the viewer
   sends the downs before the pointer press and the ups right after the pointer release
   (`ViewerApp:_press_armed`), and sends any ups still pending when the panel or the viewer closes
@@ -22,8 +23,8 @@ all; nothing stays down on the remote between actions. That action is either
 
 The same module also makes the key strip (`variant = "strip"`): one row above the on-screen keyboard
 with, from the left, an X (closes the keyboard, like the toolbar's keyboard button), the "Send keys"
-icon (`icons/keys.svg`, opens the full panel), the panel's modifier buttons and a few keys
-(`STRIP_KEYS`); no title, tabs or combo display.
+icon (`icons/keys.svg`, opens the full panel), then the same modifier buttons and keys
+(`STRIP_KEYS`) as the panel's top row; no tabs.
 Its modifiers arm and are taken exactly like the panel's, but what it sends is not added to the
 recent combos; the viewer also hands it the keyboard's
 keys while a modifier is armed (`ViewerApp:send_osk_key`). It sits `bottom_offset` pixels above the
@@ -46,11 +47,9 @@ local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
-local IconButton = require("ui/widget/iconbutton")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local Size = require("ui/size")
-local TitleBar = require("ui/widget/titlebar")
 local ToggleSwitch = require("ui/widget/toggleswitch")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
@@ -100,15 +99,15 @@ end
 local TABS = {
     {
         label = _("Keys"),
-        columns = 5,
+        columns = 4,
+        -- (Esc, Tab, the arrows and Del are on the top row; `modifiers_only` is no key, see `_grid`)
         rows = {
-            { { _("Esc"), X.Escape }, { _("Tab"), X.Tab }, { _("Enter"), X.Return },
-              { _("Backspace"), X.BackSpace }, { _("Delete"), X.Delete } },
-            { { _("Insert"), X.Insert }, { _("Home"), X.Home }, { _("End"), X.End },
-              { _("Page Up"), X.Prior }, { _("Page Down"), X.Next } },
-            { { _("Space"), X.space }, { _("Menu"), X.Menu }, { _("Print Screen"), X.Print },
-              { _("Pause"), X.Pause }, { _("Caps Lock"), X.Caps_Lock } },
-            { { "←", X.Left }, { "↑", X.Up }, { "↓", X.Down }, { "→", X.Right } },
+            { { _("Enter"), X.Return }, { _("Backspace"), X.BackSpace }, { _("Insert"), X.Insert },
+              { _("Home"), X.Home } },
+            { { _("End"), X.End }, { _("Page Up"), X.Prior }, { _("Page Down"), X.Next },
+              { _("Space"), X.space } },
+            { { _("Menu"), X.Menu }, { _("Print Screen"), X.Print }, { _("Pause"), X.Pause },
+              { _("Modifiers only"), modifiers_only = true } },
         },
     },
     { label = "F1–F12", columns = 4, rows = function_keys() },
@@ -141,7 +140,7 @@ local KeyPanel = InputContainer:extend{
     covers_fullscreen = false,
 }
 
---- The strip's keys, after its modifiers.
+--- The keys of the strip and of the panel's top row, after the modifiers.
 KeyPanel.STRIP_KEYS = {
     { "Esc", X.Escape }, { "Tab", X.Tab },
     { "←", X.Left }, { "↑", X.Up }, { "↓", X.Down }, { "→", X.Right },
@@ -224,7 +223,7 @@ function KeyPanel:send_key(label, keysym)
     self:_update()
 end
 
---- The combo display: presses and releases just the armed modifiers (e.g. Super alone).
+--- "Modifiers only": presses and releases just the armed modifiers (e.g. Super alone).
 function KeyPanel:send_modifiers_only()
     local armed = self:_mods_where(is_armed)
     if #armed == 0 then return end
@@ -329,16 +328,6 @@ end
 
 -- ---------------------------------------------------------------- layout
 
---- What the combo display says: the modifiers that will go with the next key.
-function KeyPanel:combo_display_text()
-    local parts = {}
-    for _i, m in ipairs(Keysyms.modifiers) do
-        if self.mods[m.name] == "armed" then parts[#parts + 1] = m.name end
-    end
-    if #parts == 0 then return _("Tap a key") end
-    return table.concat(parts, "+") .. "+…"
-end
-
 local function separator(w, h)
     return LineWidget:new{
         background = Blitbuffer.COLOR_GRAY,
@@ -415,20 +404,6 @@ function KeyPanel:_modifier_entries(entries, unit)
     return entries
 end
 
-function KeyPanel:_modifier_row(width, row_height)
-    local unit, rest = unit_width(width, 6, 5)
-    local entries = self:_modifier_entries({}, unit)
-    entries[#entries + 1] = {
-        id = "combo",
-        text = self:combo_display_text(),
-        width = 2 * unit + rest,
-        bold = false,
-        enabled = #self:_mods_where(is_armed) > 0,
-        callback = function() self:send_modifiers_only() end,
-    }
-    return self:_button_row(entries, row_height)
-end
-
 function KeyPanel:_tab_row(width, row_height)
     local labels = {}
     for i, tab in ipairs(TABS) do labels[i] = tab.label end
@@ -474,12 +449,22 @@ function KeyPanel:_grid(width, row_height)
         local entries = {}
         for _i, key in ipairs(row) do
             local label, keysym = key[1], key[2]
-            entries[#entries + 1] = {
-                id = "key:" .. label,
-                text = label,
-                width = unit,
-                callback = function() self:send_key(label, keysym) end,
-            }
+            if key.modifiers_only then
+                entries[#entries + 1] = {
+                    id = "modifiers_only",
+                    text = label,
+                    width = unit,
+                    enabled = self:has_armed(),
+                    callback = function() self:send_modifiers_only() end,
+                }
+            else
+                entries[#entries + 1] = {
+                    id = "key:" .. label,
+                    text = label,
+                    width = unit,
+                    callback = function() self:send_key(label, keysym) end,
+                }
+            end
         end
         group[#group + 1] = self:_button_row(entries, key_h)
         if r < n then group[#group + 1] = separator(width, line) end
@@ -532,17 +517,32 @@ function KeyPanel:_bottom_row(width, row_height)
     return self:_button_row(entries, row_height)
 end
 
---- The strip's single row: an X (closes the on-screen keyboard, like the toolbar's keyboard
---- button), the "Send keys" icon (opens the full panel, sending nothing: the armed modifiers go
---- along), then the modifiers and `STRIP_KEYS`; the last key absorbs the rounding.
-function KeyPanel:_strip_row(width, row_height)
+--[[--
+The strip's single row, also the panel's top row: two buttons, then the modifiers and `STRIP_KEYS`;
+the last key absorbs the rounding. The two at the left:
+
+* strip: ✕ (closes the on-screen keyboard, like the toolbar's keyboard button) and the "Send keys"
+  icon (opens the full panel, sending nothing: the armed modifiers go along);
+* panel: ✕ (closes the panel) and the keyboard icon (back to the on-screen keyboard and its strip,
+  `ViewerApp:switch_to_keyboard`, the armed modifiers go along).
+]]
+function KeyPanel:_top_row(width, row_height)
     local count = 2 + #Keysyms.modifiers + #KeyPanel.STRIP_KEYS
     local unit, rest = unit_width(width, count, count)
-    local entries = {
-        { id = "close", icon = "close", width = unit, callback = function() self.app:toggle_keyboard() end },
-        { id = "panel", icon_file = Icons.path("keys"), width = unit,
-          callback = function() self.app:open_key_panel() end },
-    }
+    local entries
+    if self.variant == "strip" then
+        entries = {
+            { id = "close", icon = "close", width = unit, callback = function() self.app:toggle_keyboard() end },
+            { id = "panel", icon_file = Icons.path("keys"), width = unit,
+              callback = function() self.app:open_key_panel() end },
+        }
+    else
+        entries = {
+            { id = "close", icon = "close", width = unit, callback = function() self:onClose() end },
+            { id = "keyboard", icon_file = Icons.path("keyboard"), width = unit,
+              callback = function() self.app:switch_to_keyboard() end },
+        }
+    end
     self:_modifier_entries(entries, unit)
     for _i, key in ipairs(KeyPanel.STRIP_KEYS) do
         local label, keysym = key[1], key[2]
@@ -571,7 +571,7 @@ function KeyPanel:_build_strip(screen)
         VerticalGroup:new{
             align = "center",
             separator(screen.w, line),
-            self:_strip_row(screen.w, row_h - line),
+            self:_top_row(screen.w, row_h - line),
         },
     }
     local h = frame:getSize().h
@@ -581,50 +581,6 @@ function KeyPanel:_build_strip(screen)
         frame,
     }
     self.dimen = Geom:new{ x = 0, y = bottom - h, w = screen.w, h = h }
-end
-
---[[--
-The title bar: ✕ (closes the panel) at the left and, right of it, the keyboard icon (back to the
-on-screen keyboard with its strip, `ViewerApp:switch_to_keyboard`); the title stays centred.
-
-TitleBar has room for one icon per side: the ✕ is its left icon (so height, padding and the bottom
-line are the stock ones) and the keyboard icon is one more IconButton laid over the bar right of
-it. The ✕'s tap zone, which TitleBar stretches over two icon widths to the right, is trimmed back
-to its padding so it does not take the keyboard icon's taps, and the title gets one icon width more
-on both sides so it stays centred and clear of both.
-]]
-function KeyPanel:_build_title_bar(width)
-    local padding = TitleBar.button_padding
-    local icon_size = Screen:scaleBySize(G_defaults:readSetting("DGENERIC_ICON_SIZE") * TitleBar.left_icon_size_ratio)
-    local title_bar = TitleBar:new{
-        width = width,
-        title = _("Send keys"),
-        with_bottom_line = true,
-        bottom_line_color = Blitbuffer.COLOR_DARK_GRAY,
-        title_h_padding = Size.padding.large + icon_size + padding,
-        left_icon = "close",
-        left_icon_tap_callback = function() self:onClose() end,
-        left_icon_allow_flash = false,
-        show_parent = self,
-    }
-    local close = title_bar.left_button
-    close.padding_right = padding
-    close:update()
-    local keyboard = IconButton:new{
-        icon = "icon-not-found",
-        width = icon_size,
-        height = icon_size,
-        padding = padding,
-        padding_left = 0,
-        padding_bottom = icon_size, -- the same taller tap zone as the ✕
-        overlap_offset = { close:getSize().w, 0 },
-        callback = function() self.app:switch_to_keyboard() end,
-        allow_flash = false,
-        show_parent = self,
-    }
-    Icons.set_icon_button_icon(keyboard, Icons.path("keyboard"))
-    table.insert(title_bar, keyboard)
-    self.title_bar, self.close_button, self.keyboard_button = title_bar, close, keyboard
 end
 
 --- (Re)builds the panel for the current state and screen size.
@@ -638,11 +594,9 @@ function KeyPanel:_build()
     local row_h = KeyPanel.row_height()
     local line = Size.line.medium
 
-    self:_build_title_bar(width)
     local content = VerticalGroup:new{
         align = "center",
-        self.title_bar,
-        self:_modifier_row(width, row_h),
+        self:_top_row(width, row_h),
         separator(width, line),
         self:_tab_row(width, row_h),
         separator(width, line),

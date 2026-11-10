@@ -77,7 +77,7 @@ function Help.text(mode)
         "  " .. _("One row above the on-screen keyboard: X (closes the keyboard), the Send keys icon (opens the full Send keys panel; keyboard and strip make way for it; it sends nothing and keeps armed modifiers armed), then Ctrl, Shift, Alt and Super (tap to arm; an armed modifier is used for exactly the next key, or tap, long press or drag on the picture, then released), Esc, Tab, the arrow keys and Del."),
 
         _("SEND KEYS PANEL"),
-        "  " .. _("Tabs Keys, F1\u{2013}F12, Letters and Symbols, the same sticky modifiers, a combo display, recently sent combos and Release all. Close it with its X (top left), or with the Keyboard button; the keyboard icon next to the X goes back to the on-screen keyboard and its strip."),
+        "  " .. _("Its top row is the key strip's, except for its first two buttons: X (closes the panel) and the keyboard icon (back to the on-screen keyboard and its strip; armed modifiers stay armed). Below it: tabs Keys, F1\u{2013}F12, Letters and Symbols, recently sent combos and Release all. Modifiers only (Keys tab) sends just the armed modifiers (Super on its own). The Keyboard button closes the panel too."),
 
         _("SCROLL LOCK"),
         "  " .. _("A toolbar toggle. While it is on, a two-finger drag scrolls instead of moving the picture: the content follows your fingers, and a sideways drag scrolls horizontally. Pinch still zooms. It starts off each time the viewer opens."),

@@ -3864,13 +3864,14 @@ check("key_panel_armed_modifier_wraps_the_next_key_only", function()
     touch(panel, "mod:Ctrl")
     assert_true(panel:modifier_state("Ctrl") == "armed", "a tap arms Ctrl")
     assert_true(take_keys(sent) == "", "arming sends nothing")
-    assert_true(panel.button_by_id["combo"].text == "Ctrl+…", "the combo shows it: " .. panel.button_by_id["combo"].text)
+    assert_true(panel.button_by_id["mod:Ctrl"].preselect == true, "the Ctrl button shows it")
+    assert_true(panel.button_by_id["modifiers_only"].enabled == true, "and Modifiers only has something to send")
     pick_tab(panel, 3) -- Letters
     touch(panel, "key:T")
     local got = take_keys(sent)
     assert_true(got == "+0xFFE3,+0x74,-0x74,-0xFFE3", "Ctrl+T on the wire, got " .. got)
     assert_true(panel:modifier_state("Ctrl") == nil, "Ctrl is disarmed after one key")
-    assert_true(panel.button_by_id["combo"].text == "Tap a key", "the combo is empty again")
+    assert_true(not panel.button_by_id["mod:Ctrl"].preselect, "the Ctrl button shows it")
     touch(panel, "key:T")
     got = take_keys(sent)
     assert_true(got == "+0x74,-0x74", "the next key goes alone, got " .. got)
@@ -3896,7 +3897,7 @@ check("key_panel_armed_modifiers_go_with_the_next_canvas_action", function()
     local got = wire()
     assert_true(got == "+0xFFE3,p0,p1,p0,-0xFFE3", "Ctrl+click, got " .. got)
     assert_true(panel:modifier_state("Ctrl") == nil, "Ctrl is disarmed after the click")
-    assert_true(panel.button_by_id["combo"].text == "Tap a key", "and the panel shows it")
+    assert_true(not panel.button_by_id["mod:Ctrl"].preselect, "and the panel shows it")
     dispatch_gesture{ ges = "tap", pos = above }
     got = wire()
     assert_true(got == "p0,p1,p0", "the next tap has no Ctrl, got " .. got)
@@ -4119,19 +4120,23 @@ check("key_panel_combo_order_and_modifiers_only", function()
     local panel = open_key_panel(app)
     -- armed in a scrambled order: the wire order is still Ctrl, Shift, Alt, Super
     for _, m in ipairs({ "Super", "Alt", "Ctrl", "Shift" }) do touch(panel, "mod:" .. m) end
-    assert_true(panel.button_by_id["combo"].text == "Ctrl+Shift+Alt+Super+…", panel.button_by_id["combo"].text)
+    for _, m in ipairs({ "Ctrl", "Shift", "Alt", "Super" }) do
+        assert_true(panel.button_by_id["mod:" .. m].preselect == true, m .. " shows armed")
+    end
     pick_tab(panel, 2) -- F1–F12
     touch(panel, "key:F4")
     local got = take_keys(sent)
     assert_true(got == "+0xFFE3,+0xFFE1,+0xFFE9,+0xFFEB,+0xFFC1,-0xFFC1,-0xFFEB,-0xFFE9,-0xFFE1,-0xFFE3",
         "modifier downs in order, key, ups in reverse: " .. got)
 
-    -- the combo display: nothing armed sends nothing; Super alone is pressed and released
-    assert_true(panel.button_by_id["combo"].enabled == false, "with nothing armed the combo is not a button")
-    touch(panel, "combo")
+    -- Modifiers only (Keys tab): nothing armed sends nothing; Super alone is pressed and released
+    pick_tab(panel, 1)
+    assert_true(panel.button_by_id["modifiers_only"].enabled == false, "with nothing armed it is disabled")
+    touch(panel, "modifiers_only")
     assert_true(take_keys(sent) == "", "nothing armed, nothing sent")
     touch(panel, "mod:Super")
-    touch(panel, "combo")
+    assert_true(panel.button_by_id["modifiers_only"].enabled == true, "Super armed: enabled")
+    touch(panel, "modifiers_only")
     got = take_keys(sent)
     assert_true(got == "+0xFFEB,-0xFFEB", "Super alone, got " .. got)
     assert_true(panel:modifier_state("Super") == nil, "and it is disarmed")
@@ -4169,7 +4174,7 @@ check("key_panel_recent_combos_record_and_replay", function()
     touch(panel, "mod:Alt")
     touch(panel, "key:Tab")
     touch(panel, "mod:Super")
-    touch(panel, "combo")
+    touch(panel, "modifiers_only")
     recent = app.settings.recent_combos
     assert_true(#recent == 4, "at most four, got " .. #recent)
     local labels = {}
@@ -4202,7 +4207,7 @@ check("key_panel_release_all", function()
     for _, m in ipairs({ "Ctrl", "Shift", "Alt", "Super" }) do
         assert_true(panel:modifier_state(m) == nil, m .. " is cleared")
     end
-    assert_true(panel.button_by_id["combo"].text == "Tap a key", "the combo is empty")
+    assert_true(panel.button_by_id["modifiers_only"].enabled == false, "Modifiers only has nothing to send")
     assert_true(panel.button_by_id["release_all"].enabled == false, "and there is nothing left to release")
     close_viewer(app, remote)
 end)
@@ -4212,8 +4217,7 @@ check("key_panel_close_paths_release_everything", function()
     local paths = {
         ["close button"] = function(app, panel)
             UIManager:forceRePaint()
-            local x = panel.close_button
-            dispatch_gesture{ ges = "tap", pos = centre_of(x.dimen) }
+            touch(panel, "close")
         end,
         ["Back key"] = function(app, panel)
             UIManager:sendEvent(Event:new("KeyPress", Key:new("Back", {})))
@@ -4310,12 +4314,11 @@ end)
 
 check("key_panel_every_tab_sends_its_keysyms", function()
     local tabs = {
+        -- (plus Modifiers only, which is no key: key_panel_combo_order_and_modifiers_only)
         { "Keys", {
-            { "Esc", 0xFF1B }, { "Tab", 0xFF09 }, { "Enter", 0xFF0D }, { "Backspace", 0xFF08 },
-            { "Delete", 0xFFFF }, { "Insert", 0xFF63 }, { "Home", 0xFF50 }, { "End", 0xFF57 },
-            { "Page Up", 0xFF55 }, { "Page Down", 0xFF56 }, { "Space", 0x20 }, { "Menu", 0xFF67 },
-            { "←", 0xFF51 }, { "↑", 0xFF52 }, { "↓", 0xFF54 }, { "→", 0xFF53 },
-            { "Print Screen", 0xFF61 }, { "Pause", 0xFF13 }, { "Caps Lock", 0xFFE5 } } },
+            { "Enter", 0xFF0D }, { "Backspace", 0xFF08 }, { "Insert", 0xFF63 }, { "Home", 0xFF50 },
+            { "End", 0xFF57 }, { "Page Up", 0xFF55 }, { "Page Down", 0xFF56 }, { "Space", 0x20 },
+            { "Menu", 0xFF67 }, { "Print Screen", 0xFF61 }, { "Pause", 0xFF13 } } },
         { "F1–F12", {} },
         { "Letters", {} },
         { "Symbols", {
@@ -4327,6 +4330,12 @@ check("key_panel_every_tab_sends_its_keysyms", function()
         table.insert(tabs[3][2], { string.char(c):upper(), c })
     end
     for d = 0, 9 do table.insert(tabs[3][2], { tostring(d), 0x30 + d }) end
+    -- the top row's keys are on every tab
+    local top_keys = { { "Esc", 0xFF1B }, { "Tab", 0xFF09 }, { "←", 0xFF51 }, { "↑", 0xFF52 },
+                       { "↓", 0xFF54 }, { "→", 0xFF53 }, { "Del", 0xFFFF } }
+    for _, tab in ipairs(tabs) do
+        for _, key in ipairs(top_keys) do table.insert(tab[2], key) end
+    end
 
     local app, remote, sent = new_app()
     local panel = open_key_panel(app)
@@ -4340,6 +4349,8 @@ check("key_panel_every_tab_sends_its_keysyms", function()
             if id:sub(1, 4) == "key:" then count_keys = count_keys + 1 end
         end
         assert_true(count_keys == #tab[2], string.format("%s has %d keys, expected %d", tab[1], count_keys, #tab[2]))
+        assert_true(panel.button_by_id["key:Caps Lock"] == nil, tab[1] .. ": no Caps Lock")
+        assert_true((panel.button_by_id["modifiers_only"] ~= nil) == (n == 1), tab[1] .. ": Modifiers only on Keys alone")
         for _, key in ipairs(tab[2]) do
             touch(panel, "key:" .. key[1])
             local want = string.format("+0x%X,-0x%X", key[2], key[2])
@@ -4462,7 +4473,7 @@ check("key_strip_comes_and_goes_with_the_keyboard", function()
         assert_true(strip.dimen.h == require("vnc/keypanel").row_height(), "one row tall: " .. strip.dimen.h)
         assert_true(strip_bottom(strip) == Screen:getHeight() - app.vk:getSize().h,
             "right above the keyboard: " .. strip_bottom(strip))
-        assert_true(strip.title_bar == nil and strip.button_by_id["combo"] == nil, "no title bar, no combo display")
+        assert_true(strip.title_bar == nil and strip.button_by_id["modifiers_only"] == nil, "no title bar, no tabs")
         for _, id in ipairs({ "mod:Ctrl", "mod:Alt", "mod:Shift", "mod:Super", "key:Esc", "key:Tab",
                               "key:←", "key:↑", "key:↓", "key:→", "key:Del" }) do
             assert_true(strip.button_by_id[id] ~= nil, "strip button " .. id)
@@ -4635,23 +4646,120 @@ check("key_strip_close_button_hides_the_keyboard", function()
     close_viewer(app, remote)
 end)
 
-check("key_panel_title_bar_has_close_then_keyboard_at_the_left", function()
+--- The key labelled `key` in a VirtualKeyboard or a key popup (its `layout` rows of VirtualKeys).
+local function find_vk_key(widget, key)
+    for _, row in ipairs(widget.layout or {}) do
+        for _, k in ipairs(row) do
+            if k.key == key then return k end
+        end
+    end
+end
+
+--- The long-press popup of one of the viewer keyboard's keys, if one is on the window stack.
+local function key_popup(app)
+    for _, w in ipairs(stack()) do
+        if w.parent_key and w.parent_key.keyboard == app.vk then return w end
+    end
+end
+
+check("keyboard_accent_popup_closes_after_any_pick", function()
+    -- KOReader's popup gives its centre key (the plain letter) the parent key's callback, which
+    -- only closes `close_after_callback_widget`, nil on a main keyboard key: the letter was typed
+    -- and the popup stayed on top.
     local app, remote = new_app()
+    app:toggle_keyboard()
+    UIManager:forceRePaint()
+    local key = find_vk_key(app.vk, "e")
+    assert_true(key ~= nil, "the keyboard has an e key")
+    local pos = centre_of(key.dimen)
+    local wire = wire_log(app)
+    for _, pick in ipairs({ { "e", "+0x65,-0x65" }, { "é", "+0xE9,-0xE9" } }) do
+        dispatch_gesture{ ges = "hold", pos = pos }
+        local popup = key_popup(app)
+        assert_true(popup ~= nil, pick[1] .. ": a long press opens the popup")
+        local closes = 0
+        local real_close = popup.onCloseWidget
+        popup.onCloseWidget = function(...) closes = closes + 1; return real_close(...) end
+        UIManager:forceRePaint()
+        dispatch_gesture{ ges = "hold_release", pos = pos }
+        assert_true(wire() == "", pick[1] .. ": lifting the finger types nothing")
+        assert_true(key_popup(app) == popup, pick[1] .. ": and leaves the popup up")
+        UIManager:forceRePaint()
+        local target = find_vk_key(popup, pick[1])
+        assert_true(target ~= nil, "the popup has " .. pick[1])
+        dispatch_gesture{ ges = "tap", pos = centre_of(target.dimen) }
+        UIManager:_checkTasks()
+        local got = wire()
+        assert_true(got == pick[2], pick[1] .. ": one down and up, got " .. got)
+        assert_true(key_popup(app) == nil and count(function(w) return w == popup end) == 0,
+            pick[1] .. ": the popup is gone")
+        assert_true(closes == 1, pick[1] .. ": closed exactly once, got " .. closes)
+        assert_true(app.vk_visible and count(function(w) return w == app.vk end) == 1,
+            pick[1] .. ": the keyboard stays up")
+    end
+    close_viewer(app, remote)
+end)
+
+check("key_panel_top_row_is_the_strip_row_with_close_and_keyboard", function()
+    local KeyPanel = require("vnc/keypanel")
+    local Size = require("ui/size")
+    local app, remote, sent = new_app()
     local panel = open_key_panel(app)
     UIManager:forceRePaint()
-    local tb = panel.title_bar
-    local x_close, kbd = panel.close_button, panel.keyboard_button
-    assert_true(x_close ~= nil and kbd ~= nil, "both icons exist")
-    assert_true(tb.right_button == nil, "nothing on the right")
-    assert_true(x_close.icon == "close", "KOReader's close icon")
-    assert_true(kbd.image.file == require("vnc/icons").path("keyboard"), "the plugin keyboard icon, got "
-        .. tostring(kbd.image.file))
-    assert_true(x_close.dimen.x <= panel.dimen.x + 2 * tb.button_padding, "X at the left edge: " .. x_close.dimen.x)
-    assert_true(x_close.dimen.x + x_close.dimen.w <= kbd.dimen.x, "the keyboard icon right of the X, not under its tap zone")
-    -- the title is centred in the bar (TextWidget keeps no position of its own)
-    local title_x = tb.dimen.x + math.floor((tb.dimen.w - tb.title_widget:getSize().w) / 2)
-    assert_true(title_x >= kbd.dimen.x + kbd.dimen.w,
-        "the title stays clear of the icons: " .. title_x .. " vs " .. (kbd.dimen.x + kbd.dimen.w))
+    assert_true(panel.title_bar == nil, "no title bar")
+    local function find_title_bar(w)
+        if type(w) ~= "table" then return false end
+        if w.title_widget and w.left_icon then return true end
+        for _, child in ipairs(w) do
+            if find_title_bar(child) then return true end
+        end
+        return false
+    end
+    assert_true(not find_title_bar(panel[1]), "no TitleBar anywhere in the panel")
+    -- the first row, left to right
+    local want = { "close", "keyboard", "mod:Ctrl", "mod:Shift", "mod:Alt", "mod:Super" }
+    for _, key in ipairs(KeyPanel.STRIP_KEYS) do want[#want + 1] = "key:" .. key[1] end
+    local top_y = panel.button_by_id["close"].dimen.y
+    local row = {}
+    for id, button in pairs(panel.button_by_id) do
+        if button.dimen.y == top_y then row[#row + 1] = { id = id, x = button.dimen.x } end
+    end
+    table.sort(row, function(a, b) return a.x < b.x end)
+    local ids = {}
+    for i, e in ipairs(row) do ids[i] = e.id end
+    assert_true(table.concat(ids, ",") == table.concat(want, ","), "the top row: " .. table.concat(ids, ","))
+    assert_true(panel.button_by_id["close"].icon == "close", "KOReader's close icon")
+    assert_true(panel.button_by_id["keyboard"].label_widget.file == require("vnc/icons").path("keyboard"),
+        "the plugin keyboard icon")
+    assert_true(panel.button_by_id["panel"] == nil, "no Send keys icon on the panel itself")
+    -- the Keys tab: 4 columns x 3 rows, Modifiers only last
+    local grid = {}
+    for id, button in pairs(panel.button_by_id) do
+        if button.dimen.y > top_y and (id:sub(1, 4) == "key:" or id == "modifiers_only") then
+            grid[#grid + 1] = { id = id, x = button.dimen.x, y = button.dimen.y }
+        end
+    end
+    table.sort(grid, function(a, b) return a.y < b.y or (a.y == b.y and a.x < b.x) end)
+    ids = {}
+    for i, e in ipairs(grid) do ids[i] = e.id end
+    assert_true(table.concat(ids, ",") == "key:Enter,key:Backspace,key:Insert,key:Home,key:End,key:Page Up,"
+        .. "key:Page Down,key:Space,key:Menu,key:Print Screen,key:Pause,modifiers_only",
+        "the Keys grid: " .. table.concat(ids, ","))
+    assert_true(grid[1].y < grid[5].y and grid[5].y < grid[9].y and grid[4].y == grid[1].y, "4 columns, 3 rows")
+    -- seven rows: top, tabs, four grid rows, recent; six lines between them; the window border
+    local line, border = Size.line.medium, Size.border.window
+    local h = 7 * KeyPanel.row_height() + 6 * line + 2 * border
+    assert_true(panel.dimen.h == h, "seven rows tall: " .. panel.dimen.h .. " vs " .. h)
+    -- a top-row key from the panel goes to the recent combos (the strip's do not)
+    touch(panel, "mod:Ctrl")
+    touch(panel, "key:Tab")
+    assert_true(take_keys(sent) == "+0xFFE3,+0xFF09,-0xFF09,-0xFFE3", "Ctrl+Tab from the top row")
+    assert_true(app.settings.recent_combos[1].label == "Tab" and app.settings.recent_combos[1].mods[1] == "Ctrl",
+        "and it is remembered")
+    -- ✕ closes it
+    touch(panel, "close")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel == nil and count(function(w) return w == panel end) == 0, "✕ closes the panel")
     close_viewer(app, remote)
 end)
 
@@ -4665,8 +4773,7 @@ check("key_panel_keyboard_icon_switches_back_to_the_keyboard", function()
     assert_true(panel ~= nil and not app.vk_visible, "the panel replaced the keyboard")
     touch(panel, "mod:Shift")
     local wire = wire_log(app)
-    UIManager:forceRePaint()
-    dispatch_gesture{ ges = "tap", pos = centre_of(panel.keyboard_button.dimen) }
+    touch(panel, "keyboard")
     UIManager:_checkTasks()
     assert_true(app.key_panel == nil, "the panel closes")
     assert_true(app.vk_visible and app.key_strip ~= nil and keyboard_on_stack(app), "keyboard and strip are back")

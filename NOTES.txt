@@ -272,6 +272,9 @@ it, exactly as for the keyboard (ViewerApp:_bottom_cover_height; the keyboard hi
 open). The panel swallows gestures on its own rectangle that none of its buttons took, so the gaps
 between buttons never click the hidden remote; a drag belongs to where it started. Its height never
 changes with the tab (every grid is four key rows tall), so switching tabs never moves the view.
+Its top row is the key strip's row (KeyPanel:_top_row), only the two buttons at the left differ
+(panel: close, keyboard; strip: close, Send keys); "Modifiers only" on the Keys tab sends the armed
+modifiers alone.
 Modifiers are armed by a tap and used by exactly one action, then disarmed; nothing stays down
 between actions. A panel key: armed modifier downs in Ctrl, Shift, Alt, Super order, key down, key
 up, ups in reverse. A canvas tap, long press or drag: ViewerApp:_press_armed takes them from the
@@ -326,6 +329,14 @@ pixels above the screen bottom (the keyboard's height, kept in step by KeyPanel:
 Its modifiers arm and are taken like the panel's; what it sends is not added to recent_combos, and
 while a modifier is armed the viewer hands it the on-screen keyboard's keys too
 (ViewerApp:send_osk_key). It has no Release all and no Back/Menu handling: it is part of the keyboard.
+
+Long-press popups of the on-screen keyboard's keys (accented letters) are KOReader's VirtualKeyPopup.
+Its centre key, the plain letter, reuses the parent key's callback, which closes only its
+close_after_callback_widget - nil on a key of the main keyboard - so picking the plain letter typed
+it and left the popup on top. Keyboard.new therefore checks, after every key it sends, on the next
+tick, whether a popup of its keyboard is still on the window stack and closes it (its onCloseWidget
+refreshes its own area, "ui"); the popup's other keys have closed it by then themselves, so it is
+never closed twice.
 
 A swipe reaches the viewer *after* the pans that led up to it and *instead of* a pan_release
 (`Contact:panState`), so a quick drag ends as a swipe: ViewerApp:onSwipe lets go of the button and

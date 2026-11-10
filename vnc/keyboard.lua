@@ -95,6 +95,31 @@ local function make_stub(send, on_height_changed)
 end
 
 --[[--
+Closes the long-press popup of one of `vk`'s keys once the key that typed has returned.
+
+KOReader's popup (`VirtualKeyPopup`) gives its centre key, the plain letter, the parent key's own
+callback, which closes only its `close_after_callback_widget`: nil on a key of the keyboard itself.
+Picking the plain letter therefore typed it and left the popup on top. Every other popup key closes
+the popup itself right after typing, so the check waits for the next tick: a popup still on the
+window stack then is closed (its `onCloseWidget` refreshes its own area, "ui"), one already gone is
+not closed twice.
+]]
+local function close_key_popup_later(vk)
+    local UIManager = require("ui/uimanager")
+    local function find()
+        for _i, entry in ipairs(UIManager._window_stack) do
+            local w = entry.widget
+            if w.parent_key and w.parent_key.keyboard == vk then return w end
+        end
+    end
+    local popup = vk and find()
+    if not popup then return end
+    UIManager:nextTick(function()
+        if find() == popup then UIManager:close(popup) end
+    end)
+end
+
+--[[--
 Creates the on-screen keyboard.
 
 --- @tparam table session the @{vnc.session} to send key events to
@@ -105,13 +130,19 @@ Creates the on-screen keyboard.
 ]]
 function Keyboard.new(session, on_height_changed, press)
     local VirtualKeyboard = require("ui/widget/virtualkeyboard")
-    local send = press or function(keysym)
+    local vk
+    local deliver = press or function(keysym)
         session:send_key(keysym, true)
         session:send_key(keysym, false)
     end
+    local function send(keysym)
+        deliver(keysym)
+        close_key_popup_later(vk)
+    end
     local stub = make_stub(send, on_height_changed)
     pin_latin_layout()
-    local ok, vk = pcall(VirtualKeyboard.new, VirtualKeyboard, { inputbox = stub })
+    local ok
+    ok, vk = pcall(VirtualKeyboard.new, VirtualKeyboard, { inputbox = stub })
     if not ok then
         Keyboard.restore_layout()
         error(vk)

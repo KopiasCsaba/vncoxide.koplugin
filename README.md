@@ -194,15 +194,16 @@ the panel's: the next key on the on-screen keyboard or the strip, or the next ta
 screen. A long press on **⌨** also opens the full **Send keys** panel.
 
 **Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable) above
-it. At the left of its title, **✕** closes it and the keyboard icon next to it switches back to the
-on-screen keyboard with its strip (armed modifiers stay armed there). Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns black),
-tap again to cancel. Armed modifiers go with exactly one action and are then let go: the next key
-from the panel, or the next tap, long press or drag on the screen (Ctrl+click, Shift+click or
-Shift+drag to select, Alt+drag). The text to the right shows what goes with the next action; tap it
-to send just the modifiers (Super on its own opens most desktops' launcher). The tabs hold the
-special keys (Esc, Tab, Enter, Backspace, Delete, Insert, Home, End, Page Up/Down, Space, Menu,
-arrows, Print Screen, Pause, Caps Lock), F1-F12, letters and digits, and the symbol keys of a US
-keyboard (use Shift for the shifted ones). The bottom row repeats your last four combos exactly
+it. Its top row is the key strip's row with two other buttons at the left: **✕** closes the panel and
+the keyboard icon next to it switches back to the on-screen keyboard with its strip (armed modifiers
+stay armed there); then **Ctrl**, **Shift**, **Alt**, **Super**, Esc, Tab, the four arrows and Del.
+Tap a modifier to arm it (it turns black), tap again to cancel. Armed modifiers go with exactly one
+action and are then let go: the next key from the panel, or the next tap, long press or drag on the
+screen (Ctrl+click, Shift+click or Shift+drag to select, Alt+drag). The tabs hold the other special
+keys (**Keys**: Enter, Backspace, Insert, Home, End, Page Up, Page Down, Space, Menu, Print Screen,
+Pause and **Modifiers only**, which sends just the armed modifiers: Super on its own opens most
+desktops' launcher), F1-F12, letters and digits, and the symbol keys of a US keyboard (use Shift for
+the shifted ones). The bottom row repeats your last four combos exactly
 (armed modifiers are not added to them, and are cleared), and **Release all** disarms every modifier
 and lets go of whatever a drag or long press still holds on the remote (its button, then its
 modifiers), e.g. when its release never arrived; it is available whenever something is armed or
