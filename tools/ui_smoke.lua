@@ -5626,6 +5626,121 @@ check("contrast_setting_is_kept_and_cleaned", function()
     end
 end)
 
+--- Opens the contrast dialog from its toolbar button (switched on for the check).
+local function open_contrast(app)
+    app.settings.toolbar_contrast_button = true
+    app.toolbar:relayout()
+    tap_toolbar(app, "contrast")
+    UIManager:_checkTasks()
+    local dlg = app.contrast_dialog
+    assert_true(dlg ~= nil and top() == dlg, "the contrast dialog is on top: " .. stack_desc())
+    return dlg
+end
+
+check("contrast_dialog_steps_through_the_levels", function()
+    local Settings = require("vnc/settings")
+    local levels = Settings.CONTRAST_LEVELS
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    app.settings.remote_contrast = 1
+    app:toggle_keyboard()
+    local dlg = open_contrast(app)
+    assert_true(not app.vk_visible, "the keyboard makes way for it")
+    local progress = dlg.progress
+    assert_true(progress.num_buttons == #levels, "one step per level")
+    local neutral
+    for i, v in ipairs(levels) do if v == 1 then neutral = i end end
+    assert_true(progress.position == neutral and progress.default_position == neutral, "at neutral, marked as the default")
+    -- a step repaints the whole canvas, with the new curve, without asking the server
+    local dirty = {}
+    local real_dirty = UIManager.setDirty
+    UIManager.setDirty = function(self_, w, mode, region)
+        if w == app then
+            local m, r = mode, region
+            if type(mode) == "function" then m, r = mode() end
+            dirty[#dirty + 1] = { m, r }
+        end
+        return real_dirty(self_, w, mode, region)
+    end
+    UIManager:forceRePaint()
+    local target = #levels
+    dispatch_gesture{ ges = "tap", pos = centre_of(progress.buttonprogress_content[target].dimen) }
+    UIManager.setDirty = real_dirty
+    assert_true(app.settings.remote_contrast == levels[target], "stored: " .. tostring(app.settings.remote_contrast))
+    assert_true(remote.contrast == levels[target] and remote._lut ~= nil, "the picture takes it")
+    local whole = false
+    for _, d in ipairs(dirty) do
+        local r = d[2]
+        if d[1] == "ui" and r and r.x == app.canvas.x and r.y == app.canvas.y and r.w == app.canvas.w
+                and r.h == app.canvas.h then
+            whole = true
+        end
+    end
+    assert_true(whole, "the canvas is repainted in place (partial ui refresh)")
+    UIManager:forceRePaint()
+    assert_true(remote.last_recomputed_px == app.canvas.w * app.canvas.h, "redrawn in full from the plane")
+    assert_true(sent.full_updates == 0, "no update asked from the server")
+    assert_true(top() == dlg, "the dialog stays up")
+    -- back to neutral: no curve at all
+    dispatch_gesture{ ges = "tap", pos = centre_of(progress.buttonprogress_content[neutral].dimen) }
+    assert_true(app.settings.remote_contrast == 1 and remote._lut == nil, "neutral: no curve")
+    close_viewer(app, remote)
+end)
+
+check("contrast_dialog_close_paths", function()
+    local Key = require("device/key")
+    local paths = {
+        ["close button"] = function(app, dlg)
+            UIManager:forceRePaint()
+            dispatch_gesture{ ges = "tap", pos = centre_of(dlg.title_bar.right_button.dimen) }
+        end,
+        ["tap outside"] = function(app, dlg)
+            UIManager:forceRePaint()
+            local d = dlg.dimen
+            dispatch_gesture{ ges = "tap", pos = Geom:new{ x = d.x + 5, y = d.y + d.h + 20 } }
+        end,
+        ["toolbar button"] = function(app, dlg)
+            local pos = toolbar_button_centre(app, "contrast")
+            dispatch_gesture{ ges = "tap", pos = pos }
+        end,
+        ["Back key"] = function(app, dlg)
+            UIManager:sendEvent(Event:new("KeyPress", Key:new("Back", {})))
+        end,
+    }
+    for name, act in pairs(paths) do
+        local app, remote, sent = new_app(400, 300, { toolbar = true })
+        app:toggle_keyboard()
+        local dlg = open_contrast(app)
+        act(app, dlg)
+        UIManager:_checkTasks()
+        assert_true(app.contrast_dialog == nil, name .. ": closed")
+        assert_true(count(function(w) return w == dlg end) == 0, name .. ": off the stack")
+        assert_true(app.vk_visible, name .. ": the keyboard is back")
+        assert_true(#sent.pointer == 0, name .. ": nothing reached the remote")
+        close_viewer(app, remote)
+    end
+end)
+
+check("contrast_dialog_goes_with_a_rotation_and_with_the_viewer", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local before = Screen:getRotationMode()
+    local dlg = open_contrast(app)
+    app:rotate(1)
+    assert_true(app.contrast_dialog == nil and count(function(w) return w == dlg end) == 0, "a rotation closes it")
+    app:set_rotation_mode(before)
+    dlg = open_contrast(app)
+    close_viewer(app, remote)
+    assert_true(app.contrast_dialog == nil and count(function(w) return w == dlg end) == 0, "closing the viewer too")
+end)
+
+check("stored_contrast_applies_when_the_viewer_paints", function()
+    local app, remote = new_app(400, 300)
+    app.settings.remote_contrast = 2
+    UIManager:setDirty(app, "ui")
+    UIManager:forceRePaint()
+    assert_true(remote.contrast == 2, "the stored level is drawn, got " .. tostring(remote.contrast))
+    close_viewer(app, remote)
+end)
+
 check("toolbar_more_opens_the_menu", function()
     local app, remote = new_app(400, 300, { toolbar = true })
     tap_toolbar(app, "more")

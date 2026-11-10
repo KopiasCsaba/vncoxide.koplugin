@@ -388,6 +388,8 @@ KOReader's generic screen-size change notification (also broadcast by the device
 ]]
 function ViewerApp:onScreenResize(dimen)
     if dimen then self.dimen = dimen end
+    -- the contrast dialog is laid out for the old size: it goes (the toolbar brings it back)
+    self:close_contrast_dialog()
     -- the panel's height goes into the canvas: lay it out for the new size first
     if self.key_panel then self.key_panel:relayout() end
     self.toolbar:relayout()
@@ -440,6 +442,8 @@ function ViewerApp:paintTo(bb, x, y)
         self.remote = self.session:get_remote()
     end
     if not self._view_moving then self:_sync_view_area() end
+    -- the stored contrast (a no-op unless it changed: the remote may be a new one)
+    if self.remote then self.remote:set_contrast(self.settings.remote_contrast or 1) end
     local c = self.canvas
     if self.remote and self.remote:draw_to(bb, c.x, c.y, c.w, c.h, dither) then
         -- the canvas buffer covers its whole rect: black only around it
@@ -561,6 +565,7 @@ function ViewerApp:onCloseWidget()
     -- the reconnect loop lives with the open viewer only
     self.reconnect:stop()
     self:close_display_panel(true)
+    self:close_contrast_dialog(true)
     self:close_help(true)
     -- nor the key panel, nor a modifier a drag still holds down on the remote (the session is
     -- still up here: leaving and disconnecting both close the viewer before they detach or drop it)
@@ -2231,6 +2236,50 @@ function ViewerApp:open_frontlight_dialog()
     self:_watch_keyboard_state()
 end
 
+--- Opens the contrast dialog (see @{vnc.contrastdialog}), or returns the one already open.
+function ViewerApp:open_contrast_dialog()
+    if self.contrast_dialog then return self.contrast_dialog end
+    self:_flush_deferred_click()
+    self:_end_stale_pointer_action("contrast dialog")
+    self.contrast_dialog = require("vnc/contrastdialog").open(self)
+    self:_sync_keyboard_later()
+    return self.contrast_dialog
+end
+
+--- Closes the contrast dialog when it is open (`quiet`: without re-evaluating the keyboard).
+function ViewerApp:close_contrast_dialog(quiet)
+    local dialog = self.contrast_dialog
+    if not dialog then return end
+    self.contrast_dialog = nil
+    UIManager:close(dialog)
+    if not quiet then self:_sync_keyboard_later() end
+end
+
+--- The toolbar's contrast button.
+function ViewerApp:toggle_contrast_dialog()
+    if self.contrast_dialog then
+        self:close_contrast_dialog()
+    else
+        self:open_contrast_dialog()
+    end
+end
+
+--[[--
+Sets the contrast of the remote picture as drawn here (one of `Settings.CONTRAST_LEVELS`) and
+keeps it. The plane holds the pixels as sent, so the canvas is simply recomputed from it with the
+new curve (`Remote:set_contrast`) and repainted in place: no update from the server, and a
+partial refresh, as the steps are tapped one after another with the dialog up.
+]]
+function ViewerApp:set_contrast(value)
+    self.settings.remote_contrast = value
+    self.plugin.settings:flush()
+    if self.remote and self.remote:set_contrast(value) then
+        local c = self:canvas_geom()
+        local area = Geom:new{ x = c.x, y = c.y, w = c.w, h = c.h }
+        UIManager:setDirty(self, function() return "ui", area end)
+    end
+end
+
 function ViewerApp:toggle_display_panel()
     if self.display_panel then
         self:close_display_panel()
@@ -2345,6 +2394,7 @@ function ViewerApp:on_session_error(_err)
     if armed then armed:take_armed() end
     self:close_help(true)
     self:close_display_panel(true)
+    self:close_contrast_dialog(true)
     self.reconnect:start{ auto = true }
 end
 
