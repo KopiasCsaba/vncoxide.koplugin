@@ -307,8 +307,15 @@ function Server:_read_pixel_format()
     }
     r:bytes(3)                                  -- padding
     local bits = fmt.bits_per_pixel
-    if not (bits == 8 or bits == 16 or bits == 24 or bits == 32) then
+    -- RFC 6143 §7.4: bits-per-pixel "must be 8, 16, or 32"; there is no 24 on the wire.
+    if not (bits == 8 or bits == 16 or bits == 32) then
         error(string.format("unsupported client pixel format: %d bits per pixel", bits), 0)
+    end
+    -- The colour map (Enc.COLOUR_MAP) has 256 entries and the encoder writes one index byte per
+    -- pixel, so a colour-mapped format is only served at 8 bits per pixel.
+    if fmt.true_colour == 0 and bits ~= 8 then
+        error(string.format("unsupported client pixel format: colour-mapped at %d bits per pixel",
+            bits), 0)
     end
     if fmt.true_colour == 0 and not (self.get_colour_map and self.get_colour_map()) then
         error("client requests a colour-mapped pixel format, which this server does not support", 0)

@@ -4573,5 +4573,42 @@ check("a_stopped_server_left_in_a_wrapped_chain_collects_nothing", function()
     if not ok then error(err, 0) end
 end)
 
+check("pixel_formats_rfb_does_not_allow_are_refused", function()
+    -- A colour-mapped format at 16/32 bpp was served one index byte per pixel (a malformed
+    -- payload), and 24 bpp, which RFC 6143 does not allow, was accepted.
+    local function set_pixel_format(bpp, depth, true_colour)
+        return string.char(0, 0, 0, 0, bpp, depth, 0, true_colour, 0, 255, 0, 255, 0, 255,
+            16, 8, 0, 0, 0, 0)
+    end
+    for _, case in ipairs({ { 16, 16, 0 }, { 32, 24, 0 }, { 24, 24, 1 }, { 12, 12, 1 } }) do
+        with_hostile_server("", function(server, port)
+            local cli = hostile_connect(port)
+            hostile_handshake(cli, server)
+            cli:send(set_pixel_format(case[1], case[2], case[3]))
+            local got = drain_socket(cli, 0.5, server)
+            assert_true(got == "" and server:client_count() == 0, string.format(
+                "%d bpp, true colour %d: must be refused (closed), got %q and %d client(s)",
+                case[1], case[3], got, server:client_count()))
+            cli:close()
+        end)
+    end
+    for _, case in ipairs({ { 8, 8, 0 }, { 16, 16, 1 }, { 32, 24, 1 } }) do
+        with_hostile_server("", function(server, port)
+            local cli = hostile_connect(port)
+            hostile_handshake(cli, server)
+            cli:send(set_pixel_format(case[1], case[2], case[3]))
+            if case[3] == 0 then
+                local head = recv_exact(cli, 6, server)            -- SetColourMapEntries
+                recv_exact(cli, (head:byte(5) * 256 + head:byte(6)) * 6, server)
+            end
+            cli:send(string.char(3, 0, 0, 0, 0, 0, 0, 4, 0, 1))
+            local update = recv_exact(cli, 16 + 4 * case[1] / 8, server)
+            assert_true(update:sub(1, 4) == "\0\0\0\1", case[1] .. " bpp must be served")
+            assert_true(server:client_count() == 1, case[1] .. " bpp: still connected")
+            cli:close()
+        end)
+    end
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
