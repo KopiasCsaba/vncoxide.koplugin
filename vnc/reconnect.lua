@@ -56,6 +56,10 @@ function Reconnect:start(opts)
     self.on_success = opts.on_success
     self.on_stop = opts.on_stop
     self._in_flight = nil
+    -- From the start, not from the first attempt: a drop reports its error before it restores Wi-Fi
+    -- (`Session:_fail`), so Wi-Fi we turned on stays on for the attempt instead of being turned off
+    -- and on again.
+    self.app.session:set_keep_wifi(true)
     self:_show_box()
     if opts.immediate then
         self:_run_attempt()
