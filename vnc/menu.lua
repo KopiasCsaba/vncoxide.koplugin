@@ -30,6 +30,21 @@ function VncMenu:init()
         self.title_bar.right_button.callback = function() self:onCloseAllMenus() end
     end
 end
+-- Inside a submenu the footer's return arrow (KOReader's "back.top", as in its file lists) steps up
+-- one level, like the Back key; at the top level there is nothing to go back to, so it is hidden.
+function VncMenu:onReturn()
+    if #self.item_table_stack > 0 then self:onClose() end
+    return true
+end
+function VncMenu:updatePageInfo(select_number)
+    Menu.updatePageInfo(self, select_number)
+    local arrow = self.page_return_arrow
+    if arrow then
+        local nested = #self.item_table_stack > 0
+        arrow:showHide(nested)
+        arrow:enableDisable(nested)
+    end
+end
 -- Settings toggles leave the menu open: the stock handler would run close_callback after them.
 function VncMenu:onMenuSelect(item)
     if item.keep_open and item.sub_item_table == nil then
