@@ -45,7 +45,7 @@ Session.RECV_CHUNK = 65536
 Session.RX_BUFFER = 2 * Session.RECV_CHUNK
 Session.MAX_RX_BUFFER = 64 * 1024 * 1024
 -- Protocol reads served straight from the receive buffer between two budget checks.
-Session.FAST_READS = 256
+Session.FAST_READS = 4096
 -- Caps so a single tick can never monopolise the UI thread. The CPU budget is the one that
 -- matters: decoding is step-heavy (Hextile yields once per tiny read), so counting protocol
 -- steps, rather than time, throttled a first frame down to a few thousand steps/second and
