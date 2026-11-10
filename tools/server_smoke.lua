@@ -1812,6 +1812,22 @@ end)
 
 -- ---------------------------------------------------------------- what one poll must read
 
+--- Runs `fn` with @{Server.PARSE_BUDGET} set to `budget`, restoring it whatever happens.
+---
+--- The checks below pin what the *read-ahead* does: one poll reads a whole write and parses all of
+--- it. The parse budget is a separate guard - a wall-clock cap per tick - and whether a slow host
+--- (an emulated ARM, a loaded CI box) trips it during 200 messages is a question of its speed, not
+--- of the logic. So these checks lift the budget (math.huge) to stay deterministic, and the guard
+--- gets its own check with a budget of zero, which trips on the first message on any host.
+local function with_parse_budget(budget, fn)
+    local Server = require("vnc/server")
+    local saved = Server.PARSE_BUDGET
+    Server.PARSE_BUDGET = budget
+    local ok, err = pcall(fn)
+    Server.PARSE_BUDGET = saved
+    if not ok then error(err, 0) end
+end
+
 --- The direct regression test for reading a client's buffer instead of one field per poll.
 ---
 --- The server used to read exactly the bytes the protocol owed: a six-byte PointerEvent (type,
@@ -1820,98 +1836,153 @@ end)
 --- parsed by the poll that sees it - `rx_len` is what the state machine still owes, so a per-field
 --- reader leaves nearly the whole write behind.
 check("a_burst_of_pointer_events_is_parsed_in_one_poll", function()
-    local Server = require("vnc/server")
-    local socket = require("socket")
+    with_parse_budget(math.huge, function()
+        local Server = require("vnc/server")
+        local socket = require("socket")
 
-    local server, port
-    for candidate = 5891, 5899 do
-        local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
-        if s:start() then server, port = s, candidate break end
-    end
-    assert_true(server ~= nil, "could not bind a test port")
-
-    local ok, err = pcall(function()
-        local client = connect_client(server, port, set_encodings_wire())
-        local cli = client.sock
-
-        -- 200 motion messages (mask 0: KOReader has no hover, so they are parsed and dropped) and
-        -- then a request for a small region, all as one write.
-        local parts = {}
-        for i = 1, 200 do
-            parts[i] = string.char(5, 0, (i % 250) + 1, 1, (i % 250) + 1, 2)
+        local server, port
+        for candidate = 5891, 5899 do
+            local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
+            if s:start() then server, port = s, candidate break end
         end
-        parts[#parts + 1] = client.request(false, 0, 0, 16, 16)
-        -- No wait before the poll: `send` handed the bytes to the kernel, and which poll reads them
-        -- is what this asserts.
-        cli:send(table.concat(parts))
-        client.polls(2)
-        local record
-        for _, r in pairs(server.clients) do record = r end
-        assert_true(record ~= nil, "the client must be registered while it is connected")
-        -- Two polls is the *design* bound, not a speed budget: one poll reads and parses a whole
-        -- write (that is what the read-ahead is for), the second is the slack the read/parse split
-        -- needs for bytes that land while the first is being parsed.
-        assert_true(record.rx_len == 0, string.format(
-            "one poll must read and parse a whole write, %d byte(s) still unread after two polls",
-            record.rx_len))
+        assert_true(server ~= nil, "could not bind a test port")
 
-        -- ... and the request behind the burst was answered in the same poll: its update is
-        -- already on the wire, so it is read here without pumping the server any further.
-        local head, e = cli:receive(4)
-        assert_true(head ~= nil and head:byte(1) == 0, string.format(
-            "the burst and the request are one write, so one poll must have read and parsed both"
-            .. " (%s)", tostring(e)))
-        assert_true(head:byte(3) * 256 + head:byte(4) == 1,
-            "the 16x16 request must be answered with one rectangle")
-        cli:close()
+        local ok, err = pcall(function()
+            local client = connect_client(server, port, set_encodings_wire())
+            local cli = client.sock
+
+            -- 200 motion messages (mask 0: KOReader has no hover, so they are parsed and dropped) and
+            -- then a request for a small region, all as one write.
+            local parts = {}
+            for i = 1, 200 do
+                parts[i] = string.char(5, 0, (i % 250) + 1, 1, (i % 250) + 1, 2)
+            end
+            parts[#parts + 1] = client.request(false, 0, 0, 16, 16)
+            -- No wait before the poll: `send` handed the bytes to the kernel, and which poll reads them
+            -- is what this asserts.
+            cli:send(table.concat(parts))
+            client.polls(2)
+            local record
+            for _, r in pairs(server.clients) do record = r end
+            assert_true(record ~= nil, "the client must be registered while it is connected")
+            -- Two polls is the *design* bound, not a speed budget: one poll reads and parses a whole
+            -- write (that is what the read-ahead is for), the second is the slack the read/parse split
+            -- needs for bytes that land while the first is being parsed.
+            assert_true(record.rx_len == 0, string.format(
+                "one poll must read and parse a whole write, %d byte(s) still unread after two polls",
+                record.rx_len))
+
+            -- ... and the request behind the burst was answered in the same poll: its update is
+            -- already on the wire, so it is read here without pumping the server any further.
+            local head, e = cli:receive(4)
+            assert_true(head ~= nil and head:byte(1) == 0, string.format(
+                "the burst and the request are one write, so one poll must have read and parsed both"
+                .. " (%s)", tostring(e)))
+            assert_true(head:byte(3) * 256 + head:byte(4) == 1,
+                "the 16x16 request must be answered with one rectangle")
+            cli:close()
+        end)
+
+        server:stop()
+        if not ok then error(err, 0) end
     end)
-
-    server:stop()
-    if not ok then error(err, 0) end
 end)
 
 --- The same for a message whose *fields* are the many: an encoding list of 200 entries is 200
 --- four-byte reads. It must be consumed by the poll that sees it, and the request behind it
 --- answered in that same poll.
 check("a_large_client_message_is_consumed_in_one_poll", function()
-    local Server = require("vnc/server")
-    local socket = require("socket")
+    with_parse_budget(math.huge, function()
+        local Server = require("vnc/server")
+        local socket = require("socket")
 
-    local server, port
-    for candidate = 5881, 5889 do
-        local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
-        if s:start() then server, port = s, candidate break end
-    end
-    assert_true(server ~= nil, "could not bind a test port")
+        local server, port
+        for candidate = 5881, 5889 do
+            local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
+            if s:start() then server, port = s, candidate break end
+        end
+        assert_true(server ~= nil, "could not bind a test port")
 
-    local ok, err = pcall(function()
-        local client = connect_client(server, port, set_encodings_wire())
-        local cli = client.sock
+        local ok, err = pcall(function()
+            local client = connect_client(server, port, set_encodings_wire())
+            local cli = client.sock
 
-        -- 200 encodings, all Raw, so the answer below stays a plain one-rectangle update.
-        local parts = { string.char(2, 0, 0, 200) }
-        for _ = 1, 200 do parts[#parts + 1] = string.char(0, 0, 0, 0) end
-        parts[#parts + 1] = client.request(false, 0, 0, 16, 16)
-        cli:send(table.concat(parts))
-        client.polls(2)
-        local record
-        for _, r in pairs(server.clients) do record = r end
-        assert_true(record ~= nil, "the client must be registered while it is connected")
-        assert_true(record.rx_len == 0, string.format(
-            "one poll must read and parse a whole write - this one is 200 four-byte reads -"
-            .. " %d byte(s) still unread after two polls", record.rx_len))
-        assert_true(#(record.server.client.encodings or {}) == 200,
-            "all 200 announced encodings must have been recorded")
+            -- 200 encodings, all Raw, so the answer below stays a plain one-rectangle update.
+            local parts = { string.char(2, 0, 0, 200) }
+            for _ = 1, 200 do parts[#parts + 1] = string.char(0, 0, 0, 0) end
+            parts[#parts + 1] = client.request(false, 0, 0, 16, 16)
+            cli:send(table.concat(parts))
+            client.polls(2)
+            local record
+            for _, r in pairs(server.clients) do record = r end
+            assert_true(record ~= nil, "the client must be registered while it is connected")
+            assert_true(record.rx_len == 0, string.format(
+                "one poll must read and parse a whole write - this one is 200 four-byte reads -"
+                .. " %d byte(s) still unread after two polls", record.rx_len))
+            assert_true(#(record.server.client.encodings or {}) == 200,
+                "all 200 announced encodings must have been recorded")
 
-        local head, e = cli:receive(4)
-        assert_true(head ~= nil and head:byte(1) == 0, string.format(
-            "the encoding list and the request behind it are one write, so one poll must have read"
-            .. " and parsed both (%s)", tostring(e)))
-        cli:close()
+            local head, e = cli:receive(4)
+            assert_true(head ~= nil and head:byte(1) == 0, string.format(
+                "the encoding list and the request behind it are one write, so one poll must have read"
+                .. " and parsed both (%s)", tostring(e)))
+            cli:close()
+        end)
+
+        server:stop()
+        if not ok then error(err, 0) end
     end)
+end)
 
-    server:stop()
-    if not ok then error(err, 0) end
+--- The parse budget itself: a tick that has spent it leaves the rest of a burst in the buffer for
+--- the next poll instead of holding the UI thread, and nothing is lost on the way. A budget of zero
+--- is spent by the first message on any host, so this is deterministic.
+check("a_spent_parse_budget_leaves_the_rest_for_the_next_poll", function()
+    with_parse_budget(0, function()
+        local Server = require("vnc/server")
+        local socket = require("socket")
+
+        local server, port
+        for candidate = 5851, 5859 do
+            local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
+            if s:start() then server, port = s, candidate break end
+        end
+        assert_true(server ~= nil, "could not bind a test port")
+
+        local ok, err = pcall(function()
+            local client = connect_client(server, port, set_encodings_wire())
+            local cli = client.sock
+            local parts = {}
+            for i = 1, 50 do
+                parts[i] = string.char(5, 0, (i % 250) + 1, 1, (i % 250) + 1, 2)
+            end
+            parts[#parts + 1] = client.request(false, 0, 0, 16, 16)
+            local burst = table.concat(parts)
+            cli:send(burst)
+            client.polls(1)
+            local record
+            for _, r in pairs(server.clients) do record = r end
+            assert_true(record ~= nil, "the client must be registered while it is connected")
+            assert_true(record.rx_len > 0, "with the budget spent, one poll must leave bytes behind")
+            -- each poll takes at least one step of the state machine (a message is a step or a
+            -- few: its type byte, then its fields), so a few per byte of the burst is plenty
+            for _ = 1, 3 * #burst do
+                if record.rx_len == 0 then break end
+                client.polls(1)
+            end
+            assert_true(record.rx_len == 0, string.format(
+                "later polls must parse what was left, %d byte(s) still unread", record.rx_len))
+            local head, e = cli:receive(4)
+            assert_true(head ~= nil and head:byte(1) == 0, string.format(
+                "the request at the end of the burst must have been answered (%s)", tostring(e)))
+            assert_true(head:byte(3) * 256 + head:byte(4) == 1,
+                "the 16x16 request must be answered with one rectangle")
+            cli:close()
+        end)
+
+        server:stop()
+        if not ok then error(err, 0) end
+    end)
 end)
 
 --- An incremental request whose answer has nothing to report is *held*, not answered. Answering it
