@@ -58,6 +58,10 @@ Server.IO_TIMEOUT = 0.01
 --- is normal and does not count, which is why the watchdog below requires bytes to be partially in
 --- hand.
 Server.STALL_TIMEOUT = 10
+--- How long a connection may take from accept to the end of its handshake (ServerInit sent), bytes
+--- or no bytes: a connection that says nothing would otherwise keep one of the
+--- @{Server.MAX_CLIENTS} slots forever (the stall watchdog only looks at half-received messages).
+Server.HANDSHAKE_TIMEOUT = 10
 --- How long an incremental request may be *held* before the client is sent an empty update as a
 --- sign of life (c.f., @{Server:_answer_held}). Measured from the client's latest request, so a
 --- client that keeps asking while nothing changes is never answered with an empty update at all -
@@ -654,8 +658,12 @@ function Server:_adopt_client(sock)
         on_pointer = function(x, y, mask, c) self:_on_pointer(c, x, y, mask) end,
         on_key = function(keysym, down, c) self:_on_key(c, keysym, down) end,
         on_cut_text = function(text, c) self:_on_cut_text(c, text) end,
-        on_ready = function() self:_notify_status() end,
+        on_ready = function()
+            client.ready = true
+            self:_notify_status()
+        end,
     })
+    client.accepted_at = socket.gettime()
     local key = tostring(sock)
     client.key = key
     self.clients[key] = client
@@ -1012,6 +1020,11 @@ function Server:_tick_client(client)
     -- pointer callback - not on this bookkeeping record.
     if not client.dropped then
         self:_flush_pointer(client.server.client)
+    end
+    if not client.dropped and not client.ready
+            and socket.gettime() - client.accepted_at >= Server.HANDSHAKE_TIMEOUT then
+        self:_drop_client(client, string.format("no handshake within %ds", Server.HANDSHAKE_TIMEOUT))
+        return
     end
     -- A message that is *partially* received and then goes quiet means we are waiting for
     -- bytes that are never coming (a length we mis-read, so every later message is being

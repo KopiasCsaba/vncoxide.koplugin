@@ -4416,5 +4416,38 @@ check("a_failed_authentication_is_told_why_before_the_close", function()
     end)
 end)
 
+check("silent_connections_do_not_hold_the_client_slots", function()
+    -- Four connections that never sent a byte held every slot for good: the stall watchdog only
+    -- looks at half-received messages, so nothing ever timed them out.
+    local Server = require("vnc/server")
+    local socket = require("socket")
+    local saved = Server.HANDSHAKE_TIMEOUT
+    Server.HANDSHAKE_TIMEOUT = 0.5
+    local ok, err = pcall(with_hostile_server, "", function(server, port)
+        local silent = {}
+        for i = 1, Server.MAX_CLIENTS - 1 do silent[i] = hostile_connect(port) end
+        local good = hostile_connect(port)
+        hostile_handshake(good, server)
+        assert_true(server:client_count() == Server.MAX_CLIENTS, "all slots must be taken")
+        local deadline = socket.gettime() + 1.5
+        while socket.gettime() < deadline and server:client_count() > 1 do
+            server:_poll()
+            socket.sleep(0.01)
+        end
+        assert_true(server:client_count() == 1, "the silent connections must be dropped, "
+            .. server:client_count() .. " left")
+        local fifth = hostile_connect(port)
+        assert_true(recv_exact(fifth, 12, server) == "RFB 003.008\n", "a new client must get a slot")
+        good:send(string.char(3, 0, 0, 0, 0, 0, 0, 1, 0, 1))
+        assert_true(recv_exact(good, 4, server) == "\0\0\0\1",
+            "the client that finished its handshake must be kept and served")
+        for _, c in ipairs(silent) do c:close() end
+        good:close()
+        fifth:close()
+    end)
+    Server.HANDSHAKE_TIMEOUT = saved
+    if not ok then error(err, 0) end
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
