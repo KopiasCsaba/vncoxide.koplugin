@@ -1918,12 +1918,6 @@ function ViewerApp:send_osk_key(keysym)
     self:send_key(keysym, false)
 end
 
---- Presses `keysyms` together: downs in order, ups in reverse.
-function ViewerApp:send_combo(keysyms)
-    for i = 1, #keysyms do self:send_key(keysyms[i], true) end
-    for i = #keysyms, 1, -1 do self:send_key(keysyms[i], false) end
-end
-
 --- Asks the server for the whole picture again and repaints the viewer in full.
 function ViewerApp:refresh_remote()
     self.session:request_full_update()

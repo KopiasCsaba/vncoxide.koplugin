@@ -17,7 +17,6 @@ local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 
 local Dialogs = require("vnc/dialogs")
-local Keysyms = require("vnc/keysyms")
 local Toolbar = require("vnc/toolbar")
 
 local MenuBuilder = {}
@@ -143,10 +142,6 @@ function MenuBuilder.open(app)
     item_table[#item_table + 1] = {
         text = _("Refresh"),
         callback = action(function() app:refresh_remote() end),
-    }
-    item_table[#item_table + 1] = {
-        text = _("Lock screen"),
-        callback = action(function() app:send_combo{ Keysyms.x11.Super_L, 0x6C } end),
     }
 
     -- ---- page buttons: read on every key press, so this applies at once

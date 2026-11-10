@@ -77,21 +77,41 @@ local function function_keys()
     return rows
 end
 
+--- A hotkey: `label` on the button, then exactly what it sends (`mods` in modifier order around
+--- `keysym`); `key` is the key's own name, for the recent combos ("Ctrl+" .. key).
+local function hotkey(label, mods, key, keysym)
+    return { label, keysym, hotkey = { mods = mods, keysym = keysym, label = key } }
+end
+
 --- The tabs: a label, how many key columns a row is laid out for, and the rows of
---- `{ label, keysym }`. Short rows are centred, like the staggered rows of a keyboard.
+--- `{ label, keysym }` (or a hotkey). Short rows are centred, like the staggered rows of a keyboard.
 local TABS = {
     {
         label = _("Keys"),
         columns = 4,
         -- (Esc, Tab, the arrows and Del are on the top row; `modifiers_only` is no key, see `_grid`)
-        -- by column: Home/End, Page Up/Page Down, Insert/Space, Backspace/Enter
+        -- by column: Home/End, Page Up/Page Down, Insert/Menu, Backspace/Enter
         rows = {
             { { _("Home"), X.Home }, { _("Page Up"), X.Prior }, { _("Insert"), X.Insert },
               { _("Backspace"), X.BackSpace } },
-            { { _("End"), X.End }, { _("Page Down"), X.Next }, { _("Space"), X.space },
+            { { _("End"), X.End }, { _("Page Down"), X.Next }, { _("Menu"), X.Menu },
               { _("Enter"), X.Return } },
-            { { _("Print Screen"), X.Print }, { _("Pause"), X.Pause }, { _("Menu"), X.Menu },
+            { { _("Print Screen"), X.Print }, { _("Pause"), X.Pause },
               { _("Modifiers only"), modifiers_only = true } },
+        },
+    },
+    {
+        -- common hotkeys, each sent exactly (armed modifiers are not added, see `KeyPanel:replay`)
+        label = _("Hotkeys"),
+        columns = 4,
+        rows = {
+            { hotkey("Ctrl+Z", { "Ctrl" }, "Z", 0x7A), hotkey("Ctrl+X", { "Ctrl" }, "X", 0x78),
+              hotkey("Ctrl+C", { "Ctrl" }, "C", 0x63), hotkey("Ctrl+V", { "Ctrl" }, "V", 0x76) },
+            { hotkey("Ctrl+A", { "Ctrl" }, "A", 0x61), hotkey("Ctrl+S", { "Ctrl" }, "S", 0x73),
+              hotkey("Ctrl+F", { "Ctrl" }, "F", 0x66), hotkey("Ctrl+W", { "Ctrl" }, "W", 0x77) },
+            { hotkey("Alt+Tab", { "Alt" }, "Tab", X.Tab), hotkey("Alt+F4", { "Alt" }, "F4", Keysyms.special.F4),
+              hotkey(_("Lock (Super+L)"), { "Super" }, "L", 0x6C),
+              hotkey("Ctrl+Alt+Del", { "Ctrl", "Alt" }, "Del", X.Delete) },
         },
     },
     { label = "F1–F12", columns = 4, rows = function_keys() },
@@ -430,6 +450,13 @@ function KeyPanel:_grid(width, row_height)
                     width = unit,
                     enabled = self:has_armed(),
                     callback = function() self:send_modifiers_only() end,
+                }
+            elseif key.hotkey then
+                entries[#entries + 1] = {
+                    id = "hotkey:" .. key.hotkey.label,
+                    text = label,
+                    width = unit,
+                    callback = function() self:replay(key.hotkey) end,
                 }
             else
                 entries[#entries + 1] = {

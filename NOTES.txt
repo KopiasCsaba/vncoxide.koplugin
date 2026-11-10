@@ -301,6 +301,8 @@ changes with the tab (every grid is three key rows tall), so switching tabs neve
 Its top row is the key strip's row (KeyPanel:_top_row), only the two buttons at the left differ
 (panel: close, keyboard; strip: close, Send keys); "Modifiers only" on the Keys tab sends the armed
 modifiers alone.
+The Hotkeys tab's buttons are fixed combos sent through KeyPanel:replay (exactly as named, armed
+modifiers cleared, remembered in the recent row); the menu's Lock screen entry moved there (Super+L).
 Modifiers are armed by a tap and used by exactly one action, then disarmed; nothing stays down
 between actions. A panel key: armed modifier downs in Ctrl, Shift, Alt, Super order, key down, key
 up, ups in reverse. A canvas tap, long press or drag: ViewerApp:_press_armed takes them from the

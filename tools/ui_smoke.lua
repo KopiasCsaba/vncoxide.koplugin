@@ -3753,7 +3753,7 @@ check("more_menu_order_and_actions", function()
     local menu = app:open_menu()
     assert_true(menu.title == "test \u{00B7} 400\u{00D7}300", "the status is the title: " .. tostring(menu.title))
     for _, t in ipairs{ "Send keys…", "Disconnect", "Show keyboard", "Hide keyboard", "Zoom…", "Send text…",
-                        "Ctrl+Alt+Del", "Show scroll buttons on toolbar", "Enable brightness button",
+                        "Ctrl+Alt+Del", "Lock screen", "Show scroll buttons on toolbar", "Enable brightness button",
                         "Enable contrast button" } do
         for _, item in ipairs(menu.item_table) do assert_true(item.text ~= t, t .. " is gone") end
     end
@@ -3762,21 +3762,17 @@ check("more_menu_order_and_actions", function()
     end
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text end
-    assert_true(table.concat(order, "|") == "Connections…|Refresh|Lock screen|"
+    assert_true(table.concat(order, "|") == "Connections…|Refresh|"
         .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Toolbar buttons…|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
-    assert_true(app.send_text == nil, "send_text is gone with its dialog")
-    app:send_combo{ 0xFFE3, 0xFFE9, 0xFFFF }
-    assert_true(log() == "+0xFFE3,+0xFFE9,+0xFFFF,-0xFFFF,-0xFFE9,-0xFFE3", "send_combo")
+    assert_true(app.send_text == nil and app.send_combo == nil, "send_text and send_combo are gone with their rows")
 
     local function choose(text)
         menu = app:open_menu()
         menu:onMenuSelect(find_item(menu.item_table, text))
         UIManager:_checkTasks()
     end
-    choose("Lock screen")
-    assert_true(app.menu == nil and log() == "+0xFFEB,+0x6C,-0x6C,-0xFFEB", "Lock screen")
 
     local dirty = {}
     local real_dirty = UIManager.setDirty
@@ -3965,7 +3961,7 @@ check("key_panel_armed_modifier_wraps_the_next_key_only", function()
     assert_true(take_keys(sent) == "", "arming sends nothing")
     assert_true(panel.button_by_id["mod:Ctrl"].preselect == true, "the Ctrl button shows it")
     assert_true(panel.button_by_id["modifiers_only"].enabled == true, "and Modifiers only has something to send")
-    pick_tab(panel, 2) -- F1–F12
+    pick_tab(panel, 3) -- F1–F12
     touch(panel, "key:F5")
     local got = take_keys(sent)
     assert_true(got == "+0xFFE3,+0xFFC2,-0xFFC2,-0xFFE3", "Ctrl+F5 on the wire, got " .. got)
@@ -4222,7 +4218,7 @@ check("key_panel_combo_order_and_modifiers_only", function()
     for _, m in ipairs({ "Ctrl", "Shift", "Alt", "Super" }) do
         assert_true(panel.button_by_id["mod:" .. m].preselect == true, m .. " shows armed")
     end
-    pick_tab(panel, 2) -- F1–F12
+    pick_tab(panel, 3) -- F1–F12
     touch(panel, "key:F4")
     local got = take_keys(sent)
     assert_true(got == "+0xFFE3,+0xFFE1,+0xFFE9,+0xFFEB,+0xFFC1,-0xFFC1,-0xFFEB,-0xFFE9,-0xFFE1,-0xFFE3",
@@ -4247,7 +4243,7 @@ check("key_panel_recent_combos_record_and_replay", function()
     local flushed = 0
     app.plugin.settings.flush = function() flushed = flushed + 1 end
     local panel = open_key_panel(app)
-    pick_tab(panel, 2)
+    pick_tab(panel, 3)
     touch(panel, "mod:Ctrl")
     touch(panel, "key:F5")
     assert_true(flushed > 0, "the recent list is saved")
@@ -4416,11 +4412,12 @@ check("key_panel_every_tab_sends_its_keysyms", function()
         -- (plus Modifiers only, which is no key: key_panel_combo_order_and_modifiers_only)
         { "Keys", {
             { "Home", 0xFF50 }, { "Page Up", 0xFF55 }, { "Insert", 0xFF63 }, { "Backspace", 0xFF08 },
-            { "End", 0xFF57 }, { "Page Down", 0xFF56 }, { "Space", 0x20 }, { "Enter", 0xFF0D },
-            { "Print Screen", 0xFF61 }, { "Pause", 0xFF13 }, { "Menu", 0xFF67 } } },
+            { "End", 0xFF57 }, { "Page Down", 0xFF56 }, { "Menu", 0xFF67 }, { "Enter", 0xFF0D },
+            { "Print Screen", 0xFF61 }, { "Pause", 0xFF13 } } },
+        { "Hotkeys", {} }, -- (no plain keys: key_panel_hotkeys_send_exactly_their_combo)
         { "F1–F12", {} },
     }
-    for i = 1, 12 do table.insert(tabs[2][2], { "F" .. i, 0xFFBE + i - 1 }) end
+    for i = 1, 12 do table.insert(tabs[3][2], { "F" .. i, 0xFFBE + i - 1 }) end
     -- the top row's keys are on every tab
     local top_keys = { { "Esc", 0xFF1B }, { "Tab", 0xFF09 }, { "←", 0xFF51 }, { "↑", 0xFF52 },
                        { "↓", 0xFF54 }, { "→", 0xFF53 }, { "Del", 0xFFFF } }
@@ -4872,7 +4869,7 @@ check("key_panel_top_row_is_the_strip_row_with_close_and_keyboard", function()
     ids = {}
     for i, e in ipairs(grid) do ids[i] = e.id end
     assert_true(table.concat(ids, ",") == "key:Home,key:Page Up,key:Insert,key:Backspace,key:End,key:Page Down,"
-        .. "key:Space,key:Enter,key:Print Screen,key:Pause,key:Menu,modifiers_only",
+        .. "key:Menu,key:Enter,key:Print Screen,key:Pause,modifiers_only",
         "the Keys grid: " .. table.concat(ids, ","))
     assert_true(grid[1].y < grid[5].y and grid[5].y < grid[9].y and grid[4].y == grid[1].y, "4 columns, 3 rows")
     -- six rows: top, tabs, three grid rows, recent; five lines between them; the window border
@@ -7452,6 +7449,38 @@ check("toolbar_corners_are_round_not_covered_by_buttons", function()
         end
     end
     app:set_toolbar_collapsed(false)
+    close_viewer(app, remote)
+end)
+
+check("key_panel_hotkeys_send_exactly_their_combo", function()
+    local app, remote, sent = new_app()
+    local panel = open_key_panel(app)
+    pick_tab(panel, 2)
+    local want = {
+        { "Z", "+0xFFE3,+0x7A,-0x7A,-0xFFE3" }, { "X", "+0xFFE3,+0x78,-0x78,-0xFFE3" },
+        { "C", "+0xFFE3,+0x63,-0x63,-0xFFE3" }, { "V", "+0xFFE3,+0x76,-0x76,-0xFFE3" },
+        { "A", "+0xFFE3,+0x61,-0x61,-0xFFE3" }, { "S", "+0xFFE3,+0x73,-0x73,-0xFFE3" },
+        { "F", "+0xFFE3,+0x66,-0x66,-0xFFE3" }, { "W", "+0xFFE3,+0x77,-0x77,-0xFFE3" },
+        { "Tab", "+0xFFE9,+0xFF09,-0xFF09,-0xFFE9" }, { "F4", "+0xFFE9,+0xFFC1,-0xFFC1,-0xFFE9" },
+        { "L", "+0xFFEB,+0x6C,-0x6C,-0xFFEB" }, { "Del", "+0xFFE3,+0xFFE9,+0xFFFF,-0xFFFF,-0xFFE9,-0xFFE3" },
+    }
+    local count_hotkeys = 0
+    for id in pairs(panel.button_by_id) do
+        if id:sub(1, 7) == "hotkey:" then count_hotkeys = count_hotkeys + 1 end
+    end
+    assert_true(count_hotkeys == #want, "12 hotkeys, got " .. count_hotkeys)
+    assert_true(panel.button_by_id["hotkey:L"].text == "Lock (Super+L)", "the lock one says what it does")
+    for _, w in ipairs(want) do
+        touch(panel, "hotkey:" .. w[1])
+        local got = take_keys(sent)
+        assert_true(got == w[2], w[1] .. " must send " .. w[2] .. ", got " .. got)
+    end
+    -- an armed modifier is not added, and is cleared
+    touch(panel, "mod:Shift")
+    touch(panel, "hotkey:C")
+    assert_true(take_keys(sent) == "+0xFFE3,+0x63,-0x63,-0xFFE3" and panel:modifier_state("Shift") == nil,
+        "sent exactly, Shift cleared")
+    assert_true(panel.button_by_id["recent:1"].text == "Ctrl+C", "remembered as Ctrl+C")
     close_viewer(app, remote)
 end)
 

@@ -80,7 +80,7 @@ function Help.text(mode)
         "  " .. _("One row above the on-screen keyboard: X (closes the keyboard), the Send keys icon (opens the full Send keys panel; keyboard and strip make way for it; it sends nothing and keeps armed modifiers armed), then Ctrl, Shift, Alt and Super (tap to arm; an armed modifier is used for exactly the next key, or tap, long press or drag on the picture, then released), Esc, Tab, the arrow keys and Del."),
 
         _("SEND KEYS PANEL"),
-        "  " .. _("Its top row is the key strip's, except for its first two buttons: X (closes the panel) and the keyboard icon (back to the on-screen keyboard and its strip; armed modifiers stay armed). Below it: tabs Keys and F1\u{2013}F12, recently sent combos and Release all. Modifiers only (Keys tab) sends just the armed modifiers (Super on its own). The Keyboard button closes the panel too."),
+        "  " .. _("Its top row is the key strip's, except for its first two buttons: X (closes the panel) and the keyboard icon (back to the on-screen keyboard and its strip; armed modifiers stay armed). Below it: tabs Keys, Hotkeys (Ctrl+Z/X/C/V/A/S/F/W, Alt+Tab, Alt+F4, Lock = Super+L, Ctrl+Alt+Del, each sent exactly as named) and F1\u{2013}F12, recently sent combos and Release all. Modifiers only (Keys tab) sends just the armed modifiers (Super on its own). The Keyboard button closes the panel too."),
 
         _("SCROLL LOCK"),
         "  " .. _("A toolbar toggle. While it is on, a two-finger drag scrolls instead of moving the picture: the content follows your fingers, and a sideways drag scrolls horizontally. Pinch still zooms. It starts off each time the viewer opens."),
@@ -94,7 +94,6 @@ function Help.text(mode)
             "  " .. _("Reconnect to <name>: only right after the connection dropped; connects again. Long press: why it dropped."),
             "  " .. _("Connections\u{2026}: switch to another connection, or create one."),
             "  " .. _("Refresh: ask the remote for a full picture."),
-            "  " .. _("Lock screen: send Super+L."),
             "  " .. _("Page buttons send: Page Up/Down keys or mouse-wheel notches."),
             "  " .. _("Keep screen on: stop the device from going to sleep or dimming the light while the viewer is open."),
             "  " .. _("Match orientation to the remote screen: after connecting (or when the remote switches between landscape and portrait), turn this screen the same way, to the side you last picked by hand. A rotation you pick yourself stays until the remote's orientation changes."),

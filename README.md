@@ -188,7 +188,7 @@ before it opened.
 **The ⋯ menu** holds the rest. Its title is the connection and its state (*name · 1920×1080* while
 connected, *name · connection lost* after a drop). Then **Reconnect to …** when the connection has
 just dropped (a long press tells why), the connection list (**Connections…**, to switch or add one),
-**Refresh** (asks for a full picture and flashes the screen), **Lock screen** (Super+L), **Page
+**Refresh** (asks for a full picture and flashes the screen), **Page
 buttons send** (Page Up/Down keys or Mouse wheel),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
@@ -209,9 +209,11 @@ stay armed there); then **Ctrl**, **Shift**, **Alt**, **Super**, Esc, Tab, the f
 Tap a modifier to arm it (it turns black), tap again to cancel. Armed modifiers go with exactly one
 action and are then let go: the next key from the panel, or the next tap, long press or drag on the
 screen (Ctrl+click, Shift+click or Shift+drag to select, Alt+drag). The tabs hold the other special
-keys (**Keys**: Home above End, Page Up above Page Down, Insert above Space, Backspace above Enter,
-then Print Screen, Pause, Menu and **Modifiers only**, which sends just the armed modifiers: Super on
-its own opens most desktops' launcher) and F1-F12; letters and symbols are on the on-screen keyboard
+keys (**Keys**: Home above End, Page Up above Page Down, Insert above Menu, Backspace above Enter,
+then Print Screen, Pause and **Modifiers only**, which sends just the armed modifiers: Super on
+its own opens most desktops' launcher), **Hotkeys** (Ctrl+Z, Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+S,
+Ctrl+F, Ctrl+W, Alt+Tab, Alt+F4, Lock = Super+L, Ctrl+Alt+Del; each is sent exactly as named, armed
+modifiers are not added and are cleared) and F1-F12; letters and symbols are on the on-screen keyboard
 (armed modifiers go with its keys too). The bottom row repeats your last four combos exactly
 (armed modifiers are not added to them, and are cleared), and **Release all** disarms every modifier
 and lets go of whatever a drag or long press still holds on the remote (its button, then its
