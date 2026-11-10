@@ -181,7 +181,9 @@ end
 
 --- Base pointer and stride of a viewport (rect-local pixel (x, y) is at base + y * stride + x * 3).
 local function vp_base(vp)
-    return ffi.cast(u8p, vp.data), vp.stride
+    -- tonumber: `stride` is a size_t, i.e. a boxed uint64 on 64-bit builds (every offset computed
+    -- from it would be one too); on 32-bit ARM it already is a number
+    return ffi.cast(u8p, vp.data), tonumber(vp.stride)
 end
 
 --[[--
@@ -249,18 +251,82 @@ function Encodings.decode_copyrect(ctx)
     return true
 end
 
+-- Solid fills go to libblitbuffer when KOReader uses it (one C call per rect, no Lua loop: on the
+-- device's soft-float ARM the fill loops often failed to compile, "NYI: register coalescing too
+-- complex", and ran interpreted). `fill_at` below is the Lua fallback.
+local cbb
+do
+    local ok, lib = pcall(ffi.loadlib, "blitbuffer")
+    if ok and lib then cbb = lib end
+end
+local P_BlitBuffer = ffi.typeof("BlitBuffer*")
+local fill_colour = ffi.new("ColorRGB32", 0, 0, 0, 0xFF)
+
+--- A C fill handle for the whole plane (nil when the Lua fallback must be used). The plane, not the
+--- rect's viewport, with plane coordinates: BB_fill_rect fills `pixel_stride * h` contiguous pixels
+--- when x == 0 and w == bb->w, which on a viewport (narrower than its stride) spills into the
+--- pixels right of it.
+local function c_target(ctx)
+    local plane = ctx.plane
+    if cbb and plane and plane:canUseCbb() and plane:getRotation() == 0 then
+        return ffi.cast(P_BlitBuffer, plane)
+    end
+end
+
+--- Fills rect (x, y, w, h) of the C target `t` with r, g, b.
+--- (One C function for every colour: a grey/colour branch here put a side exit right before the
+--- call, and on soft-float ARM those side traces failed with "NYI: register coalescing too complex".)
+local function c_fill(t, x, y, w, h, r, g, b)
+    local c = fill_colour
+    c.r, c.g, c.b = r, g, b
+    cbb.BB_fill_rect_RGB32(t, x, y, w, h, c)
+end
+
+-- Solid fill of a rect at byte offset `o` of the plane (`base`, `stride`): rows are memsets when
+-- grey, else one row built by doubling copies and copied down. Takes the rect's base pointer from
+-- the caller, so no pointer cdata is created per call (a pointer crossing into a loop trace's
+-- entry is boxed, i.e. allocated).
+local function fill_at(base, stride, o, w, h, r, g, b)
+    if r == g and g == b then
+        local n = w * 3
+        for _ = 1, h do
+            ffi.fill(base + o, n, r)
+            o = o + stride
+        end
+        return
+    end
+    base[o], base[o + 1], base[o + 2] = r, g, b
+    local have, total = 3, w * 3
+    while have < total do
+        local c = total - have
+        if c > have then c = have end
+        ffi.copy(base + o + have, base + o, c)
+        have = have + c
+    end
+    for _ = 2, h do
+        ffi.copy(base + o + stride, base + o, total)
+        o = o + stride
+    end
+end
+Encodings._fill_at = fill_at
+
 function Encodings.decode_rre(ctx)
     local r, vp, w, h = ctx.r, ctx.vp, ctx.w, ctx.h
     local cv = conv(ctx.fmt)
     local n = r:u32()
     local br, bg, bb = read_pixel(r, cv)
-    PxFmt.fill_rect(vp, 0, 0, w, h, br, bg, bb)
+    local base, stride = vp_base(vp)
+    local t, ox, oy = c_target(ctx), ctx.x, ctx.y
+    if w > 0 and h > 0 then
+        if t then c_fill(t, ox, oy, w, h, br, bg, bb) else fill_at(base, stride, 0, w, h, br, bg, bb) end
+    end
     for _ = 1, n do
         local pr, pg, pb = read_pixel(r, cv)
         local sx, sy, sw, sh = r:u16(), r:u16(), r:u16(), r:u16()
         local cx, cy, cw, ch = clamp_sub(w, h, sx, sy, sw, sh)
         if cx then
-            PxFmt.fill_rect(vp, cx, cy, cw, ch, pr, pg, pb)
+            if t then c_fill(t, ox + cx, oy + cy, cw, ch, pr, pg, pb)
+            else fill_at(base, stride, cy * stride + cx * 3, cw, ch, pr, pg, pb) end
         end
     end
     return true
@@ -270,6 +336,8 @@ function Encodings.decode_hextile(ctx)
     local r, vp, w, h, fmt = ctx.r, ctx.vp, ctx.w, ctx.h, ctx.fmt
     local cv = conv(fmt)
     local nb = cv.bytes
+    local base, stride = vp_base(vp)
+    local t, ox, oy = c_target(ctx), ctx.x, ctx.y
     local bg_r, bg_g, bg_b, bg_valid
     local fg_r, fg_g, fg_b, fg_valid
     for ty = 0, h - 1, 16 do
@@ -295,7 +363,9 @@ function Encodings.decode_hextile(ctx)
                     fg_r, fg_g, fg_b = read_pixel(r, cv)
                     fg_valid = true
                 end
-                PxFmt.fill_rect(vp, tx, ty, tw, th, bg_r, bg_g, bg_b)
+                local to = ty * stride + tx * 3
+                if t then c_fill(t, ox + tx, oy + ty, tw, th, bg_r, bg_g, bg_b)
+                else fill_at(base, stride, to, tw, th, bg_r, bg_g, bg_b) end
                 if band(mask, 8) ~= 0 then -- AnySubrects
                     local count = r:u8()
                     local coloured = band(mask, 16) ~= 0
@@ -314,7 +384,8 @@ function Encodings.decode_hextile(ctx)
                         local sw, sh = rshift(wh, 4) + 1, band(wh, 0xF) + 1
                         local cx, cy, cw, ch = clamp_sub(tw, th, sx, sy, sw, sh)
                         if cx then
-                            PxFmt.fill_rect(vp, tx + cx, ty + cy, cw, ch, sr, sg, sb)
+                            if t then c_fill(t, ox + tx + cx, oy + ty + cy, cw, ch, sr, sg, sb)
+                            else fill_at(base, stride, to + cy * stride + cx * 3, cw, ch, sr, sg, sb) end
                         end
                     end
                     if coloured then fg_valid = false end
@@ -386,7 +457,13 @@ local function decode_tile(state, cv, fmt, vp, r, dx, dy, tw, th)
         return true
     elseif sub == 1 then -- solid
         local cr, cg, cbl = read_cpixel(r, cv)
-        PxFmt.fill_rect(vp, dx, dy, tw, th, cr, cg, cbl)
+        local t = state.c_target
+        if t then
+            c_fill(t, state.ox + dx, state.oy + dy, tw, th, cr, cg, cbl)
+        else
+            local base, stride = vp_base(vp)
+            fill_at(base, stride, dy * stride + dx * 3, tw, th, cr, cg, cbl)
+        end
         return true
     end
 
@@ -443,12 +520,13 @@ local function decode_tile(state, cv, fmt, vp, r, dx, dy, tw, th)
         local mask = lshift(1, bpp) - 1
         local p = r:ptr(row_bytes * th)
         local o = 0
+        local checked = palette_size < lshift(1, bpp) -- only then can an index be out of range
         for row = 0, th - 1 do
-            local rp = p + row * row_bytes
+            local ro = row * row_bytes -- (an offset: a pointer per row would be allocated)
             for col = 0, tw - 1 do
                 local bitpos = col * bpp
-                local v = band(rshift(rp[rshift(bitpos, 3)], 8 - bpp - band(bitpos, 7)), mask)
-                if v >= palette_size then
+                local v = band(rshift(p[ro + rshift(bitpos, 3)], 8 - bpp - band(bitpos, 7)), mask)
+                if checked and v >= palette_size then
                     return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d) col %d",
                         v, palette_size, dx, dy, col)
                 end
@@ -572,6 +650,7 @@ function Encodings.decode_trle(ctx)
         state = {}
         ctx.streams.trle = state
     end
+    state.c_target, state.ox, state.oy = c_target(ctx), ctx.x, ctx.y
     return decode_tiles(state, ctx.fmt, ctx.vp, ctx.r, ctx.w, ctx.h, 16)
 end
 
@@ -614,6 +693,7 @@ function Encodings.decode_zrle(ctx)
         state = {}
         ctx.streams.zrle_tiles = state
     end
+    state.c_target, state.ox, state.oy = c_target(ctx), ctx.x, ctx.y
     return decode_tiles(state, ctx.fmt, ctx.vp, Util.ptr_reader(p, n, stream), ctx.w, ctx.h, 64)
 end
 

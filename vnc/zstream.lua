@@ -98,15 +98,35 @@ function ZStream:reset()
     self.active = true
 end
 
+pcall(ffi.cdef, "void *realloc(void *, size_t); void free(void *);")
+local u8p = ffi.typeof("uint8_t*")
+
 --- Grows the stream's persistent output buffer to at least `need` bytes, keeping `keep` bytes.
+--- C realloc, not ffi.new + copy: no zero-fill, and a large block usually grows in place (mremap),
+--- so the bytes already inflated are not copied on every doubling.
 local function grow(self, need, keep)
     local cap = self.out_cap or 0
     if cap >= need then return end
     if cap == 0 then cap = 65536 end
     while cap < need do cap = cap * 2 end
-    local buf = ffi.new("uint8_t[?]", cap)
-    if keep > 0 then ffi.copy(buf, self.out, keep) end
-    self.out, self.out_cap = buf, cap
+    local old = self.out
+    if old ~= nil then ffi.gc(old, nil) end
+    local p = ffi.C.realloc(old, cap)
+    if p == nil then
+        if old ~= nil then ffi.gc(old, ffi.C.free) end
+        error("zstream: out of memory for a " .. cap .. "-byte buffer")
+    end
+    self.out, self.out_cap = ffi.gc(ffi.cast(u8p, p), ffi.C.free), cap
+end
+
+--- Frees the output buffer now (rather than at the next GC).
+local function drop(self)
+    local p = self.out
+    if p ~= nil then
+        ffi.gc(p, nil)
+        ffi.C.free(p)
+    end
+    self.out, self.out_cap = nil, nil
 end
 
 --[[--
@@ -136,7 +156,7 @@ function ZStream:inflate_ptr(ptr, len, limit)
     strm.avail_in = len
     -- give back a buffer one big rect grew far beyond what the stream now needs
     if (self.out_cap or 0) > 1048576 and (self.last_total or 0) * 4 < self.out_cap then
-        self.out, self.out_cap = nil, nil
+        drop(self)
     end
     grow(self, 65536, 0)
     local total = 0
@@ -221,7 +241,7 @@ function ZStream:free()
         self.active = false
     end
     self.strm = nil
-    self.out, self.out_cap = nil, nil
+    drop(self)
 end
 
 return ZStream
