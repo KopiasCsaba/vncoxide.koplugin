@@ -4495,5 +4495,54 @@ check("a_client_that_stops_reading_has_a_bounded_queue_and_is_dropped", function
     if not ok then error(err, 0) end
 end)
 
+check("failed_authentications_back_off_per_address", function()
+    -- Nothing slowed password guessing down: 26 attempts in 2 s against a local server.
+    local Server = require("vnc/server")
+    local socket = require("socket")
+    local Des = require("vnc/des")
+    local saved = Server.AUTH_BACKOFF_BASE
+    Server.AUTH_BACKOFF_BASE = 0.3
+    --- One VNC Authentication attempt; true when the server let it in, false when it refused the
+    --- connection outright (closed before its version string), "failed" on a wrong password.
+    local function attempt(server, port, password)
+        local cli = hostile_connect(port)
+        cli:settimeout(0.05)
+        local acc, deadline = "", socket.gettime() + 2
+        while #acc < 12 and socket.gettime() < deadline do
+            server:_poll()
+            local d, e, partial = cli:receive(12 - #acc)
+            acc = acc .. (d or partial or "")
+            if e == "closed" then break end
+        end
+        if #acc < 12 then cli:close() return false end
+        cli:send("RFB 003.008\n")
+        recv_exact(cli, 2, server)
+        cli:send("\2")
+        local challenge = recv_exact(cli, 16, server)
+        local key = {}
+        for i = 1, 8 do key[i] = string.char(Des.reverse_bits(password:byte(i) or 0)) end
+        key = table.concat(key)
+        cli:send(Des.ecb_encrypt_block(key, challenge:sub(1, 8))
+            .. Des.ecb_encrypt_block(key, challenge:sub(9, 16)))
+        local result = recv_exact(cli, 4, server)
+        cli:close()
+        return result == "\0\0\0\0" and true or "failed"
+    end
+    local ok, err = pcall(with_hostile_server, "pw", function(server, port)
+        assert_true(attempt(server, port, "nope") == "failed", "a wrong password must fail")
+        assert_true(attempt(server, port, "pw") == false,
+            "right after a failure the address must be refused")
+        socket.sleep(0.35)
+        assert_true(attempt(server, port, "nope") == "failed", "after the backoff it may try again")
+        socket.sleep(0.35)
+        assert_true(attempt(server, port, "pw") == false, "the second backoff must be twice as long")
+        socket.sleep(0.3)
+        assert_true(attempt(server, port, "pw") == true, "the right password after it must work")
+        assert_true(attempt(server, port, "pw") == true, "a success must clear the backoff")
+    end)
+    Server.AUTH_BACKOFF_BASE = saved
+    if not ok then error(err, 0) end
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

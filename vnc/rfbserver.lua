@@ -96,6 +96,7 @@ Creates the server side of one client connection.
 --- @tparam[opt] function opts.on_key `(keysym, down, client)`
 --- @tparam[opt] function opts.on_cut_text `(text, client)`
 --- @tparam[opt] function opts.on_ready `(client)` - handshake done, updates may be sent
+--- @tparam[opt] function opts.on_auth `(ok)` - the outcome of a VNC Authentication attempt
 --- @treturn Server
 ]]
 function Server.new(opts)
@@ -112,6 +113,7 @@ function Server.new(opts)
         on_key = opts.on_key,
         on_cut_text = opts.on_cut_text,
         on_ready = opts.on_ready,
+        on_auth = opts.on_auth,
         version = nil,
         --- State of this connection, read by the encoders and the driver.
         client = {
@@ -272,6 +274,7 @@ function Server:_vnc_auth()
     end
     self:_write(out:tostring())
     if not ok then logger.warn("vnc: server rejected a VNC authentication attempt") end
+    if self.on_auth then self.on_auth(ok) end
     return ok
 end
 

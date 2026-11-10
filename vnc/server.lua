@@ -65,6 +65,11 @@ Server.HANDSHAKE_TIMEOUT = 10
 --- How long a client may stay backlogged (c.f., @{Server:_backlogged}) without taking a single byte
 --- before it is dropped.
 Server.TX_STALL_TIMEOUT = 10
+--- Password guessing: after a failed VNC Authentication, connections from that address are refused
+--- for AUTH_BACKOFF_BASE seconds, doubled with every further failure up to AUTH_BACKOFF_MAX. A
+--- success clears it, and so does AUTH_BACKOFF_MAX seconds without a failure after it expired.
+Server.AUTH_BACKOFF_BASE = 1
+Server.AUTH_BACKOFF_MAX = 60
 --- How long an incremental request may be *held* before the client is sent an empty update as a
 --- sign of life (c.f., @{Server:_answer_held}). Measured from the client's latest request, so a
 --- client that keeps asking while nothing changes is never answered with an empty update at all -
@@ -137,6 +142,7 @@ function Server.new(opts)
         _refresh_pending = {},  -- what the refresh hook saw since the last completed frame
         _repaint_depth = 0,     -- nested UIManager:_repaint calls (forceRePaint inside a paint)
         _poll_task = nil,
+        _auth_backoff = {},     -- address -> { fails = n, till = time } (c.f., Server:_auth_result)
     }, Server)
     self._inject_client = {}                 -- button state for Server:inject_pointer
     -- Notes the frame's dirty region and then does the refresh it wrapped; the region is *recorded*
@@ -608,13 +614,36 @@ function Server:_accept()
             end
             return
         end
-        if self:client_count() >= Server.MAX_CLIENTS then
+        local ip = sock:getpeername()
+        local backoff = ip and self._auth_backoff[ip]
+        if backoff and socket.gettime() < backoff.till then
+            logger.warn(string.format("vnc: refusing %s for %.0f s more after %d failed authentication(s)",
+                ip, backoff.till - socket.gettime(), backoff.fails))
+            sock:close()
+        elseif self:client_count() >= Server.MAX_CLIENTS then
             logger.warn("vnc: refusing a client, already serving", Server.MAX_CLIENTS)
             sock:close()
         else
             self:_adopt_client(sock)
         end
     end
+end
+
+--- Records the outcome of a VNC Authentication attempt from `ip` (c.f., Server.AUTH_BACKOFF_BASE).
+function Server:_auth_result(ip, ok)
+    if not ip then return end
+    local now = socket.gettime()
+    for addr, b in pairs(self._auth_backoff) do
+        if now - b.till > Server.AUTH_BACKOFF_MAX then self._auth_backoff[addr] = nil end
+    end
+    if ok then
+        self._auth_backoff[ip] = nil
+        return
+    end
+    local b = self._auth_backoff[ip] or { fails = 0 }
+    b.fails = b.fails + 1
+    b.till = now + math.min(Server.AUTH_BACKOFF_BASE * 2 ^ (b.fails - 1), Server.AUTH_BACKOFF_MAX)
+    self._auth_backoff[ip] = b
 end
 
 function Server:_adopt_client(sock)
@@ -661,12 +690,14 @@ function Server:_adopt_client(sock)
         on_pointer = function(x, y, mask, c) self:_on_pointer(c, x, y, mask) end,
         on_key = function(keysym, down, c) self:_on_key(c, keysym, down) end,
         on_cut_text = function(text, c) self:_on_cut_text(c, text) end,
+        on_auth = function(ok) self:_auth_result(client.ip, ok) end,
         on_ready = function()
             client.ready = true
             self:_notify_status()
         end,
     })
     client.accepted_at = socket.gettime()
+    client.ip = sock:getpeername()
     local key = tostring(sock)
     client.key = key
     self.clients[key] = client
