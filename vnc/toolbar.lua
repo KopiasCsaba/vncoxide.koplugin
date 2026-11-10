@@ -27,7 +27,6 @@ local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
-local IconWidget = require("ui/widget/iconwidget")
 local Icons = require("vnc/icons")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Size = require("ui/size")
@@ -87,14 +86,6 @@ local function specs(app)
     }
 end
 
---- Button only takes icon names, which KOReader resolves in its own folders: give `button` a fresh
---- image of the plugin icon `file` instead, at the same size, in the place the label is painted from.
-local function show_plugin_icon(button, file, size)
-    button.label_widget:free()
-    button.label_widget = IconWidget:new{ file = file, width = size, height = size }
-    button.label_container[1] = button.label_widget
-end
-
 function Toolbar:init()
     self:relayout()
 end
@@ -148,7 +139,7 @@ function Toolbar:relayout()
             preselect = spec.selected or nil,
             show_parent = app,
         }
-        if spec.icon_file then show_plugin_icon(button, spec.icon_file, icon_size) end
+        if spec.icon_file then Icons.set_button_icon(button, spec.icon_file, icon_size) end
         self.button_by_id[id] = button
         group[#group + 1] = CenterContainer:new{ dimen = Geom:new{ w = cell, h = cell }, button }
     end

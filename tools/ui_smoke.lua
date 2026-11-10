@@ -4488,14 +4488,19 @@ check("key_strip_keys_button_opens_the_panel_keeping_armed_modifiers", function(
     tap_toolbar(app, "keyboard")
     app:set_toolbar_visible(false)
     local strip = app.key_strip
-    local last = strip.button_by_id["key:panel"]
-    assert_true(last ~= nil, "the strip has a Keys… button")
-    assert_true(last.text == "Keys…", "labelled Keys…, got " .. tostring(last.text))
+    local keys = strip.button_by_id["panel"]
+    assert_true(keys ~= nil, "the strip has a Send keys button")
+    assert_true(keys.text == nil, "an icon, not a label, got " .. tostring(keys.text))
+    assert_true(keys.label_widget.file == require("vnc/icons").path("keys"),
+        "the plugin's keys icon, got " .. tostring(keys.label_widget.file))
     local wire = wire_log(app)
     touch(strip, "mod:Ctrl")
     UIManager:forceRePaint()
-    assert_true(last.dimen.x + last.dimen.w >= strip.dimen.w - 2, "it is the strip's last button")
-    touch(strip, "key:panel")
+    local x_close = strip.button_by_id["close"]
+    local ctrl = strip.button_by_id["mod:Ctrl"]
+    assert_true(x_close.dimen.x <= 2 and x_close.dimen.x < keys.dimen.x and keys.dimen.x < ctrl.dimen.x,
+        "X first, then the keys icon, then the modifiers")
+    touch(strip, "panel")
     UIManager:_checkTasks()
     local panel = app.key_panel
     assert_true(panel ~= nil and panel.variant == nil, "the full Send keys panel opens")
@@ -4503,6 +4508,27 @@ check("key_strip_keys_button_opens_the_panel_keeping_armed_modifiers", function(
         "keyboard and strip go away")
     assert_true(wire() == "", "nothing is sent")
     assert_true(panel:modifier_state("Ctrl") == "armed", "Ctrl stays armed on the panel")
+    close_viewer(app, remote)
+end)
+
+check("key_strip_close_button_hides_the_keyboard", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    tap_toolbar(app, "keyboard")
+    app:set_toolbar_visible(false)
+    local strip = app.key_strip
+    local x_close = strip.button_by_id["close"]
+    assert_true(x_close ~= nil and x_close.text == nil, "an X icon button")
+    assert_true(x_close.icon == "close", "KOReader's close icon, got " .. tostring(x_close.icon))
+    local last = strip.button_by_id["key:Del"]
+    UIManager:forceRePaint()
+    assert_true(last.dimen.x + last.dimen.w >= strip.dimen.w - 2, "Del is the strip's last button")
+    local wire = wire_log(app)
+    touch(strip, "close")
+    UIManager:_checkTasks()
+    assert_true(not app.vk_visible and app.key_strip == nil and not keyboard_on_stack(app),
+        "keyboard and strip go away")
+    assert_true(app.vk_wanted == false and app.key_panel == nil, "like toggling it off, no panel")
+    assert_true(wire() == "", "nothing is sent")
     close_viewer(app, remote)
 end)
 

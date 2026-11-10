@@ -20,8 +20,9 @@ all; nothing stays down on the remote between actions. That action is either
   in the middle of a drag.
 
 The same module also makes the key strip (`variant = "strip"`): one row above the on-screen keyboard
-with the panel's modifier buttons, a few keys (`STRIP_KEYS`) and `Keys…` (opens the full panel), no
-title, tabs or combo display.
+with, from the left, an X (closes the keyboard, like the toolbar's keyboard button), the "Send keys"
+icon (`icons/keys.svg`, opens the full panel), the panel's modifier buttons and a few keys
+(`STRIP_KEYS`); no title, tabs or combo display.
 Its modifiers arm and are taken exactly like the panel's, but what it sends is not added to the
 recent combos; the viewer also hands it the keyboard's
 keys while a modifier is armed (`ViewerApp:send_osk_key`). It sits `bottom_offset` pixels above the
@@ -53,6 +54,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 
+local Icons = require("vnc/icons")
 local Keysyms = require("vnc/keysyms")
 local Settings = require("vnc/settings")
 
@@ -343,14 +345,23 @@ local function separator(w, h)
 end
 
 --- A row of buttons in the ButtonTable style. `entries` are `{ id, text, width, callback,
---- enabled, preselect, bold }`, all `row_height` tall.
+--- enabled, preselect, bold }`, all `row_height` tall; instead of `text` an entry may carry a
+--- KOReader `icon` name or a plugin `icon_file` (a path, see @{vnc.icons}).
 function KeyPanel:_button_row(entries, row_height)
     local sep_w = Size.line.medium
     local group = HorizontalGroup:new{}
     local pad_v = Size.padding.buttontable
     for i, e in ipairs(entries) do
+        local icon_size
+        if e.icon or e.icon_file then
+            icon_size = math.min(math.floor((row_height - 2 * pad_v) * 0.7), e.width - 2 * Size.padding.small)
+        end
         local button = Button:new{
-            text = e.text,
+            text = (icon_size == nil) and e.text or nil,
+            -- a plugin icon starts as KOReader's placeholder, then gets its file (below)
+            icon = e.icon or (e.icon_file and "icon-not-found") or nil,
+            icon_width = icon_size,
+            icon_height = icon_size,
             width = e.width,
             height = row_height - 2 * pad_v,
             bordersize = 0,
@@ -364,6 +375,7 @@ function KeyPanel:_button_row(entries, row_height)
             callback = e.callback,
             show_parent = self,
         }
+        if e.icon_file then Icons.set_button_icon(button, e.icon_file, icon_size) end
         self.button_by_id[e.id] = button
         group[#group + 1] = button
         if i < #entries then
@@ -518,12 +530,18 @@ function KeyPanel:_bottom_row(width, row_height)
     return self:_button_row(entries, row_height)
 end
 
---- The strip's single row: the modifiers, `STRIP_KEYS`, then `Keys…`, which opens the full panel
---- (sending nothing, the armed modifiers go along) and absorbs the rounding.
+--- The strip's single row: an X (closes the on-screen keyboard, like the toolbar's keyboard
+--- button), the "Send keys" icon (opens the full panel, sending nothing: the armed modifiers go
+--- along), then the modifiers and `STRIP_KEYS`; the last key absorbs the rounding.
 function KeyPanel:_strip_row(width, row_height)
-    local count = #Keysyms.modifiers + #KeyPanel.STRIP_KEYS + 1
+    local count = 2 + #Keysyms.modifiers + #KeyPanel.STRIP_KEYS
     local unit, rest = unit_width(width, count, count)
-    local entries = self:_modifier_entries({}, unit)
+    local entries = {
+        { id = "close", icon = "close", width = unit, callback = function() self.app:toggle_keyboard() end },
+        { id = "panel", icon_file = Icons.path("keys"), width = unit,
+          callback = function() self.app:open_key_panel() end },
+    }
+    self:_modifier_entries(entries, unit)
     for _i, key in ipairs(KeyPanel.STRIP_KEYS) do
         local label, keysym = key[1], key[2]
         entries[#entries + 1] = {
@@ -533,12 +551,7 @@ function KeyPanel:_strip_row(width, row_height)
             callback = function() self:send_key(label, keysym) end,
         }
     end
-    entries[#entries + 1] = {
-        id = "key:panel",
-        text = _("Keys…"),
-        width = unit + rest,
-        callback = function() self.app:open_key_panel() end,
-    }
+    entries[#entries].width = unit + rest
     return self:_button_row(entries, row_height)
 end
 
