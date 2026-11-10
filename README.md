@@ -16,8 +16,9 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
   the visible part (plus a margin) is requested from the server, so less is sent and decoded.
 - Two ways to drive the pointer: **Touch** mode acts where your finger is, **Mouse** mode moves a
   pointer like a laptop trackpad. Two-finger gestures pan and zoom the view.
-- A small toolbar over the picture for the things you reach for most, with the rest one tap away
-  behind **⋯**.
+- A small toolbar over the picture for the things you reach for most (including one zoom button
+  that cycles fit, 1:1 and your own pinch/pan view, the frontlight and a contrast control for the
+  remote picture), with the rest one tap away behind **⋯**.
 - An on-screen keyboard that types into the remote session, plus a physical keyboard with
   modifiers, arrows, function keys and auto-repeat.
 - A key strip above the on-screen keyboard (modifiers, Esc, Tab, arrows, Del) and a **Send keys**
@@ -69,19 +70,33 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
 
 1. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
 2. **Display** opens the Display panel (below).
-3. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a short tooltip (*Touch mode — long
+3. **Zoom** cycles the view: **fit** → **1:1** (one remote pixel per screen pixel, keeping the
+   middle of the view where it was) → **your view** → fit … "Your view" is the last one you made
+   by pinching or two-finger panning: as soon as you pinch or pan, that is the current state, and
+   it is remembered for the button to come back to. Until you have made one (or after the remote
+   screen size changes) the button just switches between fit and 1:1. The icon shows the current
+   state: a page (fit), **1:1**, or a magnifier (your view; also shown for another Display panel
+   zoom preset, from which the button goes to fit). Fit follows the keyboard like a two-finger tap.
+4. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a short tooltip (*Touch mode — long
    press for help* or *Mouse mode — long press for help*). A long press opens the **Help** page
    (also under **⋯**). The mode is remembered per connection.
-4. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard together with the key strip (and
+5. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard together with the key strip (and
    closes the **Send keys** panel if it is open); a long press opens the full **Send keys** panel.
-5. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
+6. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
    Display panel: a pinch never turns the screen.) The viewer remembers the orientation you last
    used and opens in it.
-6. **Scroll lock** is a toggle, drawn inverted while on; it starts off each time the viewer opens.
+7. **Scroll lock** is a toggle, drawn inverted while on; it starts off each time the viewer opens.
    While it is on, a two-finger drag scrolls the remote instead of moving the picture (see below).
-7. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
+8. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
    scroll buttons on toolbar** in **⋯**.
-8. **⋯** opens the menu (below).
+9. **Brightness** (a sun) opens KOReader's own frontlight dialog. Shown on devices with a
+   frontlight while **Enable brightness button** in **⋯** is on (the default).
+10. **Contrast** opens a small dialog under the toolbar with a stepped bar (50 % … 300 %, 100 % is
+    the picture as the server sends it, marked as the default). It changes the contrast of the remote
+    picture as it is drawn on this screen (a stretch around mid grey; the remote desktop is not
+    touched), at once and without a new picture from the server, and is remembered. ✕, Back, a tap
+    outside or the button close it. Hidden until you switch on **Enable contrast button** in **⋯**.
+11. **⋯** opens the menu (below).
 
 | Gesture | Touch mode | Mouse mode |
 | --- | --- | --- |
@@ -155,17 +170,19 @@ and send it to the remote as key presses; characters with no key are skipped and
 **Refresh** (asks for a full picture and flashes the screen), **Ctrl+Alt+Del**, **Lock screen**
 (Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel), **Keyboard always visible**,
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
-**Show scroll buttons on toolbar**, **Help** and **Leave (keep connection)**. Switches keep the menu open;
+**Show scroll buttons on toolbar**, **Enable brightness button**, **Enable contrast button**, **Help** and **Leave (keep connection)**. Switches keep the menu open;
 anything else closes it.
 
-**The key strip** sits right above the on-screen keyboard: **Ctrl**, **Shift**, **Alt**, **Super**,
-then Esc, Tab, the four arrows, Del and **Keys…**, which opens the full **Send keys** panel (the
-keyboard and strip make way for it; it sends nothing and leaves armed modifiers armed). A modifier armed there goes with exactly one action, like
+**The key strip** sits right above the on-screen keyboard: **✕** (closes the keyboard, like a tap on
+**⌨**), the **Send keys** icon (two keycaps), which opens the full **Send keys** panel (the keyboard
+and strip make way for it; it sends nothing and leaves armed modifiers armed), then **Ctrl**,
+**Shift**, **Alt**, **Super**, Esc, Tab, the four arrows and Del. A modifier armed there goes with exactly one action, like
 the panel's: the next key on the on-screen keyboard or the strip, or the next tap or drag on the
 screen. A long press on **⌨** also opens the full **Send keys** panel.
 
 **Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable) above
-it. Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns black),
+it. At the left of its title, **✕** closes it and the keyboard icon next to it switches back to the
+on-screen keyboard with its strip (armed modifiers stay armed there). Its top row has **Ctrl**, **Shift**, **Alt** and **Super**: tap one to arm it (it turns black),
 tap again to cancel. Armed modifiers go with exactly one action and are then let go: the next key
 from the panel, or the next tap, long press or drag on the screen (Ctrl+click, Shift+click or
 Shift+drag to select, Alt+drag). The text to the right shows what goes with the next action; tap it
@@ -312,6 +329,9 @@ return {
         ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the Display panel's switch)
         ["pointer_speed"] = "normal",      -- Mouse mode: "slow" (0.75), "normal" (1.25) or "fast" (2.0)
         ["toolbar_scroll_buttons"] = false, -- show the toolbar's scroll up/down buttons
+        ["toolbar_brightness_button"] = true, -- show the toolbar's frontlight button (devices with a frontlight)
+        ["toolbar_contrast_button"] = false, -- show the toolbar's contrast button
+        ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
     },
     ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface
         ["ip"] = "0.0.0.0",

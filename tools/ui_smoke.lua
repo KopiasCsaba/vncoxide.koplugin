@@ -3611,7 +3611,12 @@ check("help_opens_from_mode_hold_and_menu_and_is_local", function()
     assert_true(help.title == "VNC viewer help", "title")
     local text = help.text
     assert_true(text:find("Tap, then long press", 1, true) and text:find("Scroll lock", 1, true), "content")
-    assert_true(text:find("Keys\u{2026}", 1, true) and text:find("RECONNECT", 1, true), "strip and reconnect")
+    assert_true(text:find("KEY STRIP", 1, true) and text:find("RECONNECT", 1, true), "strip and reconnect")
+    assert_true(not text:find("Keys\u{2026}", 1, true), "no Keys\u{2026} button any more")
+    for _, needle in ipairs({ "Zoom: cycle", "1:1", "Brightness:", "Contrast:", "Enable brightness button",
+                              "Enable contrast button", "keyboard icon" }) do
+        assert_true(text:find(needle, 1, true), "the help tells about " .. needle)
+    end
     -- the current mode (touch) is described before the other one
     assert_true(text:find("Touch mode", 1, true) < text:find("Mouse mode", 1, true), "current mode first")
     assert_true(not app:_input_target(), "the viewer is under a popup")

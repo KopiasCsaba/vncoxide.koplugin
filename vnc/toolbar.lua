@@ -11,8 +11,10 @@ Zoom (cycles fit -> 1:1 -> the user's own pinch/pan view -> fit, see `ViewerApp:
 icon shows the current state: `zoom.page`, the plugin's `zoom-1to1`, `zoom.manual`), Mode (tap: Touch/Mouse, the label shows the current one; long press: the help), Keyboard (tap:
 shows or hides the on-screen keyboard with the key strip, or closes the "Send keys" panel; long
 press: that panel), Rotate, Scroll lock (a toggle, drawn inverted while on: a two-finger drag
-scrolls the remote), Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More
-(the menu).
+scrolls the remote), Scroll up/down (only with the `toolbar_scroll_buttons` setting), Brightness
+(KOReader's frontlight dialog; with `toolbar_brightness_button`, on by default, and only on a device
+with a frontlight), Contrast (the contrast dialog, @{vnc.contrastdialog}; with
+`toolbar_contrast_button`) and More (the menu).
 
 @module vnc.toolbar
 ]]

@@ -62,19 +62,22 @@ function Help.text(mode)
         table.concat({
             "  " .. _("Close: disconnect, after a confirmation."),
             "  " .. _("Display: the display panel (below)."),
+            "  " .. _("Zoom: cycle fit, 1:1 (one remote pixel per screen pixel) and your own view (the last one you made by pinching or panning); without one, just fit and 1:1. The icon shows the current state."),
             "  " .. _("Mode: switch between Touch and Mouse mode. Long press: this help."),
             "  " .. _("Keyboard: show or hide the on-screen keyboard with the key strip; closes the Send keys panel if it is open. Long press: the Send keys panel."),
             "  " .. _("Rotate: turn the screen a quarter turn clockwise; the viewer remembers the orientation."),
             "  " .. _("Scroll lock: while on, a two-finger drag scrolls and does not move the picture (see below)."),
             "  " .. _("Scroll up / down: mouse-wheel notches; shown only with the menu entry \"Show scroll buttons on toolbar\"."),
+            "  " .. _("Brightness: KOReader's frontlight dialog; shown on devices with a frontlight, with the menu entry \"Enable brightness button\" (on by default)."),
+            "  " .. _("Contrast: the contrast of the remote picture as drawn here (50% to 300%), remembered; shown with the menu entry \"Enable contrast button\"."),
             "  " .. _("More (\u{22EF}): the menu (below)."),
         }, "\n"),
 
         _("KEY STRIP"),
-        "  " .. _("One row above the on-screen keyboard: Ctrl, Shift, Alt and Super (tap to arm; an armed modifier is used for exactly the next key, or tap, long press or drag on the picture, then released), Esc, Tab, the arrow keys and Del. Keys\u{2026} opens the full Send keys panel (keyboard and strip make way for it); it sends nothing and keeps armed modifiers armed."),
+        "  " .. _("One row above the on-screen keyboard: X (closes the keyboard), the Send keys icon (opens the full Send keys panel; keyboard and strip make way for it; it sends nothing and keeps armed modifiers armed), then Ctrl, Shift, Alt and Super (tap to arm; an armed modifier is used for exactly the next key, or tap, long press or drag on the picture, then released), Esc, Tab, the arrow keys and Del."),
 
         _("SEND KEYS PANEL"),
-        "  " .. _("Tabs Keys, F1\u{2013}F12, Letters and Symbols, the same sticky modifiers, a combo display, recently sent combos and Release all. Close it with its X, or with the Keyboard button."),
+        "  " .. _("Tabs Keys, F1\u{2013}F12, Letters and Symbols, the same sticky modifiers, a combo display, recently sent combos and Release all. Close it with its X (top left), or with the Keyboard button; the keyboard icon next to the X goes back to the on-screen keyboard and its strip."),
 
         _("SCROLL LOCK"),
         "  " .. _("A toolbar toggle. While it is on, a two-finger drag scrolls instead of moving the picture: the content follows your fingers, and a sideways drag scrolls horizontally. Pinch still zooms. It starts off each time the viewer opens."),
@@ -94,6 +97,7 @@ function Help.text(mode)
             "  " .. _("Keyboard always visible: keep the keyboard up."),
             "  " .. _("Keep screen on: stop the device from going to sleep or dimming the light while the viewer is open."),
             "  " .. _("Show scroll buttons on toolbar: the scroll up / down buttons."),
+            "  " .. _("Enable brightness button, Enable contrast button: those toolbar buttons."),
             "  " .. _("Help: this page."),
             "  " .. _("Leave (keep connection): close the viewer, the connection stays up."),
         }, "\n"),
