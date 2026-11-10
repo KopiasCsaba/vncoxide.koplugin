@@ -7,7 +7,8 @@ canvas beside and below it stays fully interactive. A swipe down in the top menu
 hides it (`ViewerApp:toggle_toolbar`).
 
 Buttons, left to right: Close (disconnect, after a confirmation), Display (the display panel),
-Mode (tap: Touch/Mouse, the label shows the current one; long press: the help), Keyboard (tap:
+Zoom (cycles fit -> 1:1 -> the user's own pinch/pan view -> fit, see `ViewerApp:cycle_zoom`; its
+icon shows the current state: `zoom.page`, the plugin's `zoom-1to1`, `zoom.manual`), Mode (tap: Touch/Mouse, the label shows the current one; long press: the help), Keyboard (tap:
 shows or hides the on-screen keyboard with the key strip, or closes the "Send keys" panel; long
 press: that panel), Rotate, Scroll lock (a toggle, drawn inverted while on: a two-finger drag
 scrolls the remote), Scroll up/down (only with the `toolbar_scroll_buttons` setting) and More
@@ -38,11 +39,14 @@ local Toolbar = InputContainer:extend{
     app = nil, -- the @{vnc.app} instance
 }
 
-Toolbar.IDS = { "close", "display", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up", "scroll_down", "more" }
+Toolbar.IDS = { "close", "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up", "scroll_down", "more" }
 
 -- Labels for the buttons without a fitting icon: these glyphs come from KOReader's default UI font
 -- fallbacks (FreeSerif has both).
 local MODE_GLYPHS = { touch = "☝", mouse = "🖱" }
+
+-- The zoom button's icon per view state (`ViewerApp:view_state`); 1:1 has a plugin icon instead.
+local ZOOM_ICONS = { fit = "zoom.page", user = "zoom.manual", preset = "zoom.manual" }
 
 --- Asks before disconnecting; the answer lands on the connection list (`ViewerApp:disconnect_session`).
 local function confirm_disconnect(app)
@@ -64,6 +68,11 @@ local function specs(app)
     return {
         close = { icon = "close", callback = function() confirm_disconnect(app) end },
         display = { icon = "appbar.pagefit", callback = function() app:toggle_display_panel() end },
+        zoom = {
+            icon = ZOOM_ICONS[app:view_state()],
+            icon_file = app:view_state() == "1:1" and Icons.path("zoom-1to1") or nil,
+            callback = function() app:cycle_zoom() end,
+        },
         mode = {
             text = MODE_GLYPHS[app:get_pointer_mode()],
             callback = function() app:toggle_pointer_mode() end,
@@ -109,6 +118,8 @@ function Toolbar:relayout()
     local padding = Size.padding.default
     local cell = icon_size + 2 * padding
     local all = specs(app)
+    -- the view state the zoom button shows, for `ViewerApp:_zoom_state_changed`
+    self.zoom_state = app:view_state()
     local group = HorizontalGroup:new{}
     for _i, id in ipairs(self:visible_ids()) do
         local spec = all[id]

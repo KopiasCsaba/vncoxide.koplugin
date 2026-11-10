@@ -241,6 +241,17 @@ function Remote:set_scale(s)
 end
 
 --[[--
+Sets the whole view at once: `scale` and the remote point `(x, y)` at the canvas' top-left corner
+(a view saved earlier from `scale`, `view_x`, `view_y`), clamped like any other.
+]]
+function Remote:set_view(scale, x, y)
+    self.scale = clamp_scale(scale)
+    self.view_x, self.view_y = x, y
+    self._unplaced = false
+    self:_clamp()
+end
+
+--[[--
 Pans by a screen-pixel delta (positive = content moves right/down).
 --- @treturn bool whether the view moved (it stops at the plane's edges)
 ]]

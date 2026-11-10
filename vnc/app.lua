@@ -364,6 +364,7 @@ function ViewerApp:_reflow()
     self._user_view = nil
     self:_fit_zoom_mode()
     self:update_canvas()
+    self:_zoom_state_changed()
 end
 
 --[[--
@@ -1522,7 +1523,7 @@ function ViewerApp:onTwoFingerPan(_, ges)
     end
     -- the picture follows the fingers, like any touch scroll
     self.remote:pan_by(dx, dy)
-    self._user_view = true
+    self:_note_user_view()
     self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
@@ -1572,7 +1573,7 @@ function ViewerApp:_live_zoom(ges)
     self._last_pinch_factor = factor
     if step <= 0 then return nil end
     self.remote:zoom_at(ges.pos.x - self:canvas_geom().x, ges.pos.y - self:canvas_geom().y, step)
-    self._user_view = true
+    self:_note_user_view()
     self:_view_move()
     UIManager:setDirty(self, "fast")
     return true
@@ -2025,6 +2026,78 @@ function ViewerApp:zoom_to(mode)
     -- the new scale may put the view above the keyboard (or back on the whole screen)
     self:update_canvas()
     self:_wholesale_change()
+    self:_zoom_state_changed()
+end
+
+--[[--
+The view state the toolbar's zoom button shows and cycles through: `"fit"` (a fitted zoom mode),
+`"1:1"` (the 100% preset: one remote pixel per screen pixel), `"user"` (the view the user made by
+pinching or panning, whatever the stored mode) or `"preset"` (any other Display panel preset).
+]]
+function ViewerApp:view_state()
+    if self._user_view then return "user" end
+    local mode = self.settings.zoom_mode
+    if mode == "fit" or mode == "fit_with_keyboard" then return "fit" end
+    if mode == 1 then return "1:1" end
+    return "preset"
+end
+
+--[[--
+A pinch or a two-finger pan moved the view: it is the user's view now, and it is remembered (scale
+and position, for the plane size it was made on) for the zoom button to come back to. Runs on every
+move of the gesture: it only stores four numbers, and the toolbar is rebuilt only when the state
+changes.
+]]
+function ViewerApp:_note_user_view()
+    self._user_view = true
+    local r = self.remote
+    local u = self._user_zoom
+    if not u then
+        u = {}
+        self._user_zoom = u
+    end
+    u.scale, u.x, u.y, u.w, u.h = r.scale, r.view_x, r.view_y, r.w, r.h
+    self:_zoom_state_changed()
+end
+
+--- Whether there is a remembered user view for the current remote screen size.
+function ViewerApp:has_user_view()
+    local u, r = self._user_zoom, self.remote
+    return u ~= nil and r ~= nil and u.w == r.w and u.h == r.h
+end
+
+--- Brings back the remembered user view (see `_note_user_view`).
+function ViewerApp:restore_user_view()
+    local u = self._user_zoom
+    self.remote:set_view(u.scale, u.x, u.y)
+    self._user_view = true
+    self:update_canvas()
+    self:_wholesale_change()
+    self:_zoom_state_changed()
+end
+
+--[[--
+The toolbar's zoom button: fit -> 1:1 -> the remembered user view -> fit ... Without a user view
+(none made yet, or made for another remote screen size) it is fit <-> 1:1; from the user view or
+another preset it goes to fit. 1:1 keeps the view centre (`Remote:set_scale`), and fit follows the
+keyboard like a two-finger tap does.
+]]
+function ViewerApp:cycle_zoom()
+    local state = self:view_state()
+    if state == "fit" then
+        self:zoom_to(1)
+        self.plugin.settings:flush()
+    elseif state == "1:1" and self:has_user_view() then
+        self:restore_user_view()
+    else
+        self:fit_to_screen()
+    end
+end
+
+--- Rebuilds the toolbar when its zoom button no longer shows the current view state.
+function ViewerApp:_zoom_state_changed()
+    local bar = self.toolbar
+    if bar and bar.zoom_state ~= self:view_state() then self:_toolbar_changed() end
 end
 
 function ViewerApp:rotate(delta)

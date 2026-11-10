@@ -5410,7 +5410,8 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     assert_true(app.toolbar_visible, "shown on open")
     local Toolbar = require("vnc/toolbar")
-    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,more")
+    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,zoom,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,more",
+        table.concat(Toolbar.IDS, ","))
     local before = Screen:getRotationMode()
     tap_toolbar(app, "rotate")
     assert_true(Screen:getRotationMode() == (before + 1) % 4, "rotated a quarter turn clockwise")
@@ -5446,6 +5447,83 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     for _, e in ipairs(sent.pointer) do masks[#masks + 1] = e.mask end
     assert_true(table.concat(masks, ",") == "8,0", "exactly one notch up, got " .. table.concat(masks, ","))
     app.settings.toolbar_scroll_buttons = false
+    close_viewer(app, remote)
+end)
+
+--- What the toolbar's zoom button shows: KOReader's icon name, or the plugin icon file.
+local function zoom_icon(app)
+    local b = app.toolbar.button_by_id.zoom
+    assert_true(b ~= nil, "the toolbar has a zoom button")
+    if b.icon == "icon-not-found" then return b.label_widget.file end
+    return b.icon
+end
+local function near(a, b) return math.abs(a - b) < 1e-6 end
+
+check("toolbar_zoom_button_cycles_fit_and_one_to_one", function()
+    local Icons = require("vnc/icons")
+    local app, remote = new_app(800, 600, { toolbar = true })
+    local ids = table.concat(app.toolbar:visible_ids(), ",")
+    assert_true(ids:find("display,zoom,mode", 1, true), "right after Display: " .. ids)
+    assert_true(app:view_state() == "fit" and zoom_icon(app) == "zoom.page", "starts fitted: " .. tostring(zoom_icon(app)))
+    local fit_scale = remote:get_scale()
+    assert_true(fit_scale < 1, "the test plane is bigger than the screen")
+    tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "1:1" and remote:get_scale() == 1, "one remote pixel per screen pixel")
+    assert_true(app.settings.zoom_mode == 1, "stored like the 100% preset")
+    assert_true(near(remote.view_x + remote.cw / 2, 400) and near(remote.view_y + remote.ch / 2, 300),
+        "the view centre stays where it was (the picture's centre)")
+    assert_true(zoom_icon(app) == Icons.path("zoom-1to1"), "the 1:1 icon, got " .. tostring(zoom_icon(app)))
+    tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "fit" and near(remote:get_scale(), fit_scale), "no user view yet: back to fit")
+    assert_true(zoom_icon(app) == "zoom.page", "and its icon")
+    close_viewer(app, remote)
+end)
+
+check("toolbar_zoom_button_remembers_the_user_view", function()
+    local app, remote = new_app(800, 600, { toolbar = true })
+    local fit_scale = remote:get_scale()
+    -- a pinch makes it the user's view
+    app:_live_zoom({ pos = { x = 100, y = 120 }, span = 300, start_span = 100 })
+    app:onSpread()
+    local start = { x = 300, y = 300 }
+    app:onTwoFingerPan(nil, { relative = { x = -40, y = -25 }, start_pos = start })
+    app:onTwoFingerPanRelease(nil, {})
+    assert_true(app:view_state() == "user", "a manual zoom and pan is the user state")
+    assert_true(zoom_icon(app) == "zoom.manual", "shown as such, got " .. tostring(zoom_icon(app)))
+    local us, ux, uy = remote:get_scale(), remote.view_x, remote.view_y
+    tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "fit" and near(remote:get_scale(), fit_scale), "user -> fit")
+    tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "1:1" and remote:get_scale() == 1, "fit -> 1:1")
+    tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "user" and zoom_icon(app) == "zoom.manual", "1:1 -> the user view")
+    assert_true(near(remote:get_scale(), us) and near(remote.view_x, ux) and near(remote.view_y, uy),
+        "exactly the view the user made")
+    tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "fit", "and round again")
+    -- a pan at 1:1 is a new user view, remembered in place of the old one
+    tap_toolbar(app, "zoom")
+    app:onTwoFingerPan(nil, { relative = { x = 30, y = 10 }, start_pos = { x = 5, y = 5 } })
+    app:onTwoFingerPanRelease(nil, {})
+    assert_true(app:view_state() == "user" and remote:get_scale() == 1, "a pan alone makes it the user's")
+    local px, py = remote.view_x, remote.view_y
+    tap_toolbar(app, "zoom"); tap_toolbar(app, "zoom"); tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "user" and near(remote.view_x, px) and near(remote.view_y, py),
+        "the newest user view comes back")
+    close_viewer(app, remote)
+end)
+
+check("toolbar_zoom_button_follows_the_display_panel_and_two_finger_tap", function()
+    local app, remote = new_app(800, 600, { toolbar = true })
+    app:zoom_to(0.5)
+    assert_true(app:view_state() == "preset" and zoom_icon(app) == "zoom.manual", "another preset: a manual zoom")
+    tap_toolbar(app, "zoom")
+    assert_true(app:view_state() == "fit", "the button goes to fit from there")
+    app:zoom_to(1)
+    assert_true(app:view_state() == "1:1" and zoom_icon(app) == require("vnc/icons").path("zoom-1to1"),
+        "the 100% preset is the 1:1 state")
+    app:onTwoFingerTap(nil, { pos = { x = 300, y = 300 } })
+    assert_true(app:view_state() == "fit" and zoom_icon(app) == "zoom.page", "a two-finger tap fits")
     close_viewer(app, remote)
 end)
 
