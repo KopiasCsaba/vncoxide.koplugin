@@ -55,7 +55,9 @@ vnc/displaypanel.lua  The Display panel under the toolbar: zoom, scaling, orient
 vnc/help.lua        The Help page text (gesture rows per pointer mode, toolbar, key strip, menu,
                           reconnect); shown in a TextViewer by ViewerApp:open_help.
 vnc/reconnect.lua   The reconnect loop and its box (backoff, Retry now, Close).
-vnc/menu.lua        The "More" menu (the toolbar's last button).
+vnc/menu.lua        The "More" menu (the toolbar's last button). Its rows act on a long press only on its release:
+                          a release within HOLD_CONFIRM of the hold is the device's false hold
+                          (InkView's late burst), i.e. a tap (VncMenu:onMenuHold).
 vnc/keypanel.lua    The "Send keys" panel: one-shot modifier toggles and every key, for
                           any hotkey; owned by the viewer (ViewerApp:open_key_panel). Its
                           variant = "strip" is the one-row key strip above the on-screen keyboard.

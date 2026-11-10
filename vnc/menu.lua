@@ -12,9 +12,12 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Device = require("device")
+local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
+local time = require("ui/time")
 
 local Dialogs = require("vnc/dialogs")
 local Toolbar = require("vnc/toolbar")
@@ -23,9 +26,27 @@ local MenuBuilder = {}
 
 -- The title bar's X must close the whole menu; Menu's own wiring (like the Back key) only
 -- steps up one submenu level.
-local VncMenu = Menu:extend{}
+--[[--
+False long presses: on PocketBook, InkView sometimes withholds a touch's events for ~0.5 s, long
+enough for the hold timer to trip, then delivers the lift right after it (see
+`ViewerApp.HOLD_CONFIRM`). A tap on a row then arrived as a long press: nothing happened, or its
+help text showed. So a row's long press acts on its release (`handle_hold_on_hold_release`), and a
+release that comes less than `hold_confirm` seconds after the hold was a tap: the row is selected.
+]]
+local VncMenu = Menu:extend{
+    handle_hold_on_hold_release = true,
+    hold_confirm = 0.12,
+    clock = time.now, -- (replaceable in tests)
+}
 function VncMenu:init()
     Menu.init(self)
+    -- when the hold itself came (the rows only see its release)
+    self.ges_events.VncHoldSeen = {
+        GestureRange:new{
+            ges = "hold",
+            range = function() return Geom:new{ x = 0, y = 0, w = Device.screen:getWidth(), h = Device.screen:getHeight() } end,
+        },
+    }
     if self.title_bar and self.title_bar.right_button then
         self.title_bar.right_button.callback = function() self:onCloseAllMenus() end
     end
@@ -44,6 +65,20 @@ function VncMenu:updatePageInfo(select_number)
         arrow:showHide(nested)
         arrow:enableDisable(nested)
     end
+end
+function VncMenu:onVncHoldSeen()
+    self._hold_at = self.clock()
+    return true
+end
+--- A row's long press, on its release: a tap when it was a false one, else its help text.
+function VncMenu:onMenuHold(item)
+    local held = self._hold_at and time.to_s(self.clock() - self._hold_at)
+    self._hold_at = nil
+    if held and held < self.hold_confirm then return self:onMenuSelect(item) end
+    if item.help_text then
+        UIManager:show(InfoMessage:new{ text = item.help_text })
+    end
+    return true
 end
 -- Settings toggles leave the menu open: the stock handler would run close_callback after them.
 function VncMenu:onMenuSelect(item)
@@ -330,13 +365,7 @@ function MenuBuilder.open(app)
             app:_sync_keyboard_later()
         end,
     }
-    -- Menu has no help text of its own: a long press on an entry that carries one shows it.
-    function menu:onMenuHold(item)
-        if item.help_text then
-            UIManager:show(InfoMessage:new{ text = item.help_text })
-        end
-        return true
-    end
+    menu.hold_confirm = app.HOLD_CONFIRM or menu.hold_confirm
     -- A menu over a framebuffer view is a wholesale change: without a flash the panel would keep
     -- the desktop where the menu belongs, and the viewer's per-rectangle refreshes would only ever
     -- push a band of it. Core's TouchMenu flashes its first popup for exactly this reason.

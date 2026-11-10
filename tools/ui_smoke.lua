@@ -7577,6 +7577,41 @@ check("menu_submenus_have_a_back_button", function()
     close_viewer(app, remote)
 end)
 
+check("menu_false_hold_is_a_tap", function()
+    -- the device's late burst: hold, then its release a few ms later -> a tap on the row
+    local app, remote = new_app()
+    local menu = app:open_menu()
+    UIManager:forceRePaint()
+    local now = 0
+    menu.clock = function() return now end
+    local time = require("ui/time")
+    local function row_pos(text)
+        for _, w in ipairs(menu.item_group) do
+            if w.entry and w.entry.text == text then return centre_of(w.dimen) end
+        end
+    end
+    local pos = row_pos("Toolbar buttons…")
+    assert_true(pos ~= nil, "the row is on screen")
+    dispatch_gesture{ ges = "hold", pos = pos }
+    now = now + time.ms(15)
+    dispatch_gesture{ ges = "hold_release", pos = pos }
+    UIManager:_checkTasks()
+    assert_true(app.menu == menu and find_item(menu.item_table, "On the toolbar…") ~= nil, "the submenu opened")
+    -- a genuine long press shows the help text and selects nothing
+    UIManager:forceRePaint()
+    pos = row_pos("On the toolbar…")
+    dispatch_gesture{ ges = "hold", pos = pos }
+    now = now + time.ms(600)
+    dispatch_gesture{ ges = "hold_release", pos = pos }
+    UIManager:_checkTasks()
+    local info = top()
+    assert_true(info ~= menu and info.text and info.text:find("Close and More", 1, true), "its help shows")
+    UIManager:close(info)
+    assert_true(find_item(menu.item_table, "On the toolbar…") ~= nil, "nothing was opened")
+    app:close_menu()
+    close_viewer(app, remote)
+end)
+
 if failures > 0 then
     print(string.format("%d check(s) failed", failures))
     os.exit(1)
