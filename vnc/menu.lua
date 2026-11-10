@@ -241,6 +241,23 @@ function MenuBuilder.open(app)
         end,
     }, function(item) item.mandatory = settings.toolbar_scroll_buttons and "✓" or "-" end)
 
+    -- ---- the toolbar's brightness and contrast buttons, the same way
+    local function toolbar_switch(text, key, help_text)
+        item_table[#item_table + 1] = stays_open({
+            text = text,
+            help_text = help_text,
+            callback = function()
+                settings[key] = not settings[key]
+                plugin.settings:flush()
+                app:_toolbar_changed()
+            end,
+        }, function(item) item.mandatory = settings[key] and "✓" or "-" end)
+    end
+    toolbar_switch(_("Enable brightness button"), "toolbar_brightness_button",
+        _("A toolbar button for the frontlight dialog (on devices with a frontlight)."))
+    toolbar_switch(_("Enable contrast button"), "toolbar_contrast_button",
+        _("A toolbar button that adjusts the contrast of the remote picture as it is drawn here."))
+
     -- ---- help, session
     item_table[#item_table + 1] = {
         text = _("Help"),

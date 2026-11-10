@@ -39,7 +39,8 @@ local Toolbar = InputContainer:extend{
     app = nil, -- the @{vnc.app} instance
 }
 
-Toolbar.IDS = { "close", "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up", "scroll_down", "more" }
+Toolbar.IDS = { "close", "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up", "scroll_down", "brightness",
+    "contrast", "more" }
 
 -- Labels for the buttons without a fitting icon: these glyphs come from KOReader's default UI font
 -- fallbacks (FreeSerif has both).
@@ -91,6 +92,8 @@ local function specs(app)
         },
         scroll_up = { icon = "move.up", callback = function() app:scroll_wheel(-1, 1) end },
         scroll_down = { icon = "move.down", callback = function() app:scroll_wheel(1, 1) end },
+        brightness = { icon_file = Icons.path("brightness"), callback = function() app:open_frontlight_dialog() end },
+        contrast = { icon = "appbar.contrast", callback = function() app:toggle_contrast_dialog() end },
         more = { icon = "appbar.menu", callback = function() app:open_menu() end },
     }
 end
@@ -99,12 +102,21 @@ function Toolbar:init()
     self:relayout()
 end
 
---- The ids of the buttons on the bar, left to right: the scroll pair only with its setting on.
+--- The ids of the buttons on the bar, left to right: the scroll pair, brightness (only on a device
+--- with a frontlight) and contrast only with their settings on.
 function Toolbar:visible_ids()
-    local with_scroll = self.app.settings.toolbar_scroll_buttons
+    local settings = self.app.settings
+    local scroll = settings.toolbar_scroll_buttons == true
+    -- the optional buttons; every other one is always there
+    local optional = {
+        scroll_up = scroll,
+        scroll_down = scroll,
+        brightness = settings.toolbar_brightness_button == true and Device:hasFrontlight(),
+        contrast = settings.toolbar_contrast_button == true,
+    }
     local ids = {}
     for _i, id in ipairs(Toolbar.IDS) do
-        if with_scroll or (id ~= "scroll_up" and id ~= "scroll_down") then ids[#ids + 1] = id end
+        if optional[id] ~= false then ids[#ids + 1] = id end
     end
     return ids
 end

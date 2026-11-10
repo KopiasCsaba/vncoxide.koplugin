@@ -3645,7 +3645,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text:gsub("^Connected to.*", "status") end
     assert_true(table.concat(order, "|") == "status|Connections…|Send text…|Refresh|Ctrl+Alt+Del|Lock screen|"
-        .. "Page buttons send|Keyboard always visible|Keep screen on|Show scroll buttons on toolbar|Help|Leave (keep connection)",
+        .. "Page buttons send|Keyboard always visible|Keep screen on|Show scroll buttons on toolbar|Enable brightness button|Enable contrast button|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app:send_text("a\nb\1") == 1)
@@ -3687,6 +3687,24 @@ check("more_menu_order_and_actions", function()
     UIManager:_checkTasks()
     assert_true(app.settings.toolbar_scroll_buttons == false and app.toolbar.button_by_id.scroll_up == nil, "and go")
     app:close_menu()
+
+    -- the brightness and contrast switches: they stay open and rebuild the toolbar
+    for _, case in ipairs({ { "Enable brightness button", "toolbar_brightness_button", "brightness" },
+                            { "Enable contrast button", "toolbar_contrast_button", "contrast" } }) do
+        local text, key, id = case[1], case[2], case[3]
+        app.settings[key] = false; app.toolbar:relayout()
+        menu = app:open_menu()
+        item = find_item(menu.item_table, text)
+        assert_true(item.mandatory == "-" and app.toolbar.button_by_id[id] == nil, text .. ": off, no button")
+        menu:onMenuSelect(item)
+        UIManager:_checkTasks()
+        assert_true(app.menu == menu and app.settings[key] == true and item.mandatory == "✓", text .. ": on")
+        assert_true(app.toolbar.button_by_id[id] ~= nil, text .. ": the button appears")
+        menu:onMenuSelect(item)
+        UIManager:_checkTasks()
+        assert_true(app.settings[key] == false and app.toolbar.button_by_id[id] == nil, text .. ": and goes")
+        app:close_menu()
+    end
 
     -- Send text…: dialog, Send closes it and types
     menu = app:open_menu()
@@ -5410,7 +5428,7 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     assert_true(app.toolbar_visible, "shown on open")
     local Toolbar = require("vnc/toolbar")
-    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,zoom,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,more",
+    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,zoom,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,brightness,contrast,more",
         table.concat(Toolbar.IDS, ","))
     local before = Screen:getRotationMode()
     tap_toolbar(app, "rotate")
@@ -5525,6 +5543,87 @@ check("toolbar_zoom_button_follows_the_display_panel_and_two_finger_tap", functi
     app:onTwoFingerTap(nil, { pos = { x = 300, y = 300 } })
     assert_true(app:view_state() == "fit" and zoom_icon(app) == "zoom.page", "a two-finger tap fits")
     close_viewer(app, remote)
+end)
+
+check("toolbar_brightness_and_contrast_buttons_follow_their_settings", function()
+    local Settings = require("vnc/settings")
+    assert_true(Settings.DEFAULTS.toolbar_brightness_button == true, "brightness on by default")
+    assert_true(Settings.DEFAULTS.toolbar_contrast_button == false, "contrast off by default")
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local has = Device.hasFrontlight
+    local ok, err = pcall(function()
+        app.settings.toolbar_brightness_button, app.settings.toolbar_contrast_button = true, true
+        Device.hasFrontlight = function() return true end
+        app.toolbar:relayout()
+        local ids = table.concat(app.toolbar:visible_ids(), ",")
+        assert_true(ids:find("brightness,contrast,more", 1, true), "both before More: " .. ids)
+        assert_true(app.toolbar.button_by_id.contrast.icon == "appbar.contrast", "KOReader's contrast icon")
+        assert_true(app.toolbar.button_by_id.brightness.label_widget.file == require("vnc/icons").path("brightness"),
+            "the plugin's brightness icon")
+        Device.hasFrontlight = function() return false end
+        app.toolbar:relayout()
+        assert_true(app.toolbar.button_by_id.brightness == nil, "no frontlight, no brightness button")
+        assert_true(app.toolbar.button_by_id.contrast ~= nil, "contrast does not need one")
+    end)
+    Device.hasFrontlight = has
+    assert_true(ok, tostring(err))
+    close_viewer(app, remote)
+end)
+
+check("toolbar_brightness_button_opens_the_frontlight_dialog", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local has, broadcast = Device.hasFrontlight, UIManager.broadcastEvent
+    local events = {}
+    local ok, err = pcall(function()
+        Device.hasFrontlight = function() return true end
+        app.settings.toolbar_brightness_button = true
+        app.toolbar:relayout()
+        app:toggle_keyboard()
+        assert_true(app.vk_visible, "the keyboard is up")
+        UIManager.broadcastEvent = function(self_, ev)
+            events[#events + 1] = ev.handler
+            -- what DeviceListener's handler does: KOReader's own light dialog goes on top
+            if ev.handler == "onShowFlDialog" then
+                UIManager:show(require("ui/widget/infomessage"):new{ text = "frontlight" })
+            end
+        end
+        tap_toolbar(app, "brightness")
+        UIManager.broadcastEvent = broadcast
+        assert_true(table.concat(events, ",") == "onShowFlDialog", "asks KOReader for its dialog: " .. table.concat(events, ","))
+        UIManager:_checkTasks()
+        assert_true(not app.vk_visible, "the keyboard makes way for the dialog")
+        UIManager:close(top())
+        UIManager:_checkTasks()
+        app:_watch_keyboard_tick()
+        UIManager:_checkTasks()
+        assert_true(app.vk_visible, "and comes back when it is gone")
+        assert_true(#sent.pointer == 0, "nothing reached the remote")
+    end)
+    Device.hasFrontlight, UIManager.broadcastEvent = has, broadcast
+    assert_true(ok, tostring(err))
+    close_viewer(app, remote)
+end)
+
+check("contrast_setting_is_kept_and_cleaned", function()
+    local Settings = require("vnc/settings")
+    assert_true(Settings.DEFAULTS.remote_contrast == 1, "neutral by default")
+    local levels = Settings.CONTRAST_LEVELS
+    assert_true(type(levels) == "table" and #levels >= 5, "a list of levels")
+    local neutral = 0
+    for i, v in ipairs(levels) do
+        if v == 1 then neutral = i end
+        if i > 1 then assert_true(v > levels[i - 1], "ascending") end
+    end
+    assert_true(neutral > 1 and neutral < #levels, "neutral in the middle, both ways possible")
+    local path = data_dir .. "/ui_smoke_contrast.lua"; os.remove(path)
+    local s = Settings.open(path)
+    s.data.settings.remote_contrast = levels[#levels]; s:flush()
+    assert_true(Settings.open(path).data.settings.remote_contrast == levels[#levels], "a level is kept")
+    for _, junk in ipairs({ 1.1, -2, "x", 0 }) do
+        local f = io.open(path, "w")
+        f:write("return { settings = { remote_contrast = " .. string.format("%q", junk) .. " } }\n"); f:close()
+        assert_true(Settings.open(path).data.settings.remote_contrast == 1, "junk " .. tostring(junk) .. " cleans to neutral")
+    end
 end)
 
 check("toolbar_more_opens_the_menu", function()

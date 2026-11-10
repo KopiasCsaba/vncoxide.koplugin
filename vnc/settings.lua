@@ -49,12 +49,19 @@ Settings.DEFAULTS = {
     scaling = "smooth",              -- viewer scaling: "smooth" (blended) or "sharp" (nearest neighbour)
     pointer_speed = "normal",        -- mouse-mode cursor speed: a key of @{Settings.POINTER_SPEEDS}
     toolbar_scroll_buttons = false,  -- the toolbar shows scroll up/down buttons
+    toolbar_brightness_button = true, -- the toolbar shows a button for KOReader's frontlight dialog (with a frontlight)
+    toolbar_contrast_button = false, -- the toolbar shows a button for the remote picture's contrast
+    remote_contrast = 1,             -- contrast of the remote picture as drawn here: one of @{Settings.CONTRAST_LEVELS}
     -- the "Send keys" panel's last combos, most recent first: { mods = {"Ctrl", ...}, keysym, label }
     recent_combos = {},
 }
 
 --- Mouse-mode cursor speed presets: remote pixels moved per screen pixel dragged.
 Settings.POINTER_SPEEDS = { slow = 0.75, normal = 1.25, fast = 2.0 }
+
+--- The contrast levels of the remote picture (the contrast dialog's steps): a factor applied around
+--- mid grey, 1 is the picture as the server sends it (see @{vnc.scaler.contrast_lut}).
+Settings.CONTRAST_LEVELS = { 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3 }
 
 --- How many combos the "Send keys" panel remembers.
 Settings.RECENT_COMBOS_MAX = 4
@@ -102,6 +109,12 @@ local SETTING_CHECKS = {
     scaling = function(value)
         if value == "sharp" then return value end
         return Settings.DEFAULTS.scaling
+    end,
+    remote_contrast = function(value)
+        for _, level in ipairs(Settings.CONTRAST_LEVELS) do
+            if value == level then return value end
+        end
+        return Settings.DEFAULTS.remote_contrast
     end,
     pointer_speed = function(value)
         if Settings.POINTER_SPEEDS[value] then return value end

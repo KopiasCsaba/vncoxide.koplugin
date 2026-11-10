@@ -2217,6 +2217,20 @@ function ViewerApp:apply_quality_preset(id)
     }
 end
 
+--[[--
+The toolbar's brightness button: KOReader's own frontlight dialog, asked for the way its gestures
+and hotkeys do (DeviceListener handles `ShowFlDialog`). The dialog is a popup like ours: a pending
+click goes first, a drag ends, and the keyboard makes way for it (and comes back once it is gone,
+which the keyboard watch notices: the dialog closes without telling us).
+]]
+function ViewerApp:open_frontlight_dialog()
+    self:_flush_deferred_click()
+    self:_end_stale_pointer_action("frontlight dialog")
+    UIManager:broadcastEvent(Event:new("ShowFlDialog"))
+    self:_sync_keyboard_later()
+    self:_watch_keyboard_state()
+end
+
 function ViewerApp:toggle_display_panel()
     if self.display_panel then
         self:close_display_panel()
