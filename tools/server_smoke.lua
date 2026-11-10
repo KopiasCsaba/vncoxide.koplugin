@@ -4631,5 +4631,43 @@ check("the_continuous_updates_pseudo_encoding_is_acknowledged_once", function()
     end)
 end)
 
+check("only_one_client_owns_the_touch_contact_at_a_time", function()
+    -- Every client's contact is slot 0 / tracking id 1: a second client's tap during a first
+    -- client's drag lifted the first client's finger in core, mid-drag.
+    local Server = require("vnc/server")
+    local C = ffi.C
+    local server = Server.new{ settings = { ip = "127.0.0.1", port = 0, password = "" } }
+    local lifts, downs = 0, 0
+    server._inject = function(_, frame)
+        for _, ev in ipairs(frame) do
+            if ev.type == C.EV_ABS and ev.code == C.ABS_MT_TRACKING_ID then
+                if ev.value == -1 then lifts = lifts + 1 else downs = downs + 1 end
+            end
+        end
+    end
+    local a, b = { buttons = 0 }, { buttons = 0 }
+    server:_on_pointer(a, 10, 10, 1)
+    server:_on_pointer(a, 100, 100, 1)                -- a drag: A's contact is down in core
+    assert_true(downs == 1 and lifts == 0, "A's drag must be injected")
+    server:_on_pointer(b, 300, 300, 1)                -- B taps meanwhile
+    server:_on_pointer(b, 300, 300, 0)
+    server:_flush_pointer(b)
+    assert_true(lifts == 0 and downs == 1, string.format(
+        "B's tap must not touch A's contact (%d down(s), %d lift(s))", downs, lifts))
+    server:_on_pointer(a, 100, 100, 0)
+    assert_true(lifts == 1, "A's release lifts its contact")
+    server:_on_pointer(b, 50, 50, 1)                  -- the contact is free again
+    server:_on_pointer(b, 50, 50, 0)
+    assert_true(downs == 2 and lifts == 2, "B may tap once A has released")
+    -- a dropped owner frees the contact too
+    server:_on_pointer(a, 10, 10, 1)
+    server:_on_pointer(a, 100, 100, 1)
+    server:_release_input(a)
+    server:_on_pointer(b, 50, 50, 1)
+    server:_on_pointer(b, 50, 50, 0)
+    assert_true(downs == 4 and lifts == 4, string.format(
+        "a dropped client's contact is released for the others (%d/%d)", downs, lifts))
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

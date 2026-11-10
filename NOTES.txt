@@ -505,7 +505,9 @@ Client input is injected at the level KOReader's own device backends use: EV_ABS
 into Device.input:handleTouchEv for pointer events (press/release becomes a tap, a tap-and-move a
 drag; there is no multi-touch in VNC), EV_KEY through the device's own event_map for named keys
 (so the keysym -> KOReader key name mapping is device independent), and TextInput events for typed
-text. VNC Authentication reuses des.lua and mirrors the client's construction exactly.
+text. Every client's contact is the same one (slot 0), so it has one owner at a time: while one
+client's button is down another client's press is ignored, whole gesture (Server:_on_pointer).
+VNC Authentication reuses des.lua and mirrors the client's construction exactly.
 
 Injected input must be stamped on the clock the device stamps its own events with (the one
 GestureDetector probed; Server:_inject's `at` defaults to it). An event on another clock - os.time()

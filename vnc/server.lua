@@ -1383,6 +1383,20 @@ end
 function Server:_on_pointer(client, x, y, mask)
     local was_down = (client.buttons or 0) ~= 0
     local down = mask ~= 0
+    -- There is one contact (slot 0, tracking id 1) for everybody: while one client's button is
+    -- down, another client's press would land on that same contact and its release lift it
+    -- mid-gesture. So the contact has one owner at a time, and a press from anybody else is
+    -- ignored - its whole gesture, since its button state is not taken either.
+    local owner = self._touch_owner
+    if down and not was_down and owner and owner ~= client then
+        logger.dbg("vnc: a client's press ignored, another client's contact is down")
+        return
+    end
+    if down and not was_down then
+        self._touch_owner = client
+    elseif not down and was_down and owner == client then
+        self._touch_owner = nil
+    end
     client.buttons = mask
     client.pointer_x, client.pointer_y = x, y
     if down ~= was_down then
@@ -1519,6 +1533,7 @@ function Server:_release_input(client)
     end
     client.buttons = 0
     client.dragging = false
+    if self._touch_owner == client then self._touch_owner = nil end
     local keys = client.keys_down
     client.keys_down = nil
     for code in pairs(keys or {}) do
