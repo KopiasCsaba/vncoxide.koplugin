@@ -3168,6 +3168,234 @@ local function main()
         return true
     end)
 
+    -- ------------------------------------------------------------ receive path (FFI recv)
+    -- The session receives into one byte buffer with `recv`. These checks run it against a Lua
+    -- loopback peer that writes a scripted server stream in chosen pieces, pumping the session
+    -- after each piece, and compare what it decoded with a run that got the stream in one piece.
+    do
+        local Util = require("vnc/util")
+        local W, H = 64, 48
+        local function rnd_bytes(n, seed)
+            math.randomseed(seed)
+            local t = {}
+            for i = 1, n do t[i] = string.char(math.random(0, 255)) end
+            return table.concat(t)
+        end
+        local function rect(w, x, y, rw, rh, enc)
+            return w:u16(x):u16(y):u16(rw):u16(rh):u32(enc % 4294967296)
+        end
+        --- The server's bytes: a security-None 3.8 handshake, then updates exercising every kind
+        --- of read (u8/u16/u32 fields, row pointers, CopyRect, RRE, Bell, cut text).
+        local function script(cut)
+            local w = Util.writer():raw("RFB 003.008\n"):u8(1):u8(1):u32(0)
+                :u16(W):u16(H):raw(string.rep("\0", 16)):u32(6):raw("rxtest")
+            -- update 1: the whole screen as Raw
+            w:u8(0):u8(0):u16(1)
+            rect(w, 0, 0, W, H, 0):raw(rnd_bytes(W * H * 4, 7))
+            -- a Bell and a cut text between updates
+            w:u8(2):u8(3):raw("\0\0\0"):u32(#cut):raw(cut)
+            -- update 2: RRE with subrects, a CopyRect and a small Raw
+            w:u8(0):u8(0):u16(3)
+            rect(w, 8, 8, 32, 24, 2):u32(3):raw("\1\2\3\0")
+            for k = 0, 2 do w:raw(string.char(40 * k, 255 - k, 9 * k, 0)):u16(k * 3):u16(k * 2):u16(7):u16(5) end
+            rect(w, 40, 30, 16, 12, 1):u16(0):u16(0)
+            rect(w, 1, 40, 9, 7, 0):raw(rnd_bytes(9 * 7 * 4, 11))
+            return w:tostring()
+        end
+
+        --- A session connected to a loopback peer; returns the session, the peer and what it saw.
+        local function rig(Session)
+            local listener = assert(socket.bind("127.0.0.1", 0))
+            local _, port = listener:getsockname()
+            local seen = { bells = 0, cuts = {}, updates = 0 }
+            local s = Session.new{
+                profile = { host = "127.0.0.1", port = tonumber(port), password = "", name = "rx" },
+                network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+                on_update = function() seen.updates = seen.updates + 1 end,
+            }
+            -- record the largest the receive buffer got
+            local reserve = Session._rx_reserve
+            s._rx_reserve = function(self, n)
+                local a, b = reserve(self, n)
+                self._rx_cap_max = math.max(self._rx_cap_max or 0, self.rcap or 0)
+                return a, b
+            end
+            s:connect(function() end)
+            listener:settimeout(5)
+            local peer = assert(listener:accept())
+            listener:close()
+            peer:settimeout(0)
+            s.app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
+                on_bell = function() seen.bells = seen.bells + 1 end }
+            return s, peer, seen
+        end
+        --- Pumps until the session has taken everything it was sent (or failed).
+        local function drive(s, peer, final)
+            for _ = 1, 100000 do
+                peer:receive(65536) -- drop the client's messages, so its sends never block
+                local st
+                if s._phase then
+                    s:_connect_tick()
+                    st = s._phase and "again" or (s.sock and "busy" or "error")
+                else
+                    st = s.sock and s:_pump() or "error"
+                end
+                if st == "error" or st == "done" then return st end
+                if st == "again" then
+                    local r = socket.select({ s.sock }, nil, final and 0.2 or 0)
+                    if not (r and r[1]) then return st end
+                end
+            end
+            return "stuck"
+        end
+        local function hook_cut(s, seen)
+            if s.proto and not s._cut_hooked then
+                s._cut_hooked = true
+                s.proto.callbacks.on_cut_text = function(t) seen.cuts[#seen.cuts + 1] = t end
+            end
+        end
+        --- Runs the stream split at `cuts` (sorted byte offsets); returns plane bytes and `seen`.
+        local function run_split(stream, splits, keep_open)
+            local Session = load_session()
+            local s, peer, seen = rig(Session)
+            hook_cut(s, seen)
+            local pos, again_mid = 1, 0
+            for _, at in ipairs(splits) do
+                if at > pos then
+                    assert(peer:send(stream:sub(pos, at - 1)))
+                    pos = at
+                    local st = drive(s, peer)
+                    if st == "error" then break end
+                    if st == "again" then again_mid = again_mid + 1 end
+                end
+            end
+            if s.sock and pos <= #stream then
+                peer:settimeout(5)
+                assert(peer:send(stream:sub(pos)))
+                peer:settimeout(0)
+                drive(s, peer, true)
+            end
+            local plane = s.remote and ffi.string(s.remote:get_plane().data, W * H * 3)
+            local res = { plane = plane, seen = seen, err = s:get_error(), state = s:get_state(),
+                again_mid = again_mid, rcap_max = s._rx_cap_max, rcap = s.rcap, sess = s, peer = peer }
+            if not keep_open then peer:close() end
+            return res
+        end
+        local function same(a, b)
+            if a.err or b.err then return nil, "errors: " .. tostring(a.err) .. " / " .. tostring(b.err) end
+            if not a.plane or a.plane ~= b.plane then return nil, "planes differ" end
+            if a.seen.bells ~= b.seen.bells then return nil, "bells " .. a.seen.bells .. " vs " .. b.seen.bells end
+            if a.seen.updates ~= b.seen.updates then return nil, "updates " .. a.seen.updates .. " vs " .. b.seen.updates end
+            if #a.seen.cuts ~= #b.seen.cuts then return nil, "cut texts " .. #a.seen.cuts .. " vs " .. #b.seen.cuts end
+            for i = 1, #a.seen.cuts do
+                if a.seen.cuts[i] ~= b.seen.cuts[i] then return nil, "cut text " .. i .. " differs" end
+            end
+            return true
+        end
+        local stream = script("hello, clipboard")
+        local ref
+        check("session_rx_whole_stream", function()
+            ref = run_split(stream, {})
+            if ref.err then return nil, ref.err end
+            if ref.seen.updates ~= 2 then return nil, "updates decoded: " .. ref.seen.updates end
+            if ref.seen.bells ~= 1 or ref.seen.cuts[1] ~= "hello, clipboard" then return nil, "bell/cut text lost" end
+            return true
+        end)
+        check("session_rx_random_splits_are_byte_identical", function()
+            if not ref then return nil, "no reference run" end
+            for seed = 1, 6 do
+                math.randomseed(seed * 7919)
+                local splits = {}
+                for i = 1, 40 do splits[i] = math.random(2, #stream) end
+                table.sort(splits)
+                local got = run_split(stream, splits)
+                local ok, err = same(got, ref)
+                if not ok then return nil, "seed " .. seed .. ": " .. err end
+            end
+            return true
+        end)
+        check("session_rx_one_byte_splits_are_byte_identical", function()
+            if not ref then return nil, "no reference run" end
+            local splits = {}
+            for i = 2, #stream do splits[#splits + 1] = i end
+            local got = run_split(stream, splits)
+            local ok, err = same(got, ref)
+            if not ok then return nil, err end
+            -- every byte up to the end of the stream left a field incomplete, so most pumps ended
+            -- in "again" (EAGAIN) rather than an error
+            if got.again_mid < #stream / 2 then return nil, "too few EAGAIN pauses: " .. got.again_mid end
+            return true
+        end)
+        check("session_rx_again_mid_field_keeps_the_connection", function()
+            -- ServerInit's name length is a u32 at offset 12+2+4+20 = 38: stop two bytes into it
+            local got = run_split(stream:sub(1, 40), { 41 }, true)
+            if got.err or got.state ~= "connecting" then
+                return nil, "half a u32 must just wait: " .. tostring(got.state) .. " " .. tostring(got.err)
+            end
+            local s = got.sess
+            s:_connect_tick()
+            if s:get_state() ~= "connecting" then return nil, "a pump with no data failed it" end
+            s:disconnect()
+            got.peer:close()
+            return true
+        end)
+        check("session_rx_close_mid_update_fails_as_closed_by_server", function()
+            local Session = load_session()
+            local s, peer = rig(Session)
+            -- the handshake and half of the first update's pixels
+            assert(peer:send(stream:sub(1, 1000)))
+            drive(s, peer, true)
+            if s:get_state() ~= "connected" then return nil, "not connected: " .. tostring(s:get_error()) end
+            if not s.in_update then return nil, "the update should be half received" end
+            peer:close()
+            local st
+            for _ = 1, 50 do
+                st = s:_pump()
+                if st == "error" then break end
+                socket.select(nil, nil, 0.01)
+            end
+            if st ~= "error" then return nil, "pump after close: " .. tostring(st) end
+            if s:get_error() ~= "connection closed by server" then return nil, "error: " .. tostring(s:get_error()) end
+            if s.rbuf ~= nil or s.rcap ~= 0 then return nil, "receive buffer not freed on teardown" end
+            return true
+        end)
+        check("session_rx_large_read_grows_then_shrinks_the_buffer", function()
+            local Session = load_session()
+            local big = rnd_bytes(Session.RX_BUFFER * 5 + 123, 5)
+            local s2 = script(big)
+            local r1 = run_split(s2, {})
+            if r1.err then return nil, r1.err end
+            if r1.seen.cuts[1] ~= big then return nil, "the large cut text arrived changed" end
+            math.randomseed(4242)
+            local splits = {}
+            for i = 1, 300 do splits[i] = math.random(2, #s2) end
+            table.sort(splits)
+            local r2 = run_split(s2, splits)
+            local ok, err = same(r2, r1)
+            if not ok then return nil, "split run: " .. err end
+            if not (r2.rcap_max and r2.rcap_max >= #big) then
+                return nil, "the buffer never grew to the large read: " .. tostring(r2.rcap_max)
+            end
+            if r2.rcap ~= Session.RX_BUFFER then
+                return nil, "the buffer did not shrink back after the large read: " .. tostring(r2.rcap)
+            end
+            r2.sess:disconnect()
+            r1.sess:disconnect()
+            return true
+        end)
+        check("session_rx_rejects_a_read_over_the_cap", function()
+            local Session = load_session()
+            local saved = Session.MAX_RX_BUFFER
+            Session.MAX_RX_BUFFER = 4096
+            local r = run_split(script(rnd_bytes(5000, 3)), {})
+            Session.MAX_RX_BUFFER = saved
+            if r.state ~= "error" or not tostring(r.err):find("4096", 1, true) then
+                return nil, "state " .. tostring(r.state) .. " err " .. tostring(r.err)
+            end
+            return true
+        end)
+    end
+
     stop_all_mocks()
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
