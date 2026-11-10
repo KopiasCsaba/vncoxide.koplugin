@@ -166,8 +166,10 @@ end
 Util.PtrReader = {}
 Util.PtrReader.__index = Util.PtrReader
 
+-- (the bytes are in memory already, e.g. a ZRLE rect's inflated tiles: their data is short, and the
+-- message is for the user, so no Lua position)
 local function overrun(self, n)
-    error(string.format("transport returned %d bytes, wanted %d", math.max(0, self.len - self.pos), n), 3)
+    error(string.format("data ends early: %d bytes left, %d needed", math.max(0, self.len - self.pos), n), 0)
 end
 
 function Util.PtrReader:ptr(n)

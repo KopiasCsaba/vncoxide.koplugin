@@ -425,7 +425,8 @@ function Session:_do_connect(attempt)
                 if self_ref.app then self_ref.app:on_bell() end
             end,
             on_cut_text = function(text)
-                logger.dbg("vnc: server cut text:", text)
+                -- (its length only: a clipboard may hold passwords)
+                logger.dbg("vnc: server cut text:", #text, "bytes")
             end,
         },
     }
@@ -664,6 +665,7 @@ One round of work: flush outgoing bytes, feed the protocol, collect its requests
 ---   `"done"`, `"connected"` or `"error"`
 ]]
 function Session:_pump(stop_connected)
+    if not self.proto then return "error" end -- (closed: nothing to read or write)
     local ok, err = self:_flush_tx()
     if not ok then
         self:_fail(err)
@@ -735,8 +737,10 @@ end
 
 -- ---------------------------------------------------------------- lifecycle
 
---- Registers the poll task and resynchronises the framebuffer.
+--- Registers the poll task and resynchronises the framebuffer. No-op unless connected (a session
+--- that dropped is attached again once it is back, c.f. @{vnc.reconnect}).
 function Session:attach(app)
+    if not self:is_connected() then return end
     self.app = app
     if self.attached then return end
     self.attached = true

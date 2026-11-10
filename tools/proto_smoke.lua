@@ -1014,6 +1014,28 @@ local function main()
         return true
     end)
 
+    -- Inflated ZRLE data that ends before its tiles do fails the rect with a message about the
+    -- data (it used to read "encodings.lua:444: transport returned 21 bytes, wanted 32").
+    check("zrle_short_inflated_data_reads_as_a_data_error", function()
+        local ZStream = require("vnc/zstream")
+        local Util = require("vnc/util")
+        local d = ZStream.new_deflate()
+        local z = assert(d:deflate("\0\1\2\3", 4)) -- a raw tile, 16 pixels short
+        d:free()
+        local plane = BB.new(4, 4, BB.TYPE_BBRGB24)
+        local streams = Encodings.new_streams()
+        local ok, err = pcall(Encodings.decode, { x = 0, y = 0, w = 4, h = 4, encoding = Encodings.ZRLE,
+            r = Util.mem_reader(Util.writer():u32(#z):raw(z):tostring()), plane = plane,
+            vp = plane:viewport(0, 0, 4, 4), streams = streams, fmt = PxFmt.for_depth(24) })
+        Encodings.free_streams(streams)
+        plane:free()
+        if ok then return nil, "short data decoded" end
+        err = tostring(err)
+        if err:find("%.lua:%d") or err:find("transport", 1, true) then return nil, "unclear error: " .. err end
+        if not err:find("data ends early", 1, true) then return nil, "unexpected error: " .. err end
+        return true
+    end)
+
     -- ZRLE and Tight (zlib and JPEG) payloads are consumed with reader:ptr, never as a string.
     check("zrle_and_tight_payloads_never_become_strings", function()
         local ZStream = require("vnc/zstream")
@@ -2194,6 +2216,30 @@ local function main()
             if got ~= "hello" then return nil, "cut text not delivered" end
             return waiting == 1, "should be waiting for the next message"
         end)
+        -- RealVNC announces 4.1 or 5.0: those speak 3.8, which is what the client answers (it
+        -- used to fall back to 3.3, and with it to the 3.3 security handshake).
+        check("protocol_answers_a_later_major_version_with_3_8", function()
+            for _i, announced in ipairs{ "RFB 004.001\n", "RFB 005.000\n" } do
+                local sent, size = {}, nil
+                local proto = Protocol.new{ io = { write = function(d) sent[#sent + 1] = d end }, host = "test",
+                    port = 0, callbacks = { on_connected = function(_, w, h) size = { w, h } end },
+                    get_plane = function() return nil end }
+                local script = announced .. server_init(8, 6, 1, "x"):sub(13)
+                local pos, kind, arg = 1, proto:step(nil)
+                while kind == "need" and pos + arg - 1 <= #script do
+                    local data = script:sub(pos, pos + arg - 1)
+                    pos = pos + arg
+                    kind, arg = proto:step(data)
+                end
+                if sent[1] ~= "RFB 003.008\n" then
+                    return nil, announced:sub(1, 11) .. " answered with " .. tostring(sent[1])
+                end
+                if not (size and size[1] == 8 and size[2] == 6) then
+                    return nil, announced:sub(1, 11) .. ": no 3.8 handshake (" .. tostring(kind) .. " " .. tostring(arg) .. ")"
+                end
+            end
+            return true
+        end)
     end
 
     -- NetworkMgr calls back once Wi-Fi is up - possibly long after the attempt it was armed for
@@ -2231,6 +2277,46 @@ local function main()
             return nil, "the current attempt's callback must dial, state " .. tostring(s:get_state())
         end
         s:disconnect()
+        return true
+    end)
+
+    -- Attaching a session that is not connected (the benchmark re-attaches whatever it detached,
+    -- also one that dropped meanwhile) registers no poll: it used to, and the poll crashed on the
+    -- protocol the drop had freed.
+    check("session_attach_needs_a_connection", function()
+        local Session = load_session()
+        local s = Session.new{ profile = { host = "127.0.0.1", port = 1, password = "", name = "dropped" },
+                               network_mgr = { isWifiOn = function() return true end } }
+        s.state = "error"
+        s:attach({ on_framebuffer_dirty = function() end })
+        if s:is_attached() then return nil, "a dropped session must not attach" end
+        local ok, err = pcall(s._poll, s)
+        if not ok then return nil, "a stray poll must not raise: " .. tostring(err) end
+        ok, err = pcall(s._pump, s)
+        if not ok or err ~= "error" then return nil, "a pump without a protocol: " .. tostring(err) end
+        return true
+    end)
+
+    -- The server's clipboard is logged by its length, never its text (it may hold a password).
+    check("session_does_not_log_the_server_clipboard", function()
+        local Session = load_session()
+        local logger = require("logger")
+        local pid, port = start_mock{ name = "cut_text_log", encoding = "raw", pattern = "gradient", width = 32, height = 24 }
+        local s = Session.new{ profile = { host = "127.0.0.1", port = port, password = "", name = "cut" },
+                               network_mgr = NET }
+        local connected
+        connect_sync(s, function(ok) connected = ok end)
+        local lines, real_dbg = {}, logger.dbg
+        logger.dbg = function(...) lines[#lines + 1] = table.concat({ ... }, " ") end
+        local ok, err = pcall(function() s.proto.callbacks.on_cut_text("hunter2-secret") end)
+        logger.dbg = real_dbg
+        s:disconnect()
+        stop_mock(pid)
+        if not connected then return nil, "connect failed" end
+        if not ok then return nil, tostring(err) end
+        local all = table.concat(lines, "\n")
+        if all:find("hunter2", 1, true) then return nil, "the clipboard text was logged: " .. all end
+        if not all:find("14", 1, true) then return nil, "its length should be logged: " .. all end
         return true
     end)
 
@@ -2466,9 +2552,10 @@ local function main()
     check("benchmark_detaches_live_sessions", function()
         local Session = require("vnc/session")
         local pid, port = start_multi{ name = "bench_detach" }
-        local bpid, bport = start_mock{ name = "bench_detach_by", encoding = "raw", pattern = "gradient" }
         local problem
         for _, ending in ipairs{ "done", "cancel" } do
+            -- (a mock serves one connection: each ending gets its own)
+            local bpid, bport = start_mock{ name = "bench_detach_by_" .. ending, encoding = "raw", pattern = "gradient" }
             local env = bench_env()
             local by = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "by" },
                                     network_mgr = NET }
@@ -2501,16 +2588,19 @@ local function main()
             for _, t in ipairs(env.tasks) do if t.fn == by._poll_task then tasks = tasks + 1 end end
             local back = by:is_attached() and by.app == app and tasks == 1
             local idle_ok = not idle:is_attached()
+            local live = by:is_connected()
             by:disconnect()
             env.restore()
-            if seen_attached == nil then problem = ending .. ": tiles phase never reached"
+            stop_mock(bpid)
+            if not live then problem = ending .. ": the attached session dropped: " .. tostring(by:get_error()) end
+            if problem then
+            elseif seen_attached == nil then problem = ending .. ": tiles phase never reached"
             elseif seen_attached or seen_task then problem = ending .. ": the attached session was not detached during the run"
             elseif not back then problem = ending .. ": the session was not attached again (tasks " .. tasks .. ")"
             elseif not idle_ok then problem = ending .. ": a session that was not attached got attached" end
             if problem then break end
         end
         stop_mock(pid)
-        stop_mock(bpid)
         if problem then return nil, problem end
         return true
     end)

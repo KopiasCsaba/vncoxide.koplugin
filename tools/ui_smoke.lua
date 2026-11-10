@@ -304,6 +304,28 @@ check("failed_connect_returns_to_list", function()
     assert_true(count(is_list) == 1, "no stacked lists: " .. stack_desc())
 end)
 
+--- Every Display panel zoom choice survives a restart: the numeric presets (100%, ...) used to be
+--- dropped on load, the type of the default being a string, so the viewer reopened fitted.
+check("every_zoom_choice_survives_a_restart", function()
+    local Settings = require("vnc/settings")
+    local DisplayPanel = require("vnc/displaypanel")
+    local path = data_dir .. "/ui_smoke_zoom_mode.lua"
+    for _i, choice in ipairs(DisplayPanel.ZOOM_CHOICES) do
+        os.remove(path)
+        local s = Settings.open(path)
+        s.data.settings.zoom_mode = choice.value
+        s:flush()
+        local back = Settings.open(path).data.settings.zoom_mode
+        assert_true(back == choice.value, "zoom " .. tostring(choice.value) .. " came back as " .. tostring(back))
+    end
+    os.remove(path)
+    local s = Settings.open(path)
+    s.data.settings.zoom_mode = 3 -- not a preset
+    s:flush()
+    assert_true(Settings.open(path).data.settings.zoom_mode == "fit", "an unknown zoom must fall back to fit")
+    os.remove(path)
+end)
+
 -- ---------------------------------------------------------------- auto connect on start
 
 check("autoconnect_flag_round_trips", function()
@@ -1244,6 +1266,53 @@ check("every_plugin_instance_shares_one_server", function()
     plugin.server.settings = saved_settings
     assert_true(same, "a second instance must use the same server")
     assert_true(follows, "and the server must follow the latest instance's settings")
+end)
+
+--- The boot connect is armed by the first instance only: every book opened or closed builds
+--- another instance, whose init() used to arm it again - a reconnect on each return to the library.
+check("later_plugin_instances_do_not_rearm_the_boot_connect", function()
+    local saved_settings = plugin.server.settings
+    local real_connect, real_flagged = plugin_module.connect_profile, plugin_module.autoconnect_profile
+    local calls = 0
+    plugin_module.connect_profile = function() calls = calls + 1 end
+    -- (a new instance opens the default settings file, not this test's store)
+    plugin_module.autoconnect_profile = function() return { name = "good" } end
+    local ok, err = pcall(function()
+        plugin_module:new{ ui = { document = {} } }
+        UIManager:_checkTasks()
+        plugin_module:new{ ui = { menu = { registerToMainMenu = function() end } } }
+        UIManager:_checkTasks()
+    end)
+    plugin_module.connect_profile, plugin_module.autoconnect_profile = real_connect, real_flagged
+    plugin.server.settings = saved_settings
+    if not ok then error(err, 0) end
+    assert_true(calls == 0, "a later instance must not connect at its init, got " .. calls .. " connects")
+end)
+
+--- `sessions` is shared by all instances; a session made by an instance that KOReader has since
+--- replaced must report its drop to the instance showing the viewer, i.e. to its reconnect box.
+check("a_session_reports_to_the_instance_that_shows_it", function()
+    local Session = require("vnc/session")
+    local session = Session.new{ profile = store:get_profile("good") }
+    local old = setmetatable({ sessions = plugin.sessions }, { __index = plugin_module })
+    session.on_state = function(state, err) old:on_session_state(session, state, err) end
+    local errors = {}
+    local app = { session = session, on_session_error = function(_, m) errors[#errors + 1] = m end }
+    local saved_settings = plugin.server.settings
+    local second = plugin_module:new{ ui = { menu = { registerToMainMenu = function() end } } }
+    plugin.server.settings = saved_settings
+    local real_show = UIManager.show
+    UIManager.show = function() end
+    local ok, err = pcall(function()
+        second.app = app -- (the viewer reopened by the new instance: not connected, so no attach)
+        second:_open_app(session)
+        session:_set_state("error", "connection reset")
+    end)
+    UIManager.show = real_show
+    if not ok then error(err, 0) end
+    assert_true(#errors == 1 and errors[1] == "connection reset",
+        "the drop must reach the viewer of the current instance, got " .. #errors)
+    assert_true(session.plugin == second, "and the session must read that instance's settings")
 end)
 
 --- Connect tapped again while the first attempt is still connecting (waiting for Wi-Fi, typically)
@@ -5342,6 +5411,62 @@ check("mouse_click_does_not_wait_for_a_finger_far_away", function()
     close_viewer(app, remote)
 end)
 
+--- The click a Mouse-mode tap left pending takes the modifiers armed when the tap came; one armed
+--- while it waits is for the next action (it used to be pressed, and disarmed, with that click).
+check("mouse_deferred_click_takes_only_the_modifiers_armed_at_its_tap", function()
+    local app, remote = new_app(400, 300, { mode = "mouse" })
+    local panel = open_key_panel(app)
+    local wire = wire_log(app)
+    panel:tap_modifier("Shift")
+    local c = app.canvas
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = c.x + 20, y = c.y + 20 } }
+    assert_true(app._deferred_click ~= nil and wire() == "", "the click waits")
+    panel:tap_modifier("Ctrl")
+    run_scheduled(app._deferred_click_task)
+    local got = wire()
+    assert_true(got == "+0xFFE1,p0,p1,p0,-0xFFE1", "Shift-click only: " .. got)
+    assert_true(panel:modifier_state("Ctrl") == "armed" and panel:modifier_state("Shift") == nil,
+        "Ctrl stays armed for the next action")
+    close_viewer(app, remote)
+end)
+
+--- A connect picked in the viewer's menu that fails comes back to the menu - unless the user left
+--- the viewer while it ran: the menu used to open over the closed viewer, on top of the library.
+check("a_failed_connect_from_the_menu_reopens_it_only_on_a_shown_viewer", function()
+    local app, remote = new_app()
+    app.plugin.settings.profiles = function() return { { name = "slow", host = "10.0.0.1", port = 5900 } } end
+    local on_failure
+    app.plugin.connect_profile = function(_, name, cb) on_failure = cb end
+    local function pick_slow()
+        local menu = app:open_menu()
+        find_item(find_item(menu.item_table, "Connections…").sub_item_table, "slow").callback()
+        assert_true(on_failure ~= nil and app.menu == nil, "the attempt starts, the menu is closed")
+    end
+    pick_slow()
+    on_failure()
+    assert_true(app.menu ~= nil and UIManager:isWidgetShown(app.menu), "a failure on the viewer reopens the menu")
+    app:close_menu()
+    pick_slow()
+    UIManager:close(app)
+    on_failure()
+    assert_true(app.menu == nil, "but not once the viewer is gone")
+    close_viewer(app, remote)
+end)
+
+--- A physical key held down on the remote when the viewer closes (Leave from the menu, Shift still
+--- held) is let go there: its release will not reach a closed viewer, and it used to stay down.
+check("closing_the_viewer_releases_held_keys", function()
+    local app, remote, sent = new_app()
+    local Key = require("device/key")
+    app:onKeyPress(Key:new("Shift", {}))
+    assert_true(take_keys(sent) == "+0xFFE1", "Shift goes down on the remote")
+    UIManager:close(app)
+    assert_true(take_keys(sent) == "-0xFFE1", "and is let go when the viewer closes")
+    app:onCloseWidget()
+    assert_true(take_keys(sent) == "", "once")
+    remote:free()
+end)
+
 check("mouse_tap_then_hold_drags_with_the_left_button", function()
     local app, remote, sent = new_app(400, 300, { mode = "mouse" })
     local wire = wire_log(app)
@@ -5961,6 +6086,37 @@ check("toolbar_drags_and_stays_on_screen", function()
     assert_true(#sent.pointer == 0 and app.toolbar.collapsed, "and stays a bubble")
     tap_toolbar(app, "toggle")
     assert_true(app.toolbar.dimen.x == b.x + 20 and app.toolbar.dimen.y == b.y + 100, "the bar opens at the bubble")
+    close_viewer(app, remote)
+end)
+
+--- A drag of the bar whose lift a popup took (the bar never saw its end) must not capture the next
+--- gesture: a drag or a swipe on the remote used to move the bar instead of reaching the remote.
+check("a_bar_drag_that_lost_its_lift_does_not_take_the_next_gesture", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local from = toolbar_button_centre(app, "zoom")
+    dispatch_gesture{ ges = "pan", relative = { x = 0, y = 40 }, start_pos = Geom:new{ x = from.x, y = from.y, w = 0, h = 0 },
+                      pos = Geom:new{ x = from.x, y = from.y + 40, w = 0, h = 0 } }
+    assert_true(app.toolbar:is_dragging(), "the bar is being dragged")
+    local InfoMessage = require("ui/widget/infomessage")
+    local box = InfoMessage:new{ text = "popup" }
+    UIManager:show(box)
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = from.x, y = from.y + 40, w = 0, h = 0 } }
+    UIManager:close(box)
+    local b = { x = app.toolbar.dimen.x, y = app.toolbar.dimen.y }
+    local far = Geom:new{ x = 300, y = Screen:getHeight() - 200, w = 0, h = 0 }
+    for _i, kind in ipairs{ "swipe", "pan" } do
+        if kind == "pan" then
+            app.toolbar.drag = { sx = from.x, sy = from.y, x = b.x, y = b.y, from = app.toolbar.dimen }
+            drag_toolbar(far, 60, 60)
+        else
+            dispatch_gesture{ ges = "swipe", direction = "southeast", pos = far,
+                              end_pos = Geom:new{ x = far.x + 60, y = far.y + 60, w = 0, h = 0 } }
+        end
+        assert_true(app.toolbar.dimen.x == b.x and app.toolbar.dimen.y == b.y,
+            kind .. ": the bar must stay where it was")
+        assert_true(not app.toolbar:is_dragging(), kind .. ": and the lost drag is over")
+    end
+    assert_true(#sent.pointer > 0, "the drag on the remote reaches the remote")
     close_viewer(app, remote)
 end)
 

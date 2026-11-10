@@ -238,7 +238,8 @@ function ViewerApp:_toolbar_owns(ges)
     if not self:_input_target() then return false end
     if self:_one_finger_busy() then return false end
     local kind = ges.ges or ""
-    if self.toolbar:is_dragging() and Toolbar.DRAG_GESTURES[kind] then return true end
+    if Toolbar.DRAG_GESTURES[kind] and not self.toolbar:drop_lost_drag(ges)
+        and self.toolbar:is_dragging() then return true end
     if kind == "pan_release" or kind:sub(1, 11) == "two_finger_" or MULTI_FINGER[kind] then return false end
     local rel = ges.relative or { x = 0, y = 0 }
     local start = Geom:new{ x = ges.pos.x - (rel.x or 0), y = ges.pos.y - (rel.y or 0), w = 0, h = 0 }
@@ -623,6 +624,9 @@ function ViewerApp:onCloseWidget()
     self._watched_finger = nil
     -- a click still waiting for a possible second tap is not worth sending any more
     self:_drop_deferred_click()
+    -- a physical key still held down on the remote: its release will not reach a closed viewer
+    for keysym in pairs(self._keys_down or {}) do self.session:send_key(keysym, false) end
+    self._keys_down = nil
     if self._text_input_asserted then
         self._text_input_asserted = false
         Device:stopTextInput()
@@ -766,13 +770,14 @@ end
 --[[--
 A canvas action (tap, long press, drag) begins: the modifiers armed on the key strip or the "Send
 keys" panel go down now, before the pointer press, and are disarmed there - they are for this one
-action only. `_release_action_mods` lets them go after the pointer release.
+action only. `_release_action_mods` lets them go after the pointer release. With `only` (a set of
+modifier names), just those go: the others stay armed for the next action.
 ]]
-function ViewerApp:_press_armed()
+function ViewerApp:_press_armed(only)
     self:_release_action_mods()
     local source = self:_armed_source()
     if not source then return end
-    local keysyms = source:take_armed()
+    local keysyms = source:take_armed(only)
     if #keysyms == 0 then return end
     for _i, keysym in ipairs(keysyms) do
         self:send_key(keysym, true)
@@ -1441,10 +1446,11 @@ function ViewerApp:_mouse_pointer_px()
     return math.floor(x + 0.5), math.floor(y + 0.5)
 end
 
---- Clicks `n` times at the Mouse-mode pointer, the armed modifiers held around all of them.
-function ViewerApp:_mouse_click(n)
+--- Clicks `n` times at the Mouse-mode pointer, the armed modifiers (or just `only`, c.f.
+--- `_press_armed`) held around all of them.
+function ViewerApp:_mouse_click(n, only)
     local x, y = self:_mouse_pointer_px()
-    self:_press_armed()
+    self:_press_armed(only)
     for _i = 1, n do
         self:send_pointer(x, y, 0)
         self:send_pointer(x, y, 1, "click")
@@ -1453,11 +1459,13 @@ function ViewerApp:_mouse_click(n)
     self:_release_action_mods()
 end
 
---- Sends the click a Mouse-mode tap left pending now; no-op when there is none.
+--- Sends the click a Mouse-mode tap left pending now; no-op when there is none. It takes the
+--- modifiers armed when its tap came: one armed since is for the next action.
 function ViewerApp:_flush_deferred_click()
-    if not self._deferred_click then return end
+    local pending = self._deferred_click
+    if not pending then return end
     self:_drop_deferred_click()
-    self:_mouse_click(1)
+    self:_mouse_click(1, pending.mods)
 end
 
 --[[--
@@ -1503,7 +1511,9 @@ function ViewerApp:_mouse_tap(ges)
         return true
     end
     self:_flush_deferred_click()
-    self._deferred_click = { pos = ges.pos:copy(), deadline = time.now() + time.s(self:mouse_click_wait_cap()) }
+    local source = self:_armed_source()
+    self._deferred_click = { pos = ges.pos:copy(), deadline = time.now() + time.s(self:mouse_click_wait_cap()),
+                             mods = source and source:armed_names() or {} }
     UIManager:scheduleIn(ViewerApp.mouse_click_delay(), self._deferred_click_task)
     return true
 end

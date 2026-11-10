@@ -82,8 +82,9 @@ function VNC:init()
     if first then self:schedule_autostart() end
 
     -- The client's own boot start, on the same terms: the flagged profile (if any) is connected
-    -- once, from the first UI loop turn, never re-armed. Nothing is dialled at init().
-    self:schedule_autoconnect()
+    -- once, from the first UI loop turn, never re-armed. Nothing is dialled at init(). Once per
+    -- run, too: every book opened or closed builds another instance.
+    if first then self:schedule_autoconnect() end
 end
 
 --- Schedules the boot start when the settings (or the environment) ask for it.
@@ -302,8 +303,17 @@ function VNC:close_connection_list()
     if menu then UIManager:close(menu) end
 end
 
+--- Makes this instance the one `session` reports to. `sessions` is shared by every instance
+--- (KOReader builds one per FileManager and ReaderUI), so a session made by an instance that is
+--- gone since must not keep reporting its drops there.
+function VNC:_adopt_session(session)
+    session.plugin = self
+    session.on_state = function(state, err) self:on_session_state(session, state, err) end
+end
+
 --- Opens (or reopens) the viewer app for `session` and attaches it.
 function VNC:_open_app(session)
+    self:_adopt_session(session)
     if self.app and self.app.session ~= session then
         -- Another connection (e.g. picked in the viewer's own menu): the viewer is built around
         -- one session, so it is replaced. The old connection stays up in the background, exactly
@@ -346,15 +356,12 @@ function VNC:connect_profile(name, on_failure)
 
     local session = self.sessions[name]
     if not session then
-        session = Session.new{
-            profile = profile,
-            plugin = self,
-            on_state = function(state, err) self:on_session_state(session, state, err) end,
-        }
+        session = Session.new{ profile = profile }
         self.sessions[name] = session
     else
         session:set_profile(profile)
     end
+    self:_adopt_session(session)
 
     if session:is_connected() then
         self:_open_app(session)

@@ -239,7 +239,8 @@ finger lifts).
 
 Moving the bar: a pan that starts on it (or on its round button while collapsed) moves it, and from
 then on the bar owns that drag's pans and its end (pan_release, or a swipe when the finger lifts
-while still moving) wherever the finger is (Toolbar:is_dragging). A swipe that starts on the bar is
+while still moving) wherever the finger is (Toolbar:is_dragging); a drag whose end a popup took
+is over at the next pan or swipe that starts elsewhere (Toolbar:drop_lost_drag). A swipe that starts on the bar is
 a quick drag of it: it is put down at the lift point (the swipe's end_pos; its pos is where it
 started). While it follows the finger the old and new rectangles get "fast" refreshes, on release
 one "ui" refresh over where it started and where it is. The position is stored as fractions of
@@ -300,7 +301,9 @@ click and becomes a left-button drag ("double tap and move"); a second tap sends
 once and then its own. Everything is built from GestureDetector's tap / hold / pan, no raw touch
 handling. The deferred click is sent or dropped (ViewerApp:_flush_deferred_click /
 _drop_deferred_click) before anything that could reorder it: a toolbar button, a later pointer
-action, key presses and closing the viewer. Touch mode clicks are never deferred.
+action, key presses and closing the viewer. It takes the modifiers armed when its tap came
+(_deferred_click.mods); one armed while it waits stays armed for the next action. Touch mode
+clicks are never deferred.
 
 Physical keyboard. Printable characters arrive as TextInput events, not as key events, and
 SDL 3 only delivers those after Device:startTextInput() ("Text input events are not received by
