@@ -2734,7 +2734,11 @@ check("opening_another_connection_replaces_the_viewer", function()
     a.detach = function() log[#log + 1] = "detach a" end
     b.attach = function(_, app) log[#log + 1] = "attach b"; b.attached_to = app end
     plugin.app = old_app
+    -- (not about orientation: the remote's must not turn the screen here)
+    local match = store:get_setting("match_orientation")
+    store:set_setting("match_orientation", false)
     plugin:_open_app(b)
+    store:set_setting("match_orientation", match)
     local now = plugin.app
     assert_true(now ~= old_app and now.session == b, "the viewer must be the new session's")
     assert_true(now.remote == other_remote, "and show the new session's remote")
@@ -6804,6 +6808,138 @@ check("hold_confirmation_decisions_are_logged", function()
     if not ok then error(err, 0) end
     local all = table.concat(lines, "|")
     assert_true(all:find("false hold", 1, true) and all:find("confirmed", 1, true), "logged: " .. all)
+end)
+
+-- ---------------------------------------------------------------- matching the remote's orientation
+
+check("orientation_settings_default_and_clean", function()
+    local Settings = require("vnc/settings")
+    local path = data_dir .. "/ui_smoke_orientation.lua"; os.remove(path)
+    local f = assert(io.open(path, "w"))
+    f:write('return { settings = { landscape_orientation = 7, portrait_orientation = "x" } }')
+    f:close()
+    local s = Settings.open(path)
+    local st = s.data.settings
+    assert_true(st.match_orientation == true, "matching is on by default")
+    assert_true(st.landscape_orientation == 1, "an out-of-range mode cleans to the default: " .. tostring(st.landscape_orientation))
+    assert_true(st.portrait_orientation == 0, "junk cleans to upright: " .. tostring(st.portrait_orientation))
+    os.remove(path)
+end)
+
+--- A viewer on a remote of `w`x`h`, opened on the upright (portrait) screen with matching on;
+--- `rotations` counts the screen rotations from here on.
+local function orient_app(w, h, settings)
+    Screen:setRotationMode(0)
+    UIManager:onRotation()
+    assert_true(Screen:getWidth() < Screen:getHeight(), "the test screen is portrait upright")
+    local app, remote, sent = new_app(w, h)
+    app:onScreenResize(Screen:getSize())
+    app.settings.match_orientation = true
+    for k, v in pairs(settings or {}) do app.settings[k] = v end
+    local log = { n = 0 }
+    local real = Screen.setRotationMode
+    log.restore = function() Screen.setRotationMode = real end
+    Screen.setRotationMode = function(s_, mode) log.n = log.n + 1; return real(s_, mode) end
+    return app, remote, sent, log
+end
+
+local function orient_done(app, remote, log)
+    app:restore_rotation()
+    log.restore()
+    Screen:setRotationMode(0)
+    UIManager:onRotation()
+    close_viewer(app, remote)
+end
+
+check("orientation_landscape_remote_on_portrait_screen_rotates_once", function()
+    -- the remembered orientation (upside down) and the match both apply at open: one rotation
+    local app, remote, _, log = orient_app(400, 300, { orientation = 2 })
+    app:apply_default_orientation()
+    assert_true(Screen:getRotationMode() == 1, "landscape, KOReader's default side: " .. Screen:getRotationMode())
+    assert_true(log.n == 1, "one rotation, got " .. log.n)
+    assert_true(Screen:getWidth() > Screen:getHeight(), "the screen is landscape")
+    assert_true(app.canvas.w == Screen:getWidth() and app.canvas.h == Screen:getHeight(), "the canvas follows")
+    assert_true(app.settings.orientation == 2, "the manual choice is not overwritten")
+    orient_done(app, remote, log)
+end)
+
+check("orientation_same_shape_square_or_off_does_nothing", function()
+    for _, case in ipairs{ { 300, 400, true, "portrait" }, { 300, 300, true, "square" },
+                           { 400, 300, false, "off" } } do
+        local app, remote, _, log = orient_app(case[1], case[2], { match_orientation = case[3] })
+        app:apply_default_orientation()
+        assert_true(Screen:getRotationMode() == 0 and log.n == 0, case[4] .. ": no rotation, mode "
+            .. Screen:getRotationMode())
+        orient_done(app, remote, log)
+    end
+end)
+
+check("orientation_uses_the_remembered_landscape_side", function()
+    local app, remote, _, log = orient_app(300, 400)
+    -- a hand-picked rotation remembers its side, per orientation
+    app:choose_rotation(3)
+    assert_true(app.settings.orientation == 3 and app.settings.landscape_orientation == 3, "landscape side kept")
+    app:choose_rotation(2)
+    assert_true(app.settings.orientation == 2 and app.settings.portrait_orientation == 2, "portrait side kept")
+    app:choose_rotation(0)
+    orient_done(app, remote, log)
+    app, remote, _, log = orient_app(400, 300, { landscape_orientation = 3 })
+    app:apply_default_orientation()
+    assert_true(Screen:getRotationMode() == 3, "the remembered landscape side: " .. Screen:getRotationMode())
+    orient_done(app, remote, log)
+end)
+
+check("orientation_manual_rotate_survives_a_same_shape_reconnect", function()
+    local app, remote, sent, log = orient_app(400, 300)
+    app:apply_default_orientation()
+    assert_true(Screen:getRotationMode() == 1, "matched at open")
+    app:choose_rotation(0)
+    local r = app.reconnect
+    app.session.state = "error"
+    app:on_session_error("x")
+    run_scheduled(r._retry_task)
+    app.session.state = "connected"
+    last_connect(sent)(true)
+    assert_true(not r:is_running(), "reconnected")
+    assert_true(Screen:getRotationMode() == 0, "the hand-picked portrait stays: " .. Screen:getRotationMode())
+    -- a reconnect to a remote of the other orientation does rotate
+    app:choose_rotation(1)
+    app.session.state = "error"
+    app:on_session_error("x")
+    run_scheduled(r._retry_task)
+    remote:resize(300, 400)
+    app.session.state = "connected"
+    last_connect(sent)(true)
+    assert_true(Screen:getRotationMode() == 0, "portrait remote after the reconnect: " .. Screen:getRotationMode())
+    orient_done(app, remote, log)
+end)
+
+check("orientation_desktop_resize_to_the_other_orientation_rotates", function()
+    local app, remote, _, log = orient_app(400, 300)
+    app:apply_default_orientation()
+    assert_true(Screen:getRotationMode() == 1, "matched at open")
+    remote:resize(600, 800)
+    app:on_remote_resized(600, 800)
+    assert_true(Screen:getRotationMode() == 0, "portrait now: " .. Screen:getRotationMode())
+    assert_true(app.canvas.w == Screen:getWidth() and app.canvas.h == Screen:getHeight(), "the canvas follows")
+    -- the same shape again changes nothing, after a hand-picked rotation either
+    app:choose_rotation(1)
+    remote:resize(300, 400)
+    app:on_remote_resized(300, 400)
+    assert_true(Screen:getRotationMode() == 1, "same shape: kept " .. Screen:getRotationMode())
+    orient_done(app, remote, log)
+end)
+
+check("orientation_leaving_restores_the_mode_from_before", function()
+    local app, remote, _, log = orient_app(400, 300)
+    app:apply_default_orientation()
+    assert_true(Screen:getRotationMode() == 1, "matched at open")
+    local saved_app = plugin.app
+    plugin.app = app
+    plugin:leave_app()
+    plugin.app = saved_app
+    assert_true(Screen:getRotationMode() == 0, "back to upright: " .. Screen:getRotationMode())
+    orient_done(app, remote, log)
 end)
 
 if failures > 0 then

@@ -550,6 +550,8 @@ end
 function ViewerApp:on_remote_resized()
     self:_reflow()
     self:_wholesale_change()
+    -- a desktop of the other orientation turns the screen (the rotation re-lays everything out)
+    self:match_remote_orientation()
 end
 
 function ViewerApp:on_bell()
@@ -2109,11 +2111,26 @@ function ViewerApp:rotate(delta)
     self:choose_rotation(band(Screen:getRotationMode() + delta, 3))
 end
 
+--- True when rotation mode `mode` makes the screen landscape (wider than tall).
+local function landscape_in(mode)
+    local size = Screen:getSize()
+    local landscape = size.w > size.h
+    -- an odd quarter-turn from the current mode swaps width and height
+    if band(mode + 4 - Screen:getRotationMode(), 1) == 1 then landscape = not landscape end
+    return landscape
+end
+
 --- A rotation the user asked for while the viewer is up: applied, and remembered as the
---- orientation the viewer opens in next time.
+--- orientation the viewer opens in next time, and as the side the remote-orientation match turns
+--- to for that orientation (landscape or portrait).
 function ViewerApp:choose_rotation(mode)
     self:set_rotation_mode(mode)
     self.settings.orientation = mode
+    if landscape_in(mode) then
+        self.settings.landscape_orientation = mode
+    else
+        self.settings.portrait_orientation = mode
+    end
     self.plugin.settings:flush()
 end
 
@@ -2124,11 +2141,45 @@ function ViewerApp:set_rotation_mode(mode)
     UIManager:broadcastEvent(Event:new("SetRotationMode", mode))
 end
 
---- Applies the remembered orientation (the last one used), remembering the previous mode.
+--[[--
+The rotation mode that matches the remote screen's orientation, starting from mode `from`; nil when
+nothing is to be done: the setting is off, the remote's size is unknown, it is square or already of
+the screen's orientation in `from`, or its orientation is the one last matched for this session
+(so that a reconnect, or a desktop resize, to a same-shaped remote keeps a rotation picked by hand
+meanwhile). Records the remote's orientation as matched.
+]]
+function ViewerApp:_matched_rotation(from)
+    if self.settings.match_orientation ~= true then return nil end
+    local remote = self.session:get_remote()
+    if not (remote and remote.w and remote.h) then return nil end
+    local shape = remote.w > remote.h and "landscape" or remote.w < remote.h and "portrait" or "square"
+    if shape == self.session.matched_orientation then return nil end
+    self.session.matched_orientation = shape
+    if shape == "square" or (shape == "landscape") == landscape_in(from) then return nil end
+    -- the side last picked by hand, else KOReader's default landscape or upright
+    local mode
+    if shape == "landscape" then
+        mode = self.settings.landscape_orientation or Screen.DEVICE_ROTATED_CLOCKWISE
+    else
+        mode = self.settings.portrait_orientation or Screen.DEVICE_ROTATED_UPRIGHT
+    end
+    -- of the wrong orientation (on a device whose native one is landscape): a quarter turn more
+    if landscape_in(mode) ~= (shape == "landscape") then mode = band(mode + 1, 3) end
+    return mode
+end
+
+--- Turns the screen to the remote screen's orientation, if that is called for (see
+--- `_matched_rotation`): after a reconnect, or a desktop resize.
+function ViewerApp:match_remote_orientation()
+    self:set_rotation_mode(self:_matched_rotation(Screen:getRotationMode()))
+end
+
+--- Applies the remembered orientation (the last one used), remembering the previous mode; turned
+--- to the remote screen's orientation where that differs, in one rotation.
 function ViewerApp:apply_default_orientation(default_mode)
     self.prev_rotation = self.prev_rotation or Screen:getRotationMode()
     if default_mode == nil then default_mode = self.settings.orientation end
-    self:set_rotation_mode(default_mode)
+    self:set_rotation_mode(self:_matched_rotation(default_mode) or default_mode)
 end
 
 --- Restores the rotation mode that was active before we were shown.

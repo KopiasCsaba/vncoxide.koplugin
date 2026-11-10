@@ -138,6 +138,8 @@ function Reconnect:_succeeded()
     local app = self.app
     app.session:set_keep_wifi(false)
     app.session:attach(app) -- (requests the full update)
+    -- a remote of another orientation than last time turns the screen
+    app:match_remote_orientation()
     app:_wholesale_change()
     local on_success = self.on_success
     self.on_stop, self.on_success = nil, nil
