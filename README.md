@@ -100,15 +100,15 @@ after a rotation) for the next time. Its buttons, left to right:
     stepped bar (50 % … 300 %, 100 % is the picture as the server sends it, marked as the default).
     It changes the contrast of the remote picture as it is drawn on this screen (a stretch around
     mid grey; the remote desktop is not touched), at once and without a new picture from the
-    server, and is remembered. ✕, Back, a tap outside or the button close it. Hidden by default.
+    server, and is remembered. ✕, Back, a tap outside or the button close it. Shown by default.
 11. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
 12. **⋯** opens the menu (below).
 
 **⋯ › Toolbar buttons… › On the toolbar…** switches each button but Close and **⋯** on or off (one
 row for the scroll pair); **⋯** always stays, as on a device without keys it is the only way to the
 menu. **⋯ › Toolbar buttons… › Also when collapsed…** picks buttons that stay next to the round button
-when the toolbar is collapsed (none by default): with e.g. Keyboard ticked, collapsing leaves a short
-bar of the expand button and the keyboard button. Only buttons the toolbar shows can stay (the others
+when the toolbar is collapsed (Keyboard and Scroll lock by default): collapsing leaves a short bar of
+the expand button and those; with none ticked it is the round button alone. Only buttons the toolbar shows can stay (the others
 are greyed out there).
 
 | Gesture | Touch mode | Mouse mode |
@@ -360,14 +360,11 @@ return {
         ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
         ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the Display panel's switch)
         ["pointer_speed"] = "normal",      -- Mouse mode: "slow" (0.75), "normal" (1.25) or "fast" (2.0)
-        ["toolbar_buttons"] = {            -- which toolbar buttons are shown (Close and More always are)
-            ["toggle"] = true, ["display"] = true, ["zoom"] = true, ["mode"] = true, ["keyboard"] = true,
-            ["rotate"] = true, ["scroll_lock"] = true, ["scroll_up"] = false, ["scroll_down"] = false,
-            ["brightness"] = true,         -- (only on devices with a frontlight)
-            ["contrast"] = false,
-        },
+        -- which toolbar buttons are shown, only those switched (Close and More always are); by default
+        -- all of them but Scroll up/down (Brightness only on devices with a frontlight)
+        ["toolbar_buttons"] = { ["scroll_up"] = true, ["scroll_down"] = true, ["rotate"] = false },
         ["toolbar_collapsed"] = false,     -- the toolbar is folded into its round button
-        ["toolbar_pinned"] = { ["keyboard"] = true }, -- buttons kept beside it while collapsed (default: none)
+        ["toolbar_pinned"] = { ["rotate"] = true }, -- buttons kept beside it while collapsed, only those switched (default: Keyboard, Scroll lock)
         ["toolbar_pos"] = { ["x"] = 0.5, ["y"] = 0 }, -- where it sits: fractions of the free space (0.5, 0 = top centre)
         ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
     },

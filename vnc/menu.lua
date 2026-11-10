@@ -264,7 +264,7 @@ function MenuBuilder.open(app)
     local function pinned_row(text, ids)
         local function on_bar() return Toolbar.is_enabled(settings, ids[1]) end
         local function pinned()
-            return type(settings.toolbar_pinned) == "table" and settings.toolbar_pinned[ids[1]] == true
+            return Toolbar.is_pinned(settings, ids[1])
         end
         return stays_open({
             text = text,

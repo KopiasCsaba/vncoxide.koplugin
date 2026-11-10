@@ -70,7 +70,7 @@ function Help.text(mode)
             "  " .. _("Scroll lock: while on, a two-finger drag scrolls and does not move the picture (see below)."),
             "  " .. _("Scroll up / down: mouse-wheel notches (hidden by default)."),
             "  " .. _("Brightness: KOReader's frontlight dialog; only on devices with a frontlight."),
-            "  " .. _("Contrast: the contrast of the remote picture as drawn here (50% to 300%), remembered (hidden by default)."),
+            "  " .. _("Contrast: the contrast of the remote picture as drawn here (50% to 300%), remembered."),
             "  " .. _("Close: disconnect, after a confirmation."),
             "  " .. _("More (\u{22EF}): the menu (below)."),
             "  " .. _("Menu > Toolbar buttons\u{2026} > On the toolbar\u{2026} picks which buttons are shown; Close and More always are. Also when collapsed\u{2026} picks buttons that stay next to the round button when the toolbar is collapsed."),

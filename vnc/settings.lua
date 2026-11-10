@@ -69,13 +69,16 @@ Settings.DEFAULTS = {
 --- is switched together; Brightness also needs a device with a frontlight.
 Settings.TOOLBAR_BUTTONS = {
     toggle = true, display = true, zoom = true, mode = true, keyboard = true, rotate = true,
-    scroll_lock = true, scroll_up = false, scroll_down = false, brightness = true, contrast = false,
+    scroll_lock = true, scroll_up = false, scroll_down = false, brightness = true, contrast = true,
 }
 
 --- The buttons that can stay on the collapsed toolbar (`toolbar_pinned`), in bar order: all but
 --- Collapse (it is the round button itself) and Close.
 Settings.TOOLBAR_PINNABLE = { "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up",
     "scroll_down", "brightness", "contrast", "more" }
+
+--- The buttons pinned to the collapsed toolbar by default (every other pinnable one is not).
+Settings.TOOLBAR_PINNED = { keyboard = true, scroll_lock = true }
 
 --- Where the toolbar sits by default (see `toolbar_pos`).
 Settings.TOOLBAR_POS = { x = 0.5, y = 0 }
@@ -153,18 +156,19 @@ local SETTING_CHECKS = {
         if Settings.POINTER_SPEEDS[value] then return value end
         return Settings.DEFAULTS.pointer_speed
     end,
+    -- (both keep only the choices made, by known id: an unset button follows its default, so a later
+    -- change of the defaults reaches every button the user never switched)
     toolbar_buttons = function(value)
         local out = {}
-        for id, default in pairs(Settings.TOOLBAR_BUTTONS) do
-            local v = type(value) == "table" and value[id]
-            if type(v) == "boolean" then out[id] = v else out[id] = default end
+        for id in pairs(Settings.TOOLBAR_BUTTONS) do
+            if type(value) == "table" and type(value[id]) == "boolean" then out[id] = value[id] end
         end
         return out
     end,
     toolbar_pinned = function(value)
         local out = {}
         for _i, id in ipairs(Settings.TOOLBAR_PINNABLE) do
-            out[id] = type(value) == "table" and value[id] == true or false
+            if type(value) == "table" and type(value[id]) == "boolean" then out[id] = value[id] end
         end
         return out
     end,

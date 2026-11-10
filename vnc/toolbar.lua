@@ -16,7 +16,7 @@ current one), Keyboard (shows or hides the on-screen keyboard with the key strip
 scrolls the remote), Scroll up/down, Brightness (KOReader's frontlight dialog; only on a device with
 a frontlight), Contrast (the contrast dialog, @{vnc.contrastdialog}), Close (disconnect, after a
 confirmation) and More (the menu). All but Close and More can be hidden (`toolbar_buttons`, the
-menu's "Toolbar buttons…"); by default the scroll pair and Contrast are.
+menu's "Toolbar buttons…"); by default only the scroll pair is.
 
 Buttons can also be pinned to the collapsed toolbar (`toolbar_pinned`, the menu's "Toolbar
 buttons… > Also when collapsed…"): then collapsing leaves a short bar, the expand button followed by
@@ -172,14 +172,21 @@ function Toolbar:visible_ids()
     return ids
 end
 
+--- Whether button `id` is pinned to the collapsed toolbar in `settings` (`toolbar_pinned`, its
+--- default when unset: @{Settings.TOOLBAR_PINNED}). Collapse and Close never are.
+function Toolbar.is_pinned(settings, id)
+    if id == "toggle" or id == "close" then return false end
+    local pinned = settings.toolbar_pinned
+    if type(pinned) == "table" and type(pinned[id]) == "boolean" then return pinned[id] end
+    return Settings.TOOLBAR_PINNED[id] == true
+end
+
 --- The buttons that stay beside the round button while collapsed, in bar order: those pinned
---- (`toolbar_pinned`) that the full bar shows too.
+--- (`Toolbar.is_pinned`) that the full bar shows too.
 function Toolbar:pinned_ids()
-    local pinned = self.app.settings.toolbar_pinned
     local ids = {}
-    if type(pinned) ~= "table" then return ids end
     for _i, id in ipairs(self:visible_ids()) do
-        if pinned[id] == true and id ~= "toggle" and id ~= "close" then ids[#ids + 1] = id end
+        if Toolbar.is_pinned(self.app.settings, id) then ids[#ids + 1] = id end
     end
     return ids
 end

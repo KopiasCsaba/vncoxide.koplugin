@@ -715,7 +715,7 @@ check("pointer_mode_is_cleaned_and_kept_per_profile", function()
     assert_true(s:get_profile("j").pointer_mode == "touch", "junk cleans to touch")
     s:save_profile({ name = "m", host = "h2", port = 1 }, "m")
     assert_true(s:get_profile("m").pointer_mode == "mouse", "an edit without the field keeps it")
-    assert_true(s.data.settings.pointer_speed == "normal" and s.data.settings.toolbar_buttons.scroll_up == false)
+    assert_true(s.data.settings.pointer_speed == "normal" and s.data.settings.toolbar_buttons.scroll_up == nil)
 end)
 check("canvas_covers_the_screen", function()
     local app, remote = new_app(nil, nil, { toolbar = true })
@@ -3834,7 +3834,7 @@ check("menu_toolbar_buttons_submenu", function()
             { "Zoom", { "zoom" }, true }, { "Mode", { "mode" }, true }, { "Keyboard", { "keyboard" }, true },
             { "Rotate", { "rotate" }, true }, { "Scroll lock", { "scroll_lock" }, true },
             { "Scroll up/down", { "scroll_up", "scroll_down" }, false }, { "Brightness", { "brightness" }, true },
-            { "Contrast", { "contrast" }, false },
+            { "Contrast", { "contrast" }, true },
         }
         for _, case in ipairs(cases) do
             local text, ids, on = case[1], case[2], case[3]
@@ -3888,9 +3888,13 @@ check("toolbar_settings_migrate_and_clean", function()
         local f = io.open(path, "w"); f:write("return { settings = " .. body .. " }\n"); f:close()
         return Settings.open(path).data.settings
     end
+    local Toolbar = require("vnc/toolbar")
     local s = load("{}")
-    assert_true(s.toolbar_buttons.toggle == true and s.toolbar_buttons.scroll_up == false
-        and s.toolbar_buttons.brightness == true and s.toolbar_buttons.contrast == false, "defaults")
+    assert_true(next(s.toolbar_buttons) == nil and next(s.toolbar_pinned) == nil, "only choices are stored")
+    assert_true(Toolbar.is_enabled(s, "toggle") and not Toolbar.is_enabled(s, "scroll_up")
+        and Toolbar.is_enabled(s, "brightness") and Toolbar.is_enabled(s, "contrast"), "defaults: all but the scroll pair")
+    assert_true(Toolbar.is_pinned(s, "keyboard") and Toolbar.is_pinned(s, "scroll_lock")
+        and not Toolbar.is_pinned(s, "display") and not Toolbar.is_pinned(s, "toggle"), "pinned: Keyboard, Scroll lock")
     assert_true(s.toolbar_collapsed == false and s.toolbar_pos.x == 0.5 and s.toolbar_pos.y == 0, "top centre")
     s = load("{ toolbar_scroll_buttons = true, toolbar_brightness_button = false, toolbar_contrast_button = true }")
     assert_true(s.toolbar_buttons.scroll_up == true and s.toolbar_buttons.scroll_down == true
@@ -3898,11 +3902,14 @@ check("toolbar_settings_migrate_and_clean", function()
     assert_true(s.toolbar_scroll_buttons == nil and s.toolbar_brightness_button == nil
         and s.toolbar_contrast_button == nil, "and the old keys go")
     s = load("{ toolbar_scroll_buttons = true, toolbar_buttons = { contrast = true } }")
-    assert_true(s.toolbar_buttons.scroll_up == false and s.toolbar_buttons.contrast == true, "the new key wins")
+    assert_true(not Toolbar.is_enabled(s, "scroll_up") and s.toolbar_buttons.contrast == true, "the new key wins")
     s = load("{ toolbar_buttons = { close = false, more = false, zoom = 'x', bogus = true }, toolbar_pos = { x = 3, y = 0.25 } }")
     assert_true(s.toolbar_buttons.close == nil and s.toolbar_buttons.more == nil and s.toolbar_buttons.bogus == nil
-        and s.toolbar_buttons.zoom == true, "junk is cleaned")
+        and s.toolbar_buttons.zoom == nil and Toolbar.is_enabled(s, "zoom"), "junk is cleaned")
     assert_true(s.toolbar_pos.x == 0.5 and s.toolbar_pos.y == 0.25, "a fraction out of range is reset")
+    s = load("{ toolbar_pinned = { keyboard = false, rotate = true, toggle = true, close = true } }")
+    assert_true(s.toolbar_pinned.keyboard == false and s.toolbar_pinned.rotate == true
+        and s.toolbar_pinned.toggle == nil and s.toolbar_pinned.close == nil, "pinned choices kept, junk cleaned")
     os.remove(path)
 end)
 
@@ -5862,6 +5869,7 @@ check("toolbar_collapses_into_a_bubble_and_back", function()
         end
         return real_dirty(self_, w, mode, ...)
     end
+    app.settings.toolbar_pinned = { keyboard = false, scroll_lock = false } -- (nothing pinned: the round button)
     tap_toolbar(app, "toggle")
     UIManager.setDirty = real_dirty
     local d = app.toolbar.dimen
@@ -6083,7 +6091,7 @@ end)
 check("toolbar_brightness_and_contrast_buttons_follow_their_settings", function()
     local Settings = require("vnc/settings")
     assert_true(Settings.TOOLBAR_BUTTONS.brightness == true, "brightness on by default")
-    assert_true(Settings.TOOLBAR_BUTTONS.contrast == false, "contrast off by default")
+    assert_true(Settings.TOOLBAR_BUTTONS.contrast == true, "contrast on by default")
     local app, remote = new_app(400, 300, { toolbar = true })
     local has = Device.hasFrontlight
     local ok, err = pcall(function()
@@ -7505,9 +7513,19 @@ check("toolbar_pinned_buttons_stay_when_collapsed", function()
         for _, r in ipairs(rows) do texts[#texts + 1] = r.text end
         assert_true(table.concat(texts, "|") == "Display|Zoom|Mode|Keyboard|Rotate|Scroll lock|Scroll up/down|"
             .. "Brightness|Contrast|More", table.concat(texts, "|"))
-        for _, r in ipairs(rows) do assert_true(r.mandatory == "-", r.text .. ": off by default") end
-        -- nothing pinned: collapsing leaves the round button alone
+        for _, r in ipairs(rows) do
+            local on = r.text == "Keyboard" or r.text == "Scroll lock"
+            assert_true(r.mandatory == (on and "\u{2713}" or "-"), r.text .. ": default " .. tostring(on))
+        end
         app:close_menu()
+        -- by default: the expand button, Keyboard and Scroll lock
+        app:set_toolbar_collapsed(true)
+        local b = app.toolbar.button_by_id
+        assert_true(b.toggle and b.keyboard and b.scroll_lock and b.display == nil and b.more == nil,
+            "expand + keyboard + scroll lock by default")
+        app:set_toolbar_collapsed(false)
+        -- nothing pinned: collapsing leaves the round button alone
+        app.settings.toolbar_pinned = { keyboard = false, scroll_lock = false }
         app:set_toolbar_collapsed(true)
         local round = app.toolbar.dimen
         assert_true(round.w == round.h and app.toolbar.button_by_id.keyboard == nil, "the round button alone")
