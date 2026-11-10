@@ -4378,5 +4378,24 @@ check("a_zero_area_request_is_answered_without_crashing_an_encoder", function()
     end
 end)
 
+check("a_burst_of_small_messages_does_not_overflow_the_stack", function()
+    -- Each resume of the protocol coroutine used to recurse once (_client_step <-> _after_step):
+    -- thousands of buffered messages, or one SetEncodings with 65535 entries, overflowed the stack.
+    with_hostile_server("", function(server, port)
+        local cli = hostile_connect(port)
+        hostile_handshake(cli, server)
+        local burst = string.char(5, 0, 0, 10, 0, 10):rep(4000)
+            .. string.char(2, 0, 255, 255) .. string.char(0, 0, 0, 7):rep(65535)
+            .. string.char(2, 0, 0, 1, 0, 0, 0, 0)
+            .. string.char(3, 0, 0, 0, 0, 0, 0, 1, 0, 1)
+        assert_true(cli:send(burst) == #burst, "the burst must be sent whole")
+        local head = recv_exact(cli, 4, server)
+        assert_true(head == "\0\0\0\1", string.format("the request after the burst must be"
+            .. " answered with one rectangle, got %q", head))
+        assert_true(server:client_count() == 1, "the client must still be connected")
+        cli:close()
+    end)
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

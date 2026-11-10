@@ -681,41 +681,43 @@ function Server:_drop_client(client, why)
     self:_notify_status()
 end
 
---- Reads whatever is available and advances the client's state machine.
+--- Advances the client's state machine over whatever is buffered.
+---
+--- A loop, not a recursion: a burst of thousands of small messages (pointer motion, a SetEncodings
+--- with 65535 entries - each field is a resume) used to recurse once per resume and overflowed the
+--- Lua stack, which dropped the client.
 function Server:_client_step(client)
-    if client.dropped then return end
     local step = client.server.step
-    if client.state == "reading" then
-        -- Only ever resume a byte-hungry coroutine with its bytes; anything else would make the
-        -- protocol's reader error out with "transport returned nil bytes".
-        if client.pending and client.rx_len >= client.pending then
+    local first = true
+    while not client.dropped do
+        local kind, arg
+        if client.state == "reading" then
+            -- Only ever resume a byte-hungry coroutine with its bytes; anything else would make the
+            -- protocol's reader error out with "transport returned nil bytes".
+            if not (client.pending and client.rx_len >= client.pending) then return end
+            -- The tick's parse budget bounds the loop - when it is spent, what is left stays in
+            -- the buffer and the next poll resumes with it, so a client's burst can never hold the
+            -- UI thread for longer than @{Server.PARSE_BUDGET} in one tick.
+            if not first and client.parse_deadline and socket.gettime() >= client.parse_deadline then
+                return
+            end
             local data = self:_take_rx(client, client.pending)
             client.pending = nil
-            local kind, arg = step(client.server, data)
-            self:_after_step(client, kind, arg)
+            kind, arg = step(client.server, data)
+        elseif client.state == "fresh" then
+            -- Start the state machine.
+            kind, arg = step(client.server, nil)
+        else
+            return
         end
-    elseif client.state == "fresh" then
-        -- Start the state machine.
-        local kind, arg = step(client.server, nil)
-        self:_after_step(client, kind, arg)
-    end
-end
-
-function Server:_after_step(client, kind, arg)
-    if kind == "need" then
-        client.pending = arg
-        client.state = "reading"
-        -- Maybe the bytes are already buffered: keep the state machine running over them. The
-        -- tick's parse budget bounds that - when it is spent, what is left stays in the buffer and
-        -- the next poll resumes with it, so a client's burst can never hold the UI thread for
-        -- longer than @{Server.PARSE_BUDGET} in one tick.
-        if client.pending and client.rx_len >= client.pending then
-            if not client.parse_deadline or socket.gettime() < client.parse_deadline then
-                self:_client_step(client)
-            end
+        first = false
+        if kind == "need" then
+            client.pending = arg
+            client.state = "reading"
+        else
+            if kind == nil then self:_drop_client(client, tostring(arg)) end
+            return
         end
-    elseif kind == nil then
-        self:_drop_client(client, tostring(arg))
     end
 end
 
