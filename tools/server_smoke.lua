@@ -1814,11 +1814,12 @@ end)
 
 --- Runs `fn` with @{Server.PARSE_BUDGET} set to `budget`, restoring it whatever happens.
 ---
---- The checks below pin what the *read-ahead* does: one poll reads a whole write and parses all of
---- it. The parse budget is a separate guard - a wall-clock cap per tick - and whether a slow host
---- (an emulated ARM, a loaded CI box) trips it during 200 messages is a question of its speed, not
---- of the logic. So these checks lift the budget (math.huge) to stay deterministic, and the guard
---- gets its own check with a budget of zero, which trips on the first message on any host.
+--- The checks that count polls pin what the *read-ahead* does: one poll reads a whole write and
+--- parses all of it (and acts on it: answers a request, shares a conversion). The parse budget is
+--- a separate guard - a wall-clock cap per tick - and whether a slow host (an emulated ARM, a
+--- loaded CI box) trips it mid-write is a question of its speed, not of the logic. So those checks
+--- lift the budget (math.huge) to stay deterministic, and the guard gets its own check with a
+--- budget of zero, which trips on the first message on any host.
 local function with_parse_budget(budget, fn)
     local Server = require("vnc/server")
     local saved = Server.PARSE_BUDGET
@@ -2209,53 +2210,56 @@ end)
 --- Deterministic by construction: the request and the keystroke are one write, and the suite already
 --- pins elsewhere that one poll reads a whole write - so two polls are slack, not a speed budget.
 check("server_holds_a_request_and_still_injects_the_message_behind_it", function()
-    local Server = require("vnc/server")
-    local socket = require("socket")
+    -- (counts polls: c.f. with_parse_budget)
+    with_parse_budget(math.huge, function()
+        local Server = require("vnc/server")
+        local socket = require("socket")
 
-    local server, port
-    for candidate = 5791, 5799 do
-        local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
-        if s:start() then server, port = s, candidate break end
-    end
-    assert_true(server ~= nil, "could not bind a test port")
-
-    local ok, err = pcall(function()
-        local bb = Screen.bb
-        local sw, sh = bb:getWidth(), bb:getHeight()
-        bb:paintRect(0, 0, sw, sh, BB.COLOR_BLACK)
-        server:_record_dirty("full", nil)
-
-        local client = connect_client(server, port, set_encodings_wire())
-        local cli = client.sock
-        local plane = BB.new(sw, sh, BB.TYPE_BBRGB24)
-
-        cli:send(client.request(false, 0, 0, sw, sh))
-        assert_true(client.read_update(plane) >= 1, "the first full update must carry the screen")
-        plane:free()
-
-        local seen_key = false
-        local original_input_event = UIManager.handleInputEvent
-        UIManager.handleInputEvent = function(_, ev)
-            if tostring(ev.handler) == "onKeyPress" then seen_key = true end
+        local server, port
+        for candidate = 5791, 5799 do
+            local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
+            if s:start() then server, port = s, candidate break end
         end
-        local ok_held, held_err = pcall(function()
-            -- One write: the request (which will be held) and the keystroke behind it.
-            cli:send(client.request(true, 0, 0, sw, sh)
-                .. string.char(4, 1, 0, 0) .. string.char(0, 0, 0xFF, 0x54))     -- KeyEvent Down
-            client.polls(2)
-            assert_true(seen_key, "the keystroke behind a held request must be acted on")
-            -- ... and the held request must still be unanswered.
-            local bytes = drain_socket(cli, 0.05, server)
-            assert_true(#bytes == 0, string.format(
-                "holding the request must not have answered it, got %d byte(s)", #bytes))
-        end)
-        UIManager.handleInputEvent = original_input_event
-        if not ok_held then error(held_err, 0) end
-        cli:close()
-    end)
+        assert_true(server ~= nil, "could not bind a test port")
 
-    server:stop()
-    if not ok then error(err, 0) end
+        local ok, err = pcall(function()
+            local bb = Screen.bb
+            local sw, sh = bb:getWidth(), bb:getHeight()
+            bb:paintRect(0, 0, sw, sh, BB.COLOR_BLACK)
+            server:_record_dirty("full", nil)
+
+            local client = connect_client(server, port, set_encodings_wire())
+            local cli = client.sock
+            local plane = BB.new(sw, sh, BB.TYPE_BBRGB24)
+
+            cli:send(client.request(false, 0, 0, sw, sh))
+            assert_true(client.read_update(plane) >= 1, "the first full update must carry the screen")
+            plane:free()
+
+            local seen_key = false
+            local original_input_event = UIManager.handleInputEvent
+            UIManager.handleInputEvent = function(_, ev)
+                if tostring(ev.handler) == "onKeyPress" then seen_key = true end
+            end
+            local ok_held, held_err = pcall(function()
+                -- One write: the request (which will be held) and the keystroke behind it.
+                cli:send(client.request(true, 0, 0, sw, sh)
+                    .. string.char(4, 1, 0, 0) .. string.char(0, 0, 0xFF, 0x54))     -- KeyEvent Down
+                client.polls(2)
+                assert_true(seen_key, "the keystroke behind a held request must be acted on")
+                -- ... and the held request must still be unanswered.
+                local bytes = drain_socket(cli, 0.05, server)
+                assert_true(#bytes == 0, string.format(
+                    "holding the request must not have answered it, got %d byte(s)", #bytes))
+            end)
+            UIManager.handleInputEvent = original_input_event
+            if not ok_held then error(held_err, 0) end
+            cli:close()
+        end)
+
+        server:stop()
+        if not ok then error(err, 0) end
+    end)
 end)
 
 --- The stall watchdog is for a *partially* received message - half a message in hand means we are
@@ -2423,66 +2427,69 @@ end)
 --- rectangle in the same tick must not convert the same pixels twice. Counted by wrapping the
 --- module function the server calls, so the plugin itself needs nothing.
 check("two_clients_of_one_format_share_one_conversion", function()
-    local Server = require("vnc/server")
-    local ServerEnc = require("vnc/serverenc")
-    local socket = require("socket")
+    -- (counts polls: c.f. with_parse_budget)
+    with_parse_budget(math.huge, function()
+        local Server = require("vnc/server")
+        local ServerEnc = require("vnc/serverenc")
+        local socket = require("socket")
 
-    local server, port
-    for candidate = 5861, 5869 do
-        local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
-        if s:start() then server, port = s, candidate break end
-    end
-    assert_true(server ~= nil, "could not bind a test port")
+        local server, port
+        for candidate = 5861, 5869 do
+            local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = "" } }
+            if s:start() then server, port = s, candidate break end
+        end
+        assert_true(server ~= nil, "could not bind a test port")
 
-    local calls = 0
-    local original_convert = ServerEnc.convert
-    ServerEnc.convert = function(self, ...)
-        calls = calls + 1
-        return original_convert(self, ...)
-    end
+        local calls = 0
+        local original_convert = ServerEnc.convert
+        ServerEnc.convert = function(self, ...)
+            calls = calls + 1
+            return original_convert(self, ...)
+        end
 
-    local ok, err = pcall(function()
-        local bb = Screen.bb
-        local sw, sh = bb:getWidth(), bb:getHeight()
-        bb:paintRect(0, 0, sw, sh, BB.COLOR_BLACK)
-        server:_record_dirty("full", nil)
+        local ok, err = pcall(function()
+            local bb = Screen.bb
+            local sw, sh = bb:getWidth(), bb:getHeight()
+            bb:paintRect(0, 0, sw, sh, BB.COLOR_BLACK)
+            server:_record_dirty("full", nil)
 
-        local a = connect_client(server, port, set_encodings_wire())
-        local b = connect_client(server, port, set_encodings_wire())
-        local plane = BB.new(sw, sh, BB.TYPE_BBRGB24)
-        a.send(a.request(false, 0, 0, sw, sh))
-        assert_true(a.read_update(plane) >= 1, "the first update must carry the screen")
-        b.send(b.request(false, 0, 0, sw, sh))
-        assert_true(b.read_update(plane) >= 1, "the first update must carry the screen")
-        plane:free()
+            local a = connect_client(server, port, set_encodings_wire())
+            local b = connect_client(server, port, set_encodings_wire())
+            local plane = BB.new(sw, sh, BB.TYPE_BBRGB24)
+            a.send(a.request(false, 0, 0, sw, sh))
+            assert_true(a.read_update(plane) >= 1, "the first update must carry the screen")
+            b.send(b.request(false, 0, 0, sw, sh))
+            assert_true(b.read_update(plane) >= 1, "the first update must carry the screen")
+            plane:free()
 
-        -- one change, 200x100: a single rectangle for every encoding (it is below the limit the
-        -- encoders that walk every pixel are given) and the same pixel format for both clients
-        bb:paintRect(8, 8, 200, 100, BB.COLOR_WHITE)
-        server:_record_dirty("partial", { x = 8, y = 8, w = 200, h = 100 })
+            -- one change, 200x100: a single rectangle for every encoding (it is below the limit the
+            -- encoders that walk every pixel are given) and the same pixel format for both clients
+            bb:paintRect(8, 8, 200, 100, BB.COLOR_WHITE)
+            server:_record_dirty("partial", { x = 8, y = 8, w = 200, h = 100 })
 
-        -- both ask in the same tick: `send` put each request in the kernel, so the next poll
-        -- serves both clients - no wait is involved, and the sharing asserted below is per poll.
-        a.send(a.request(true, 0, 0, sw, sh))
-        b.send(b.request(true, 0, 0, sw, sh))
-        calls = 0                           -- the first frames are not part of this
-        server:_poll()
-        assert_true(calls == 1, string.format(
-            "one poll must convert a rectangle once for every client of that pixel format that asks"
-            .. " in it, converted %d time(s)", calls))
+            -- both ask in the same tick: `send` put each request in the kernel, so the next poll
+            -- serves both clients - no wait is involved, and the sharing asserted below is per poll.
+            a.send(a.request(true, 0, 0, sw, sh))
+            b.send(b.request(true, 0, 0, sw, sh))
+            calls = 0                           -- the first frames are not part of this
+            server:_poll()
+            assert_true(calls == 1, string.format(
+                "one poll must convert a rectangle once for every client of that pixel format that asks"
+                .. " in it, converted %d time(s)", calls))
 
-        -- ... and both were served in that poll: their answers are already on the wire
-        local ahead = a.sock:receive(4)
-        local bhead = b.sock:receive(4)
-        assert_true(ahead ~= nil and ahead:byte(1) == 0 and bhead ~= nil and bhead:byte(1) == 0,
-            "both clients must be answered by the poll that shares the conversion")
-        a.sock:close()
-        b.sock:close()
+            -- ... and both were served in that poll: their answers are already on the wire
+            local ahead = a.sock:receive(4)
+            local bhead = b.sock:receive(4)
+            assert_true(ahead ~= nil and ahead:byte(1) == 0 and bhead ~= nil and bhead:byte(1) == 0,
+                "both clients must be answered by the poll that shares the conversion")
+            a.sock:close()
+            b.sock:close()
+        end)
+
+        ServerEnc.convert = original_convert
+        server:stop()
+        if not ok then error(err, 0) end
     end)
-
-    ServerEnc.convert = original_convert
-    server:stop()
-    if not ok then error(err, 0) end
 end)
 
 check("server_pushes_a_change_to_a_client_that_enabled_continuous_updates", function()
