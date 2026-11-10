@@ -2251,6 +2251,29 @@ local function main()
         return true
     end)
 
+    -- The server's clipboard is logged by its length, never its text (it may hold a password).
+    check("session_does_not_log_the_server_clipboard", function()
+        local Session = load_session()
+        local logger = require("logger")
+        local pid, port = start_mock{ name = "cut_text_log", encoding = "raw", pattern = "gradient", width = 32, height = 24 }
+        local s = Session.new{ profile = { host = "127.0.0.1", port = port, password = "", name = "cut" },
+                               network_mgr = NET }
+        local connected
+        connect_sync(s, function(ok) connected = ok end)
+        local lines, real_dbg = {}, logger.dbg
+        logger.dbg = function(...) lines[#lines + 1] = table.concat({ ... }, " ") end
+        local ok, err = pcall(function() s.proto.callbacks.on_cut_text("hunter2-secret") end)
+        logger.dbg = real_dbg
+        s:disconnect()
+        stop_mock(pid)
+        if not connected then return nil, "connect failed" end
+        if not ok then return nil, tostring(err) end
+        local all = table.concat(lines, "\n")
+        if all:find("hunter2", 1, true) then return nil, "the clipboard text was logged: " .. all end
+        if not all:find("14", 1, true) then return nil, "its length should be logged: " .. all end
+        return true
+    end)
+
     -- A refused connect closes the socket it opened (it used to be left to the garbage collector).
     check("session_closes_the_socket_of_a_failed_connect", function()
         local Session = load_session()

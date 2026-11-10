@@ -425,7 +425,8 @@ function Session:_do_connect(attempt)
                 if self_ref.app then self_ref.app:on_bell() end
             end,
             on_cut_text = function(text)
-                logger.dbg("vnc: server cut text:", text)
+                -- (its length only: a clipboard may hold passwords)
+                logger.dbg("vnc: server cut text:", #text, "bytes")
             end,
         },
     }
