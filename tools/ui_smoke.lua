@@ -6033,6 +6033,37 @@ check("toolbar_drags_and_stays_on_screen", function()
     close_viewer(app, remote)
 end)
 
+--- A drag of the bar whose lift a popup took (the bar never saw its end) must not capture the next
+--- gesture: a drag or a swipe on the remote used to move the bar instead of reaching the remote.
+check("a_bar_drag_that_lost_its_lift_does_not_take_the_next_gesture", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local from = toolbar_button_centre(app, "zoom")
+    dispatch_gesture{ ges = "pan", relative = { x = 0, y = 40 }, start_pos = Geom:new{ x = from.x, y = from.y, w = 0, h = 0 },
+                      pos = Geom:new{ x = from.x, y = from.y + 40, w = 0, h = 0 } }
+    assert_true(app.toolbar:is_dragging(), "the bar is being dragged")
+    local InfoMessage = require("ui/widget/infomessage")
+    local box = InfoMessage:new{ text = "popup" }
+    UIManager:show(box)
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = from.x, y = from.y + 40, w = 0, h = 0 } }
+    UIManager:close(box)
+    local b = { x = app.toolbar.dimen.x, y = app.toolbar.dimen.y }
+    local far = Geom:new{ x = 300, y = Screen:getHeight() - 200, w = 0, h = 0 }
+    for _i, kind in ipairs{ "swipe", "pan" } do
+        if kind == "pan" then
+            app.toolbar.drag = { sx = from.x, sy = from.y, x = b.x, y = b.y, from = app.toolbar.dimen }
+            drag_toolbar(far, 60, 60)
+        else
+            dispatch_gesture{ ges = "swipe", direction = "southeast", pos = far,
+                              end_pos = Geom:new{ x = far.x + 60, y = far.y + 60, w = 0, h = 0 } }
+        end
+        assert_true(app.toolbar.dimen.x == b.x and app.toolbar.dimen.y == b.y,
+            kind .. ": the bar must stay where it was")
+        assert_true(not app.toolbar:is_dragging(), kind .. ": and the lost drag is over")
+    end
+    assert_true(#sent.pointer > 0, "the drag on the remote reaches the remote")
+    close_viewer(app, remote)
+end)
+
 check("a_swipe_that_starts_on_the_toolbar_moves_it", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     local bar = app.toolbar.dimen

@@ -418,6 +418,18 @@ function Toolbar:is_dragging()
     return self.drag ~= nil
 end
 
+--- Ends a drag whose lift never reached the bar (a popup took it) when `ges`, a pan or a swipe,
+--- starts elsewhere: that is a new gesture, not the drag's. Returns whether it ended one.
+function Toolbar:drop_lost_drag(ges)
+    local drag = self.drag
+    if not drag or ges.ges == "pan_release" then return false end
+    local start = ges.ges == "pan" and (ges.start_pos or ges.pos) or ges.pos
+    if drag.sx == start.x and drag.sy == start.y then return false end
+    self.drag = nil
+    if drag.icon then self:_place_icon(nil, "ui") end
+    return true
+end
+
 --- One step of a drag of the bar (`ges` is one of `DRAG_GESTURES`). The viewer repaints the area.
 function Toolbar:_on_drag(ges)
     local kind = ges.ges

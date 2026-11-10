@@ -238,7 +238,8 @@ function ViewerApp:_toolbar_owns(ges)
     if not self:_input_target() then return false end
     if self:_one_finger_busy() then return false end
     local kind = ges.ges or ""
-    if self.toolbar:is_dragging() and Toolbar.DRAG_GESTURES[kind] then return true end
+    if Toolbar.DRAG_GESTURES[kind] and not self.toolbar:drop_lost_drag(ges)
+        and self.toolbar:is_dragging() then return true end
     if kind == "pan_release" or kind:sub(1, 11) == "two_finger_" or MULTI_FINGER[kind] then return false end
     local rel = ges.relative or { x = 0, y = 0 }
     local start = Geom:new{ x = ges.pos.x - (rel.x or 0), y = ges.pos.y - (rel.y or 0), w = 0, h = 0 }
