@@ -717,8 +717,114 @@ local function scaler_checks()
     end
 end
 
+--[[--
+The contrast tone curve: folded into the scaler's per-pixel conversion, it must give exactly the
+picture of a plane whose pixels went through the curve first (per channel into RGB, on the grey
+value into BB8), in every mode, scale, destination type and view, for any partition into rects.
+]]
+local function contrast_checks()
+    local Scaler = require("vnc/scaler")
+    local PW, PH, CW, CH = 37, 29, 64, 48
+
+    check("contrast_lut_curve", function()
+        if Scaler.contrast_lut(1) ~= nil then return nil, "neutral must be no curve at all" end
+        for _, f in ipairs({ 0.5, 1.25, 3 }) do
+            local lut = Scaler.contrast_lut(f)
+            for x = 0, 255 do
+                local want = math.max(0, math.min(255, math.floor(127.5 + f * (x - 127.5) + 0.5)))
+                if lut.g[x] ~= want or lut.w[x] ~= want * 256 then
+                    return nil, string.format("f=%s x=%d: %d/%d, want %d", f, x, lut.g[x], lut.w[x], want)
+                end
+                if x > 0 and lut.g[x] < lut.g[x - 1] then return nil, "not monotonic" end
+            end
+        end
+        local hi = Scaler.contrast_lut(3)
+        if hi.g[40] ~= 0 or hi.g[215] ~= 255 then return nil, "a strong curve clips at both ends" end
+        return true
+    end)
+
+    local plane = scaler_plane(PW, PH)
+    for _, f in ipairs({ 0.5, 2 }) do
+        local lut = Scaler.contrast_lut(f)
+        -- the same plane with the curve applied beforehand: per channel, and as grey
+        local per_channel, as_grey = BB.new(PW, PH, BB.TYPE_BBRGB24), BB.new(PW, PH, BB.TYPE_BBRGB24)
+        local sp = ffi.cast("uint8_t*", plane.data)
+        local cp, gp = ffi.cast("uint8_t*", per_channel.data), ffi.cast("uint8_t*", as_grey.data)
+        for y = 0, PH - 1 do
+            for x = 0, PW - 1 do
+                local o = y * plane.stride + x * 3
+                local r, g, b = sp[o], sp[o + 1], sp[o + 2]
+                cp[o], cp[o + 1], cp[o + 2] = lut.g[r], lut.g[g], lut.g[b]
+                local v = lut.g[bit.rshift(r * 77 + g * 150 + b * 29, 8)]
+                gp[o], gp[o + 1], gp[o + 2] = v, v, v
+            end
+        end
+        for _, s in ipairs(SC_SCALES) do
+            for _, mode in ipairs(SC_MODES) do
+                for _, t in ipairs(SC_TYPES) do
+                    check(string.format("scaler_contrast_%s_%s_%s_%s", f, mode, s, t[1]), function()
+                        local ref_plane = t[2] == BB.TYPE_BB8 and as_grey or per_channel
+                        local A, B = BB.new(CW, CH, t[2]), BB.new(CW, CH, t[2])
+                        local full = { x = 0, y = 0, w = CW, h = CH }
+                        for vi, v in ipairs(SC_VIEWS) do
+                            local view = { x = v.x, y = v.y, scale = s }
+                            bb_fill(A, 0x5A); bb_fill(B, 0xA5)
+                            Scaler.render(A, ref_plane, view, full, mode)
+                            local xs, ys = { 0, 13, 41, CW }, { 0, 7, 30, CH }
+                            for i = 1, 3 do
+                                for j = 1, 3 do
+                                    Scaler.render(B, plane, view, { x = xs[i], y = ys[j],
+                                        w = xs[i + 1] - xs[i], h = ys[j + 1] - ys[j] }, mode, lut)
+                                end
+                            end
+                            local x, y = bb_diff(A, B)
+                            if x then
+                                A:free(); B:free()
+                                return nil, string.format("view %d differs at %d,%d", vi, x, y)
+                            end
+                        end
+                        A:free(); B:free()
+                        return true
+                    end)
+                end
+            end
+        end
+        per_channel:free(); as_grey:free()
+    end
+
+    check("remote_contrast_repaints_without_an_update", function()
+        local Remote = require("vnc/framebuffer")
+        local r = Remote.new(PW, PH)
+        r.plane:blitFrom(plane, 0, 0, 0, 0, PW, PH)
+        r:mark_dirty()
+        local out = BB.new(CW, CH, BB.TYPE_BB8)
+        r:fit_view(CW, CH)
+        r:draw_to(out, 0, 0, CW, CH)
+        if r:set_contrast(1) then return nil, "neutral again changes nothing" end
+        r:draw_to(out, 0, 0, CW, CH)
+        if r.last_recomputed_px ~= 0 then return nil, "nothing to recompute" end
+        if not r:set_contrast(2) or r.contrast ~= 2 then return nil, "a new level is taken" end
+        r:draw_to(out, 0, 0, CW, CH)
+        if r.last_recomputed_px ~= CW * CH then
+            return nil, "the whole canvas is redrawn from the plane, got " .. r.last_recomputed_px
+        end
+        local ref = BB.new(CW, CH, BB.TYPE_BB8)
+        Scaler.render(ref, r.plane, r:_render_view(), { x = 0, y = 0, w = CW, h = CH }, r.scaling,
+            Scaler.contrast_lut(2))
+        if bb_diff(ref, out) then return nil, "drawn with the curve" end
+        r:set_contrast(1)
+        r:draw_to(out, 0, 0, CW, CH)
+        Scaler.render(ref, r.plane, r:_render_view(), { x = 0, y = 0, w = CW, h = CH }, r.scaling)
+        if r._lut ~= nil or bb_diff(ref, out) then return nil, "back to neutral: the plain picture" end
+        out:free(); ref:free(); r:free()
+        return true
+    end)
+    plane:free()
+end
+
 local function main()
     scaler_checks()
+    contrast_checks()
 
     -- 1. DES against FIPS/NIST vectors (independent of the mock).
     check("des_vectors", function()

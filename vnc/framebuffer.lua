@@ -8,7 +8,9 @@ remote coordinate shown at the canvas' top-left corner.
 
 What the view shows is kept in a persistent canvas-sized buffer (see @{Remote:draw_to}): a remote
 update rescales only the canvas pixels that depend on the remote rects it changed
-(@{vnc.scaler}), and every paint blits the whole buffer.
+(@{vnc.scaler}), and every paint blits the whole buffer. The contrast of the picture
+(@{Remote:set_contrast}) is applied on that plane-to-canvas step, so the plane always holds the
+remote pixels as sent.
 
 @module vnc.framebuffer
 ]]
@@ -46,6 +48,8 @@ function Remote.new(width, height)
         ch = height,
         version = 0,    -- bumped whenever the plane may have changed
         scaling = "smooth",
+        contrast = 1,       -- contrast factor of the picture as drawn (@{Remote:set_contrast})
+        _lut = nil,         -- its tone curve for the scaler, nil at neutral
         _canvas_bb = nil,   -- persistent canvas-sized buffer holding the scaled view
         _dither_bb = nil,   -- the canvas buffer dithered (only while painting dithered)
         _dither_ok = false, -- _dither_bb matches _canvas_bb
@@ -106,6 +110,24 @@ function Remote:set_scaling(mode)
         self.scaling = mode
         self._all_stale = true
     end
+end
+
+--[[--
+Sets the contrast of the picture as it is drawn (`1`: as the server sent it).
+
+The plane keeps the remote pixels untouched; the curve (@{vnc.scaler.contrast_lut}) is applied
+where the canvas is computed from the plane, folded into the scaler's per-pixel conversion. So a
+change needs no new update from the server: the whole canvas is recomputed from the plane on the
+next paint, exactly like after a scaling-mode change. At neutral there is no curve at all.
+--- @tparam number f
+--- @treturn boolean whether it changed
+]]
+function Remote:set_contrast(f)
+    if f == self.contrast then return false end
+    self.contrast = f
+    self._lut = Scaler.contrast_lut(f)
+    self._all_stale = true
+    return true
 end
 
 --- @treturn number, number plane size in remote pixels
@@ -376,7 +398,7 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
     local full, rects = false, nil
     if self._all_stale or not f or f.x ~= vx or f.y ~= vy or f.scale ~= s or f.mode ~= mode
             or f.plane ~= self.plane then
-        Scaler.render(canvas, self.plane, view, { x = 0, y = 0, w = cw, h = ch }, mode)
+        Scaler.render(canvas, self.plane, view, { x = 0, y = 0, w = cw, h = ch }, mode, self._lut)
         self._filled = { x = vx, y = vy, scale = s, mode = mode, plane = self.plane }
         self.last_recomputed_px = cw * ch
         full = true
@@ -388,7 +410,7 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
         end
         local px = 0
         for _i, d in ipairs(rects) do
-            Scaler.render(canvas, self.plane, view, d, mode)
+            Scaler.render(canvas, self.plane, view, d, mode, self._lut)
             px = px + d.w * d.h
         end
         self.last_recomputed_px = px

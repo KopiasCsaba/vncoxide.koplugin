@@ -17,7 +17,11 @@ Modes:
   of the grey values (one channel instead of three), so it is the floored grey of the exact
   colour mean.
 
-At `s == 1` with an integral view offset both modes are a plain copy. Canvas pixels whose
+An optional tone curve (@{Scaler.contrast_lut}, the viewer's contrast setting) is folded into the
+per-pixel conversion every kernel already does (RGB to grey, or the channel reads); without one
+(neutral contrast) the kernels run exactly as before.
+
+At `s == 1` with an integral view offset both modes are a plain copy (with a curve: a lookup copy). Canvas pixels whose
 centre lies outside the plane are black.
 
 The source is the `TYPE_BBRGB24` plane; the destination may be `TYPE_BB8` (grey is
@@ -176,7 +180,7 @@ end
 -- ---------------------------------------------------------------- kernels
 -- Each kernel fills canvas columns [xa, xb) of rows [ya, yb), all of which are inside the plane.
 
-local function sharp_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
+local function sharp_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     local xi, yi = ax.idx, ay.idx
     if bpp == 1 then
         -- grey once per source pixel of the needed span, reused while the source row repeats
@@ -187,14 +191,33 @@ local function sharp_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
             local j = yi[y]
             if j ~= lastj then
                 local r = sp + j * ss
-                for i = sa, sb do
-                    local o = i * 3
-                    grow[i] = rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)
+                if lut then
+                    local g = lut.g
+                    for i = sa, sb do
+                        local o = i * 3
+                        grow[i] = g[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)]
+                    end
+                else
+                    for i = sa, sb do
+                        local o = i * 3
+                        grow[i] = rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)
+                    end
                 end
                 lastj = j
             end
             local out = dp + y * ds
             for x = xa, xb - 1 do out[x] = grow[xi[x]] end
+        end
+    elseif lut then
+        local g = lut.g
+        for y = ya, yb - 1 do
+            local r = sp + yi[y] * ss
+            local out = dp + y * ds
+            for x = xa, xb - 1 do
+                local o, d = xi[x] * 3, x * bpp
+                out[d], out[d + 1], out[d + 2] = g[r[o]], g[r[o + 1]], g[r[o + 2]]
+                if bpp == 4 then out[d + 3] = 255 end
+            end
         end
     else
         for y = ya, yb - 1 do
@@ -210,12 +233,27 @@ local function sharp_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
 end
 
 --- s == 1, integral offset: straight copy (dx, dy = source - canvas offset).
-local function copy_kernel(dp, ds, bpp, sp, ss, dx, dy, xa, xb, ya, yb)
+local function copy_kernel(dp, ds, bpp, sp, ss, dx, dy, xa, xb, ya, yb, lut)
+    local g = lut and lut.g
     for y = ya, yb - 1 do
         local r = sp + (y + dy) * ss + (xa + dx) * 3
         local out = dp + y * ds + xa * bpp
         local n = xb - xa
-        if bpp == 3 then
+        if g then
+            -- the curve: no plain copy any more, one lookup per channel (or per grey value)
+            if bpp == 1 then
+                for k = 0, n - 1 do
+                    local o = k * 3
+                    out[k] = g[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)]
+                end
+            else
+                for k = 0, n - 1 do
+                    local o, d = k * 3, k * bpp
+                    out[d], out[d + 1], out[d + 2] = g[r[o]], g[r[o + 1]], g[r[o + 2]]
+                    if bpp == 4 then out[d + 3] = 255 end
+                end
+            end
+        elseif bpp == 3 then
             ffi.copy(out, r, n * 3)
         elseif bpp == 1 then
             for k = 0, n - 1 do
@@ -231,15 +269,39 @@ local function copy_kernel(dp, ds, bpp, sp, ss, dx, dy, xa, xb, ya, yb)
     end
 end
 
-local function grey_row(buf, r, sa, sb)
+--- The (x256) grey values of source row `r`, columns [sa, sb]; with a curve, of the floored grey
+--- (its x256 table `lut.w` keeps the scale).
+local function grey_row(buf, r, sa, sb, lut)
+    if lut then
+        local w = lut.w
+        for i = sa, sb do
+            local o = i * 3
+            buf[i] = w[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)]
+        end
+        return
+    end
     for i = sa, sb do
         local o = i * 3
         buf[i] = r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29
     end
 end
 
---- One source row interpolated horizontally (x256) for canvas columns [xa, xb), 3 per column.
-local function hlerp_row(buf, r, xi0, xi1, xw, xa, xb)
+--- One source row interpolated horizontally (x256) for canvas columns [xa, xb), 3 per column;
+--- with a curve, of the channels it maps.
+local function hlerp_row(buf, r, xi0, xi1, xw, xa, xb, lut)
+    if lut then
+        local g = lut.g
+        for x = xa, xb - 1 do
+            local a, b, wx, d = xi0[x] * 3, xi1[x] * 3, xw[x], x * 3
+            local p = g[r[a]]
+            buf[d] = p * 256 + (g[r[b]] - p) * wx
+            p = g[r[a + 1]]
+            buf[d + 1] = p * 256 + (g[r[b + 1]] - p) * wx
+            p = g[r[a + 2]]
+            buf[d + 2] = p * 256 + (g[r[b + 2]] - p) * wx
+        end
+        return
+    end
     for x = xa, xb - 1 do
         local a, b, wx, d = xi0[x] * 3, xi1[x] * 3, xw[x], x * 3
         local p = r[a]
@@ -251,7 +313,7 @@ local function hlerp_row(buf, r, xi0, xi1, xw, xa, xb)
     end
 end
 
-local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
+local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     local xi0, xi1, xw = ax.i0, ax.i1, ax.w
     local yi0, yi1, yw = ay.i0, ay.i1, ay.w
     if bpp == 1 then
@@ -266,10 +328,10 @@ local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
                 if j == tb then
                     ga, gb, ta, tb = gb, ga, tb, ta
                 else
-                    grey_row(ga, sp + j * ss, sa, sb); ta = j
+                    grey_row(ga, sp + j * ss, sa, sb, lut); ta = j
                 end
             end
-            if j1 ~= tb then grey_row(gb, sp + j1 * ss, sa, sb); tb = j1 end
+            if j1 ~= tb then grey_row(gb, sp + j1 * ss, sa, sb, lut); tb = j1 end
             local out = dp + y * ds
             for x = xa, xb - 1 do
                 local a, b, wx = xi0[x], xi1[x], xw[x]
@@ -292,10 +354,10 @@ local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
                 if j == tb then
                     ha, hb, ta, tb = hb, ha, tb, ta
                 else
-                    hlerp_row(ha, sp + j * ss, xi0, xi1, xw, xa, xb); ta = j
+                    hlerp_row(ha, sp + j * ss, xi0, xi1, xw, xa, xb, lut); ta = j
                 end
             end
-            if j1 ~= tb then hlerp_row(hb, sp + j1 * ss, xi0, xi1, xw, xa, xb); tb = j1 end
+            if j1 ~= tb then hlerp_row(hb, sp + j1 * ss, xi0, xi1, xw, xa, xb, lut); tb = j1 end
             local out = dp + y * ds
             for x = xa, xb - 1 do
                 local c, d = x * 3, x * bpp
@@ -317,7 +379,7 @@ end
 -- loop. A non-negative double stored into a uint8_t is truncated, which is the floor wanted.
 
 --- Into TYPE_BB8: the area average of the (x256) grey values, one accumulator per column.
-local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb)
+local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     local xf, xc, xo, xt, xwt = ax.first, ax.count, ax.off, ax.tot, ax.wt
     local yf, yc, yo, yt, ywt = ay.first, ay.count, ay.off, ay.tot, ay.wt
     local sa, sb = xf[xa], xf[xb - 1] + xc[xb - 1] - 1
@@ -329,16 +391,33 @@ local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb)
         local j0, oy, n = yf[y], yo[y], yc[y]
         local wy = ywt[oy]
         local r = sp + j0 * ss
-        for i = sa, sb do
-            local o = i * 3
-            acc[i] = (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
-        end
-        for k = 1, n - 1 do
-            wy = ywt[oy + k]
-            r = sp + (j0 + k) * ss
+        if lut then
+            -- the curve on the floored grey, kept x256 (`lut.w`) like the plain grey
+            local w = lut.w
             for i = sa, sb do
                 local o = i * 3
-                acc[i] = acc[i] + (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+                acc[i] = w[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)] * wy
+            end
+            for k = 1, n - 1 do
+                wy = ywt[oy + k]
+                r = sp + (j0 + k) * ss
+                for i = sa, sb do
+                    local o = i * 3
+                    acc[i] = acc[i] + w[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)] * wy
+                end
+            end
+        else
+            for i = sa, sb do
+                local o = i * 3
+                acc[i] = (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+            end
+            for k = 1, n - 1 do
+                wy = ywt[oy + k]
+                r = sp + (j0 + k) * ss
+                for i = sa, sb do
+                    local o = i * 3
+                    acc[i] = acc[i] + (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+                end
             end
         end
         -- horizontal pass
@@ -364,10 +443,11 @@ local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb)
 end
 
 --- Into TYPE_BBRGB24/32: the area average of each channel, rounded half up.
-local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
+local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     if bpp == 1 then
-        return box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb)
+        return box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     end
+    local g = lut and lut.g
     local xf, xc, xo, xt, xwt = ax.first, ax.count, ax.off, ax.tot, ax.wt
     local yf, yc, yo, yt, ywt = ay.first, ay.count, ay.off, ay.tot, ay.wt
     local sa, sb = xf[xa], xf[xb - 1] + xc[xb - 1] - 1
@@ -379,18 +459,35 @@ local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
         local j0, oy, n = yf[y], yo[y], yc[y]
         local wy = ywt[oy]
         local r = sp + j0 * ss
-        for i = sa, sb do
-            local o = i * 3
-            ar[i], ag[i], ab[i] = r[o] * wy, r[o + 1] * wy, r[o + 2] * wy
-        end
-        for k = 1, n - 1 do
-            wy = ywt[oy + k]
-            r = sp + (j0 + k) * ss
+        if g then
             for i = sa, sb do
                 local o = i * 3
-                ar[i] = ar[i] + r[o] * wy
-                ag[i] = ag[i] + r[o + 1] * wy
-                ab[i] = ab[i] + r[o + 2] * wy
+                ar[i], ag[i], ab[i] = g[r[o]] * wy, g[r[o + 1]] * wy, g[r[o + 2]] * wy
+            end
+            for k = 1, n - 1 do
+                wy = ywt[oy + k]
+                r = sp + (j0 + k) * ss
+                for i = sa, sb do
+                    local o = i * 3
+                    ar[i] = ar[i] + g[r[o]] * wy
+                    ag[i] = ag[i] + g[r[o + 1]] * wy
+                    ab[i] = ab[i] + g[r[o + 2]] * wy
+                end
+            end
+        else
+            for i = sa, sb do
+                local o = i * 3
+                ar[i], ag[i], ab[i] = r[o] * wy, r[o + 1] * wy, r[o + 2] * wy
+            end
+            for k = 1, n - 1 do
+                wy = ywt[oy + k]
+                r = sp + (j0 + k) * ss
+                for i = sa, sb do
+                    local o = i * 3
+                    ar[i] = ar[i] + r[o] * wy
+                    ag[i] = ag[i] + r[o + 1] * wy
+                    ab[i] = ab[i] + r[o + 2] * wy
+                end
             end
         end
         local ty = yt[y]
@@ -424,6 +521,28 @@ end
 -- ---------------------------------------------------------------- API
 
 --[[--
+The tone curve for contrast factor `f`: `y = clamp(round(127.5 + f * (x - 127.5)))`, i.e. a
+stretch (f > 1) or squeeze (f < 1) around mid grey. Returns nil for `f == 1`: no curve, and the
+kernels take their plain paths.
+
+The curve is folded into the conversion each kernel already does per source pixel: on the grey
+value (`g`, for `TYPE_BB8`; the bilinear and box paths, which work on x256 grey, take the same
+curve x256 from `w`) or on each channel (into RGB). A source pixel costs one table load more, and
+nothing else changes: the result is exactly the picture of a plane whose pixels went through the
+curve first.
+--- @treturn table|nil `{ g = uint8_t[256], w = int32_t[256] }`
+]]
+function Scaler.contrast_lut(f)
+    if f == 1 then return nil end
+    local g, w = ffi.new("uint8_t[256]"), ffi.new("int32_t[256]")
+    for x = 0, 255 do
+        local y = max(0, min(255, floor(127.5 + f * (x - 127.5) + 0.5)))
+        g[x], w[x] = y, y * 256
+    end
+    return { g = g, w = w }
+end
+
+--[[--
 Renders canvas rect `rect` of the view into `dst_bb`.
 
 Writes exactly the pixels of `rect` (which must lie inside `dst_bb`).
@@ -432,8 +551,9 @@ Writes exactly the pixels of `rect` (which must lie inside `dst_bb`).
 --- @tparam table view `{x, y, scale}`
 --- @tparam table rect `{x, y, w, h}` in canvas coordinates
 --- @tparam string mode `"smooth"` or `"sharp"`
+--- @tparam[opt] table lut a tone curve from @{Scaler.contrast_lut} (nil: the picture as it is)
 ]]
-function Scaler.render(dst_bb, plane, view, rect, mode)
+function Scaler.render(dst_bb, plane, view, rect, mode, lut)
     local bpp = BPP[dst_bb:getType()]
     assert(bpp, "vnc.scaler: unsupported destination type")
     assert(dst_bb:getRotation() == 0 and dst_bb:getInverse() == 0,
@@ -471,9 +591,9 @@ function Scaler.render(dst_bb, plane, view, rect, mode)
     fill_black(dp, ds, bpp, xb, ya, x1 - xb, yb - ya)
 
     if copy then
-        copy_kernel(dp, ds, bpp, sp, ss, vx, vy, xa, xb, ya, yb)
+        copy_kernel(dp, ds, bpp, sp, ss, vx, vy, xa, xb, ya, yb, lut)
     else
-        kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb)
+        kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     end
 end
 
