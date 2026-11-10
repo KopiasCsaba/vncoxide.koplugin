@@ -2234,6 +2234,23 @@ local function main()
         return true
     end)
 
+    -- Attaching a session that is not connected (the benchmark re-attaches whatever it detached,
+    -- also one that dropped meanwhile) registers no poll: it used to, and the poll crashed on the
+    -- protocol the drop had freed.
+    check("session_attach_needs_a_connection", function()
+        local Session = load_session()
+        local s = Session.new{ profile = { host = "127.0.0.1", port = 1, password = "", name = "dropped" },
+                               network_mgr = { isWifiOn = function() return true end } }
+        s.state = "error"
+        s:attach({ on_framebuffer_dirty = function() end })
+        if s:is_attached() then return nil, "a dropped session must not attach" end
+        local ok, err = pcall(s._poll, s)
+        if not ok then return nil, "a stray poll must not raise: " .. tostring(err) end
+        ok, err = pcall(s._pump, s)
+        if not ok or err ~= "error" then return nil, "a pump without a protocol: " .. tostring(err) end
+        return true
+    end)
+
     -- A refused connect closes the socket it opened (it used to be left to the garbage collector).
     check("session_closes_the_socket_of_a_failed_connect", function()
         local Session = load_session()
@@ -2466,9 +2483,10 @@ local function main()
     check("benchmark_detaches_live_sessions", function()
         local Session = require("vnc/session")
         local pid, port = start_multi{ name = "bench_detach" }
-        local bpid, bport = start_mock{ name = "bench_detach_by", encoding = "raw", pattern = "gradient" }
         local problem
         for _, ending in ipairs{ "done", "cancel" } do
+            -- (a mock serves one connection: each ending gets its own)
+            local bpid, bport = start_mock{ name = "bench_detach_by_" .. ending, encoding = "raw", pattern = "gradient" }
             local env = bench_env()
             local by = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "by" },
                                     network_mgr = NET }
@@ -2501,16 +2519,19 @@ local function main()
             for _, t in ipairs(env.tasks) do if t.fn == by._poll_task then tasks = tasks + 1 end end
             local back = by:is_attached() and by.app == app and tasks == 1
             local idle_ok = not idle:is_attached()
+            local live = by:is_connected()
             by:disconnect()
             env.restore()
-            if seen_attached == nil then problem = ending .. ": tiles phase never reached"
+            stop_mock(bpid)
+            if not live then problem = ending .. ": the attached session dropped: " .. tostring(by:get_error()) end
+            if problem then
+            elseif seen_attached == nil then problem = ending .. ": tiles phase never reached"
             elseif seen_attached or seen_task then problem = ending .. ": the attached session was not detached during the run"
             elseif not back then problem = ending .. ": the session was not attached again (tasks " .. tasks .. ")"
             elseif not idle_ok then problem = ending .. ": a session that was not attached got attached" end
             if problem then break end
         end
         stop_mock(pid)
-        stop_mock(bpid)
         if problem then return nil, problem end
         return true
     end)
