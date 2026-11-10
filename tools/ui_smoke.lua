@@ -1276,6 +1276,69 @@ check("connecting_twice_keeps_the_attempt_in_progress", function()
     if not ok then error(err, 0) end
 end)
 
+--- A first connect runs in ticks (Wi-Fi, TCP, handshake), so the list must say it is on its way:
+--- "Connecting to <name>…" from the attempt's start until it succeeds, fails or is cancelled (a
+--- disconnect), and never two messages at once. The viewer's reconnect box has titles of its own,
+--- so an attempt for the session the viewer shows gets no extra message.
+check("first_connect_shows_connecting_until_it_ends", function()
+    local saved, saved_open, saved_app = plugin.sessions.good, plugin._open_app, plugin.app
+    local state, pending = "disconnected", nil
+    local fake = {
+        get_state = function() return state end,
+        is_connected = function() return state == "connected" end,
+        set_profile = function() end,
+        connect = function(_, cb) state, pending = "connecting", cb end,
+    }
+    local function is_connecting(w)
+        return w ~= nil and w.text == "Connecting to good…" and w.buttons == nil
+    end
+    local opened = 0
+    local depth = #stack()
+    local ok, err = pcall(function()
+        plugin._open_app = function() opened = opened + 1 end
+
+        -- success: the message goes before the viewer comes up
+        plugin.sessions.good = fake
+        plugin:connect_profile("good")
+        expect_top(is_connecting, "the connecting message")
+        state = "connected"; pending(true)
+        assert_true(count(is_connecting) == 0, "the message must close on success: " .. stack_desc())
+        assert_true(opened == 1, "and the viewer must open")
+
+        -- failure: the message is replaced by the error, not stacked under it
+        state = "disconnected"
+        plugin.sessions.good = fake
+        plugin:connect_profile("good")
+        expect_top(is_connecting, "the connecting message")
+        state = "error"; pending(false, "refused")
+        assert_true(count(is_connecting) == 0, "the message must close on failure: " .. stack_desc())
+        expect_top(function(w) return w ~= nil and w.text and w.text:find("Could not connect to good", 1, true) end,
+            "the connection error")
+        UIManager:close(top())
+
+        -- cancel: a disconnect ends the attempt without its callback
+        state = "disconnected"
+        plugin.sessions.good = fake
+        plugin:connect_profile("good")
+        expect_top(is_connecting, "the connecting message")
+        plugin:on_session_state(fake, "disconnected")
+        assert_true(count(is_connecting) == 0, "the message must close on a disconnect: " .. stack_desc())
+
+        -- the viewer's own session: its reconnect box speaks for it
+        state = "disconnected"
+        plugin.sessions.good = fake
+        plugin.app = { session = fake }
+        plugin:connect_profile("good")
+        assert_true(count(is_connecting) == 0, "no message over the viewer's own session: " .. stack_desc())
+        state = "connected"; pending(true)
+        plugin.app = saved_app
+    end)
+    while #stack() > depth do UIManager:close(top()) end
+    plugin.sessions.good, plugin._open_app, plugin.app = saved, saved_open, saved_app
+    plugin._pending_connect = nil
+    if not ok then error(err, 0) end
+end)
+
 check("server_autostart_starts_once_the_tick_runs", function()
     local socket = require("socket")
     local probe = assert(socket.bind("127.0.0.1", 0))

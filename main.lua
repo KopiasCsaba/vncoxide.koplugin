@@ -232,6 +232,11 @@ end
 --- connect attempt in flight is skipped: its own callback reports the failure, and saying it
 --- twice would stack two messages on screen.
 function VNC:on_session_state(session, state, err)
+    if state == "disconnected" and self._pending_connect == session then
+        -- a disconnect while the first attempt runs: it ends without calling back
+        self._pending_connect = nil
+        self:_close_connecting_message()
+    end
     if state ~= "error" then return end
     if self._pending_connect == session then return end
     local message = tostring(err or _("unknown error"))
@@ -366,6 +371,7 @@ function VNC:connect_profile(name, on_failure)
     self._pending_connect = session
     session:connect(function(ok, err)
         if self._pending_connect == session then self._pending_connect = nil end
+        self:_close_connecting_message()
         if not ok then
             if not self.app then
                 -- never connected: don't keep a dead session around
@@ -381,6 +387,20 @@ function VNC:connect_profile(name, on_failure)
         end
         self:_open_app(session)
     end)
+    -- The attempt runs in ticks (Wi-Fi, TCP, handshake): say so while it does, unless it is over
+    -- already or the viewer shows this session (its reconnect box has titles of its own).
+    if self._pending_connect == session and not (self.app and self.app.session == session) then
+        self:_close_connecting_message()
+        self._connecting_message = InfoMessage:new{ text = T(_("Connecting to %1…"), name) }
+        UIManager:show(self._connecting_message)
+    end
+end
+
+--- Closes the "Connecting to …" message of a first attempt, if it is (still) on screen.
+function VNC:_close_connecting_message()
+    local message = self._connecting_message
+    self._connecting_message = nil
+    if message then UIManager:close(message) end
 end
 
 --- Drops the connection to `name`, closing the viewer if it showed it.
