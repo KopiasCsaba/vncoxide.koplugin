@@ -5747,6 +5747,7 @@ check("reconnect_backoff_and_success", function()
     app.session.state = "error"
     app:on_session_error("x")
     assert_true(r:is_running() and top() == r.box, "the box is up")
+    assert_true(sent.keep_wifi == true, "Wi-Fi stays on from the drop to the first attempt")
     assert_true(r.box.title == "Connection lost — reconnecting… (attempt 1, next in 2 s)",
         "title: " .. tostring(r.box.title))
     find_button(r.box, "Retry now"); find_button(r.box, "Close")
