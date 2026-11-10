@@ -1246,6 +1246,27 @@ check("every_plugin_instance_shares_one_server", function()
     assert_true(follows, "and the server must follow the latest instance's settings")
 end)
 
+--- The boot connect is armed by the first instance only: every book opened or closed builds
+--- another instance, whose init() used to arm it again - a reconnect on each return to the library.
+check("later_plugin_instances_do_not_rearm_the_boot_connect", function()
+    local saved_settings = plugin.server.settings
+    local real_connect, real_flagged = plugin_module.connect_profile, plugin_module.autoconnect_profile
+    local calls = 0
+    plugin_module.connect_profile = function() calls = calls + 1 end
+    -- (a new instance opens the default settings file, not this test's store)
+    plugin_module.autoconnect_profile = function() return { name = "good" } end
+    local ok, err = pcall(function()
+        plugin_module:new{ ui = { document = {} } }
+        UIManager:_checkTasks()
+        plugin_module:new{ ui = { menu = { registerToMainMenu = function() end } } }
+        UIManager:_checkTasks()
+    end)
+    plugin_module.connect_profile, plugin_module.autoconnect_profile = real_connect, real_flagged
+    plugin.server.settings = saved_settings
+    if not ok then error(err, 0) end
+    assert_true(calls == 0, "a later instance must not connect at its init, got " .. calls .. " connects")
+end)
+
 --- Connect tapped again while the first attempt is still connecting (waiting for Wi-Fi, typically)
 --- must leave that attempt alone: its "already connecting" answer used to be handled as a failed
 --- connect, which dropped the session from the plugin - and with it the only way to disconnect it.

@@ -82,8 +82,9 @@ function VNC:init()
     if first then self:schedule_autostart() end
 
     -- The client's own boot start, on the same terms: the flagged profile (if any) is connected
-    -- once, from the first UI loop turn, never re-armed. Nothing is dialled at init().
-    self:schedule_autoconnect()
+    -- once, from the first UI loop turn, never re-armed. Nothing is dialled at init(). Once per
+    -- run, too: every book opened or closed builds another instance.
+    if first then self:schedule_autoconnect() end
 end
 
 --- Schedules the boot start when the settings (or the environment) ask for it.
