@@ -38,6 +38,15 @@ local floor, ceil, min, max = math.floor, math.ceil, math.min, math.max
 -- integer shifts instead of floor(x / 2^n) on the per-pixel paths (values stay far below 2^31);
 -- floor is a library call on ARM
 local rshift = require("bit").rshift
+-- Storing a double into a uint8_t is a call to lj_vm_num2u64 per byte on 32-bit ARM, so the
+-- smooth kernels store integers: exact integer formulas where the ranges fit 32 bits, and
+-- otherwise floor(q) as tobit(q + FLOOR_BIAS) (tobit rounds to nearest). q = N / D with integers
+-- N >= 0 and D, so its fractional part is 0 or at least 1 / D; the largest D is the grey box filter's
+-- tot_x * tot_y * 256 <= 5376^2 * 256 < 7.4e9 at MIN_SCALE 0.05, i.e. 1 / D > 1.3e-10. q is
+-- computed with reciprocals to within ~2e-13 (q <= 255), so round(q - 0.5 + 1e-11) is exactly
+-- floor(q). (A bias of 1e-9 would be too coarse below scale ~0.13.)
+local arshift, band, tobit = require("bit").arshift, require("bit").band, require("bit").tobit
+local FLOOR_BIAS = -0.5 + 1e-11
 
 local Scaler = {}
 
@@ -337,9 +346,11 @@ local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb, lut)
                 local a, b, wx = xi0[x], xi1[x], xw[x]
                 local g00, g10 = ga[a], gb[a]
                 local top = g00 * 256 + (ga[b] - g00) * wx
-                local bot = g10 * 256 + (gb[b] - g10) * wx
-                -- a non-negative double stored into a uint8_t is truncated, i.e. floored
-                out[x] = (top * 256 + (bot - top) * wy) / 16777216
+                local d = g10 * 256 + (gb[b] - g10) * wx - top
+                -- floor((top * 256 + d * wy) / 2^24) without leaving 32 bits (top < 2^24):
+                -- split top and d into high and low bytes (exact by the nested-floor identity)
+                local hi = rshift(top, 8) * 256 + arshift(d, 8) * wy
+                out[x] = arshift(hi + arshift(band(top, 255) * 256 + band(d, 255) * wy, 8), 16)
             end
         end
     else
@@ -362,11 +373,12 @@ local function bilinear_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb, lut)
             for x = xa, xb - 1 do
                 local c, d = x * 3, x * bpp
                 local top, bot = ha[c], hb[c]
-                out[d] = (top * 256 + (bot - top) * wy) / 65536
+                -- top, bot < 2^16 and 0 <= wy < 256: the sum is in [0, 2^24), so the shift is exact
+                out[d] = rshift(top * 256 + (bot - top) * wy, 16)
                 top, bot = ha[c + 1], hb[c + 1]
-                out[d + 1] = (top * 256 + (bot - top) * wy) / 65536
+                out[d + 1] = rshift(top * 256 + (bot - top) * wy, 16)
                 top, bot = ha[c + 2], hb[c + 2]
-                out[d + 2] = (top * 256 + (bot - top) * wy) / 65536
+                out[d + 2] = rshift(top * 256 + (bot - top) * wy, 16)
                 if bpp == 4 then out[d + 3] = 255 end
             end
         end
@@ -376,7 +388,8 @@ end
 -- Box filter. Both passes run over whole spans with the per-pixel weights from the axis tables;
 -- the horizontal pass reads a fixed three taps (the weights past a position's count are zero, and
 -- the accumulators have room past the span) whenever no footprint is wider, so it has no inner
--- loop. A non-negative double stored into a uint8_t is truncated, which is the floor wanted.
+-- loop. The quotient is floored with tobit (see FLOOR_BIAS), dividing by multiplying with
+-- reciprocals computed once per column and once per row.
 
 --- Into TYPE_BB8: the area average of the (x256) grey values, one accumulator per column.
 local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
@@ -385,6 +398,8 @@ local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     local sa, sb = xf[xa], xf[xb - 1] + xc[xb - 1] - 1
     -- at most 65280 * 256 * 21 (scale 0.05) per column: fits int32
     local acc = scratch_buf("accY", "int32_t", sb + 3)
+    local inv = scratch_buf("invX", "double", xb)
+    for x = xa, xb - 1 do inv[x] = 1 / xt[x] end
     local three = ax.maxc <= 3
     for y = ya, yb - 1 do
         -- vertical pass: weighted sum of the footprint's source rows, per source column
@@ -421,13 +436,13 @@ local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
             end
         end
         -- horizontal pass
-        local ty = yt[y] * 256
+        local ity = 1 / (yt[y] * 256)
         local out = dp + y * ds
         if three then
             for x = xa, xb - 1 do
                 local i0, ox = xf[x], xo[x]
-                out[x] = (acc[i0] * xwt[ox] + acc[i0 + 1] * xwt[ox + 1] + acc[i0 + 2] * xwt[ox + 2])
-                    / (xt[x] * ty)
+                out[x] = tobit((acc[i0] * xwt[ox] + acc[i0 + 1] * xwt[ox + 1] + acc[i0 + 2] * xwt[ox + 2])
+                    * inv[x] * ity + FLOOR_BIAS)
             end
         else
             for x = xa, xb - 1 do
@@ -436,7 +451,7 @@ local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
                 for k = 0, xc[x] - 1 do
                     sum = sum + acc[i0 + k] * xwt[ox + k]
                 end
-                out[x] = sum / (xt[x] * ty)
+                out[x] = tobit(sum * inv[x] * ity + FLOOR_BIAS)
             end
         end
     end
@@ -512,7 +527,10 @@ local function box_kernel(dp, ds, bpp, sp, ss, ax, ay, xa, xb, ya, yb, lut)
             local t = xt[x] * ty
             local h = rshift(t, 1)
             local d = x * bpp
-            out[d], out[d + 1], out[d + 2] = (sr + h) / t, (sg + h) / t, (sbl + h) / t
+            local inv = 1 / t
+            out[d] = tobit((sr + h) * inv + FLOOR_BIAS)
+            out[d + 1] = tobit((sg + h) * inv + FLOOR_BIAS)
+            out[d + 2] = tobit((sbl + h) * inv + FLOOR_BIAS)
             if bpp == 4 then out[d + 3] = 255 end
         end
     end
