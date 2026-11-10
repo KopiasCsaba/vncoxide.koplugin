@@ -89,6 +89,13 @@ after a rotation) for the next time. Its buttons, left to right:
    the **Send keys** panel if it is open; the panel opens from the strip's keys icon).
    The viewer opens with the keyboard as you last left it (shown or hidden; the strip's **✕** and the
    panel's **✕** and keyboard icon count too; a menu or dialog hides it only while it is open).
+   **Drag the button out onto the remote** (also from the collapsed bar) to click a text field and
+   type: a small keyboard icon follows your finger, nothing is sent meanwhile, and where you let go
+   on the picture it left-clicks (Touch mode at that spot; Mouse mode moves the pointer there first)
+   and brings the keyboard up, saved like a tap on the button (already up: just the click; with the
+   **Send keys** panel open: the click, the panel stays). Let go on the toolbar, the keyboard, the key
+   strip, the panel or off the picture and nothing happens. Its long-press name: *Keyboard (drag onto
+   a field to click it and type)*.
 6. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
    Display panel: a pinch never turns the screen.) The viewer remembers the orientation you last
    used and opens in it, unless **Match orientation to the remote screen** (see below) turns it.
@@ -121,6 +128,7 @@ are greyed out there).
 | two-finger drag | pan the view (with **scroll lock** on: scroll the remote, see below): the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
 | two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |
+| two-finger long press | on lifting: left click at the fingers' midpoint, then the on-screen keyboard (as the **⌨** drag does); moving the fingers first cancels it | left click at the pointer, then the keyboard |
 | device page buttons | Page Up/Down or wheel (setting) | same |
 
 In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
@@ -134,7 +142,9 @@ drags. A second finger joining a long press or a tap-then-hold drag lets go of i
 about 0.12 s after KOReader reports it (at once if the finger moves first): some PocketBook
 firmware holds a touch back for half a second and then delivers it in a burst, which KOReader
 takes for a long press; one that lifts within that time is treated as the tap or drag it really
-was. Three-finger gestures are not used.
+was. Likewise a two-finger long press lifted within 0.12 s is a two-finger tap (fit). A two-finger
+long press only counts on the picture (not on the toolbar or the keyboard) and when no one-finger
+drag or long press is under way. Three-finger gestures are not used.
 
 The end of a drag or long press is the viewer's wherever the finger lifts: over the toolbar, the
 **Send keys** panel or the on-screen keyboard (no key is typed then). Should that end still not

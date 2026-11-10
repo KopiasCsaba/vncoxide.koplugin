@@ -5774,7 +5774,7 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     hold_toolbar(app, "keyboard")
     local tip
     for _, w in ipairs(stack()) do if w.toast then tip = w end end
-    assert_true(app.key_panel == nil and tip and tip.text == "On-screen keyboard",
+    assert_true(app.key_panel == nil and tip and tip.text == "Keyboard (drag onto a field to click it and type)",
         "a long press on Keyboard only shows its tooltip: " .. stack_desc())
     UIManager:close(tip)
     tap_toolbar(app, "display"); assert_true(app.display_panel ~= nil, "display opens the display panel")
@@ -5820,7 +5820,7 @@ check("toolbar_long_press_shows_a_tooltip_and_does_nothing_else", function()
         local Toolbar = require("vnc/toolbar")
         local want = {
             toggle = "Collapse toolbar", display = "Display settings", zoom = "Zoom: fit, 1:1, your own view",
-            mode = "Pointer mode: touch or mouse", keyboard = "On-screen keyboard", rotate = "Rotate the screen",
+            mode = "Pointer mode: touch or mouse", keyboard = "Keyboard (drag onto a field to click it and type)", rotate = "Rotate the screen",
             scroll_lock = "Scroll lock: two-finger drag scrolls the remote", scroll_up = "Scroll up",
             scroll_down = "Scroll down", brightness = "Frontlight", contrast = "Contrast of the remote picture",
             close = "Disconnect", more = "Menu",
@@ -7628,6 +7628,262 @@ check("menu_false_hold_is_a_tap", function()
     assert_true(find_item(menu.item_table, "On the toolbar…") ~= nil, "nothing was opened")
     app:close_menu()
     close_viewer(app, remote)
+end)
+
+-- ---------------------------------------------------------------- click and type
+
+--[[ Drags the keyboard icon off the toolbar's Keyboard button to `to`: `steps` pans (3 by default),
+then a pan_release, or with `swipe` a swipe that ends there (a flick without pans: steps = 0).
+`mid(i)` runs after each pan. ]]
+local function drag_keyboard_icon(app, to, opts)
+    opts = opts or {}
+    local from = toolbar_button_centre(app, "keyboard")
+    local sp = Geom:new{ x = from.x, y = from.y, w = 0, h = 0 }
+    local dx, dy = to.x - from.x, to.y - from.y
+    local steps = opts.steps or 3
+    for i = 1, steps do
+        local rx, ry = math.floor(dx * i / steps), math.floor(dy * i / steps)
+        dispatch_gesture{ ges = "pan", relative = { x = rx, y = ry }, start_pos = sp,
+                          pos = Geom:new{ x = from.x + rx, y = from.y + ry, w = 0, h = 0 } }
+        if opts.mid then opts.mid(i, Geom:new{ x = from.x + rx, y = from.y + ry, w = 0, h = 0 }) end
+    end
+    if opts.swipe then
+        dispatch_gesture{ ges = "swipe", direction = dy >= 0 and "south" or "north", distance = math.abs(dy), pos = sp,
+                          end_pos = Geom:new{ x = to.x, y = to.y, w = 0, h = 0 } }
+    else
+        dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = to.x, y = to.y, w = 0, h = 0 } }
+    end
+    UIManager:_checkTasks()
+end
+
+--- Whether every pointer event in `list` is at `x, y`.
+local function all_at(list, x, y)
+    for _, e in ipairs(list) do if e.x ~= x or e.y ~= y then return false end end
+    return #list > 0
+end
+
+check("keyboard_button_drag_clicks_where_dropped_and_shows_the_keyboard", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        for _, how in ipairs{ "pan", "swipe", "flick" } do
+            local what = mode .. "/" .. how
+            local app, remote, sent = new_app(400, 300, { toolbar = true, mode = mode })
+            local wire = wire_log(app)
+            local c = app:canvas_geom()
+            local bar = app.toolbar.dimen
+            local P = Geom:new{ x = c.x + math.floor(c.w / 3), y = c.y + math.floor(c.h / 2) }
+            local rx, ry = app:_to_remote(P.x, P.y)
+            local refreshes = {}
+            local real_dirty = UIManager.setDirty
+            UIManager.setDirty = function(self_, w, m, ...)
+                if w == app and type(m) == "function" then refreshes[#refreshes + 1] = (m()) end
+                return real_dirty(self_, w, m, ...)
+            end
+            drag_keyboard_icon(app, P, { swipe = how ~= "pan", steps = how == "flick" and 0 or 3,
+                mid = function(i, at)
+                    assert_true(wire() == "", what .. ": nothing sent mid-drag")
+                    local icon = app.toolbar.drag_icon
+                    assert_true(icon and icon.dimen:contains(Geom:new{ x = at.x, y = at.y, w = 0, h = 0 }),
+                        what .. ": the icon follows the finger")
+                    assert_true(refreshes[#refreshes] == "fast", what .. ": fast while it moves")
+                    assert_true(not app.vk_visible, what .. ": no keyboard yet")
+                end })
+            UIManager.setDirty = real_dirty
+            local saw_ui = false
+            for _, m in ipairs(refreshes) do if m == "ui" then saw_ui = true end end
+            -- (a flick showed no icon: nothing to repaint)
+            assert_true(saw_ui == (how ~= "flick"), what .. ": ui on release")
+            for _, m in ipairs(refreshes) do assert_true(m == "fast" or m == "ui", what .. ": no other refresh: " .. m) end
+            assert_true(app.toolbar.drag_icon == nil and not app.toolbar:is_dragging(), what .. ": the icon is gone")
+            local got = wire()
+            assert_true(got == "p0,p1,p0", what .. ": one click, got " .. got)
+            assert_true(all_at({ sent.pointer[#sent.pointer - 2], sent.pointer[#sent.pointer - 1],
+                last_pointer(sent) }, rx, ry), what .. ": at the drop point")
+            if mode == "mouse" then
+                local mx, my = app:_mouse_pointer_px()
+                assert_true(mx == rx and my == ry, what .. ": the pointer stays there")
+            end
+            assert_true(app.vk_visible and keyboard_on_stack(app) and app.settings.keyboard_shown == true,
+                what .. ": the keyboard came up and was saved")
+            assert_true(app.toolbar.dimen.x == bar.x and app.toolbar.dimen.y == bar.y, what .. ": the bar did not move")
+            assert_true(not app:has_pointer_action(), what .. ": nothing held")
+            close_viewer(app, remote)
+        end
+    end
+end)
+
+check("keyboard_button_drag_with_the_keyboard_up_only_clicks", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    app:set_keyboard_visible(true)
+    -- (the strip's armed modifiers go with the click, as with a tap)
+    app.key_strip:tap_modifier("Ctrl")
+    local wire = wire_log(app)
+    local c = app:canvas_geom()
+    local P = Geom:new{ x = c.x + 40, y = c.y + math.floor(c.h / 2) }
+    drag_keyboard_icon(app, P)
+    local got = wire()
+    assert_true(got == "+0xFFE3,p0,p1,p0,-0xFFE3", "Ctrl around one click, got " .. got)
+    assert_true(app.vk_visible and app.settings.keyboard_shown == true, "the keyboard stays up")
+    -- with the Send keys panel in its place: the click, and the panel stays
+    open_key_panel(app)
+    drag_keyboard_icon(app, Geom:new{ x = 40, y = app.key_panel.dimen.y - 20 })
+    assert_true(wire() == "p0,p1,p0" and app.key_panel ~= nil and not app.vk_visible, "the panel stays")
+    close_viewer(app, remote)
+end)
+
+check("keyboard_button_drag_dropped_elsewhere_does_nothing", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local wire = wire_log(app)
+    local bar = app.toolbar.dimen
+    -- back on the bar
+    drag_keyboard_icon(app, toolbar_button_centre(app, "zoom"))
+    assert_true(wire() == "" and not app.vk_wanted and app.settings.keyboard_shown == false, "on the bar: nothing")
+    assert_true(app.toolbar.dimen.x == bar.x and app.toolbar.dimen.y == bar.y and app.toolbar.drag_icon == nil,
+        "the bar stays, the icon is gone")
+    assert_true(app:view_state() == "fit", "the button under the drop did not act")
+    -- over the keyboard (and the strip)
+    app:set_keyboard_visible(true)
+    local H = Screen:getHeight()
+    drag_keyboard_icon(app, Geom:new{ x = 50, y = H - 10 })
+    drag_keyboard_icon(app, Geom:new{ x = 50, y = app.key_strip.dimen.y + 2 })
+    drag_keyboard_icon(app, Geom:new{ x = 50, y = H - 10 }, { swipe = true })
+    assert_true(wire() == "", "over the keyboard or the strip: nothing")
+    assert_true(not app.toolbar:is_dragging() and app.toolbar.drag_icon == nil, "the drop reached the bar: no icon left")
+    -- over the Send keys panel
+    open_key_panel(app)
+    drag_keyboard_icon(app, Geom:new{ x = 50, y = app.key_panel.dimen.y + 5 })
+    assert_true(wire() == "" and app.key_panel ~= nil, "over the panel: nothing")
+    assert_true(not app.toolbar:is_dragging() and app.toolbar.drag_icon == nil, "no icon left over the panel")
+    app:close_key_panel()
+    UIManager:_checkTasks()
+    app:set_keyboard_visible(false)
+    -- a drag that starts on another button still moves the bar
+    local from = toolbar_button_centre(app, "mode")
+    drag_toolbar(from, 0, 100)
+    assert_true(app.toolbar.dimen.y == bar.y + 100 and wire() == "" and not app.vk_wanted, "the bar moved, nothing else")
+    close_viewer(app, remote)
+end)
+
+check("keyboard_button_drag_off_the_canvas_does_nothing", function()
+    -- a small remote that fits above the keyboard: the canvas ends where the keyboard starts
+    local app, remote = new_app(400, 300, { toolbar = true })
+    app:set_keyboard_visible(true)
+    app:zoom_to(0.5)
+    local c = app:canvas_geom()
+    assert_true(c.h < Screen:getHeight(), "the canvas is shorter than the screen")
+    local wire = wire_log(app)
+    drag_keyboard_icon(app, Geom:new{ x = 30, y = c.y + c.h + 1 })
+    assert_true(wire() == "", "below the canvas: nothing")
+    drag_keyboard_icon(app, Geom:new{ x = 30, y = c.y + c.h - 30 })
+    assert_true(wire() == "p0,p1,p0", "inside it: a click")
+    close_viewer(app, remote)
+end)
+
+check("keyboard_button_drag_works_from_the_collapsed_bar", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    app:set_toolbar_collapsed(true)
+    local bar = app.toolbar.dimen
+    assert_true(app.toolbar.button_by_id.keyboard ~= nil, "Keyboard is pinned by default")
+    local wire = wire_log(app)
+    local c = app:canvas_geom()
+    local P = Geom:new{ x = c.x + 100, y = c.y + math.floor(c.h / 2) }
+    local rx, ry = app:_to_remote(P.x, P.y)
+    drag_keyboard_icon(app, P)
+    assert_true(wire() == "p0,p1,p0" and all_at({ last_pointer(sent) }, rx, ry), "one click at the drop point")
+    assert_true(app.vk_visible and app.toolbar.collapsed, "the keyboard came up, the bar stays collapsed")
+    assert_true(app.toolbar.dimen.x == bar.x and app.toolbar.dimen.y == bar.y, "and in place")
+    -- its tap is still the toggle
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(not app.vk_visible and app.settings.keyboard_shown == false and wire() == "", "a tap hides it")
+    tap_toolbar(app, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.vk_visible and wire() == "", "and shows it")
+    -- the expand button still drags the short bar
+    drag_toolbar(toolbar_button_centre(app, "toggle"), 30, 60)
+    assert_true(app.toolbar.dimen.x == bar.x + 30 and app.toolbar.dimen.y == bar.y + 60, "the short bar moves")
+    close_viewer(app, remote)
+end)
+
+local function two_finger(kind, pos, t, extra)
+    local ev = { ges = kind, pos = Geom:new{ x = pos.x, y = pos.y, w = 0, h = 0 }, span = 80, time = t }
+    for k, v in pairs(extra or {}) do ev[k] = v end
+    dispatch_gesture(ev)
+    UIManager:_checkTasks()
+end
+
+check("two_finger_long_press_clicks_and_shows_the_keyboard", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app:canvas_geom()
+        local P = Geom:new{ x = c.x + 70, y = c.y + 90 }
+        local rx, ry = app:_to_remote(P.x, P.y)
+        if mode == "mouse" then rx, ry = 200, 150 end -- the pointer starts at the centre
+        local t0 = time.now()
+        two_finger("two_finger_hold", P, t0)
+        assert_true(wire() == "" and not app.vk_visible, mode .. ": nothing until the fingers lift")
+        two_finger("two_finger_hold_release", P, t0 + time.ms(600))
+        local got = wire()
+        assert_true(got == "p0,p1,p0", mode .. ": one click, got " .. got)
+        assert_true(all_at({ sent.pointer[#sent.pointer - 1], last_pointer(sent) }, rx, ry), mode .. ": where it should be")
+        assert_true(app.vk_visible and app.settings.keyboard_shown == true, mode .. ": the keyboard came up and was saved")
+        assert_true(not app:has_pointer_action(), mode .. ": nothing held")
+        -- again with the keyboard up: only the click
+        two_finger("two_finger_hold", P, t0 + time.ms(2000))
+        two_finger("two_finger_hold_release", P, t0 + time.ms(2600))
+        assert_true(wire() == "p0,p1,p0" and app.vk_visible, mode .. ": again, the click alone")
+        close_viewer(app, remote)
+    end
+end)
+
+check("two_finger_long_press_that_moves_or_lifts_at_once_does_not_click", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local wire = wire_log(app)
+    local c = app:canvas_geom()
+    local P = Geom:new{ x = c.x + 70, y = c.y + math.floor(c.h / 2) }
+    local t0 = time.now()
+    -- it moves: cancelled
+    two_finger("two_finger_hold", P, t0)
+    two_finger("two_finger_hold_pan", Geom:new{ x = P.x + 30, y = P.y }, t0 + time.ms(300), { relative = { x = 30, y = 0 } })
+    two_finger("two_finger_hold_pan_release", Geom:new{ x = P.x + 30, y = P.y }, t0 + time.ms(700))
+    assert_true(wire() == "" and not app.vk_wanted, "a hold_pan cancels it")
+    -- lifted before HOLD_CONFIRM: the device's false hold, i.e. a two-finger tap (fit)
+    app:zoom_to(2); remote:pan_by(-50, -40)
+    two_finger("two_finger_hold", P, t0 + time.ms(1000))
+    two_finger("two_finger_hold_release", P, t0 + time.ms(1015))
+    assert_true(wire() == "" and not app.vk_wanted, "a fast lift: no click, no keyboard")
+    assert_true(app.settings.zoom_mode == "fit", "but a fit, like a two-finger tap")
+    -- on the toolbar: nothing
+    local on_bar = toolbar_button_centre(app, "zoom")
+    two_finger("two_finger_hold", on_bar, t0 + time.ms(2000))
+    two_finger("two_finger_hold_release", on_bar, t0 + time.ms(2600))
+    assert_true(wire() == "" and not app.vk_wanted, "on the toolbar: nothing")
+    -- under a popup: nothing
+    app:open_menu()
+    two_finger("two_finger_hold", P, t0 + time.ms(3000))
+    two_finger("two_finger_hold_release", P, t0 + time.ms(3600))
+    app:close_menu()
+    UIManager:_checkTasks()
+    assert_true(wire() == "" and not app.vk_wanted, "under the menu: nothing")
+    close_viewer(app, remote)
+end)
+
+check("a_second_finger_joining_a_long_press_only_ends_it", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app:canvas_geom()
+        local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+        local t0 = time.now()
+        dispatch_gesture{ ges = "hold", pos = P, time = t0 }
+        confirm_hold(app)
+        assert_true(wire() == "p4", mode .. ": right press")
+        two_finger("two_finger_hold", P, t0 + time.ms(800))
+        assert_true(wire() == "p0", mode .. ": let go")
+        two_finger("two_finger_hold_release", P, t0 + time.ms(1600))
+        assert_true(wire() == "" and not app.vk_wanted, mode .. ": its lift clicks nothing, no keyboard")
+        close_viewer(app, remote)
+    end
 end)
 
 if failures > 0 then

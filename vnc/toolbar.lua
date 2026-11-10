@@ -25,7 +25,9 @@ the pinned ones that the full bar shows, instead of the round button alone.
 A long press on any button (and on the round one) shows a one-line tooltip and does nothing else.
 A one-finger drag that starts on the bar (or the round button) moves it, clamped to the screen;
 where it sits is stored as fractions of the free space (`toolbar_pos`), so it keeps its place over
-rotations and resizes.
+rotations and resizes. One that starts on the Keyboard button instead drags a keyboard icon off it:
+dropped on the remote it clicks there and brings the keyboard up (`ViewerApp:drop_keyboard_at`),
+dropped anywhere else it does nothing.
 
 @module vnc.toolbar
 ]]
@@ -41,6 +43,7 @@ local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
+local IconWidget = require("ui/widget/iconwidget")
 local Icons = require("vnc/icons")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Size = require("ui/size")
@@ -64,7 +67,7 @@ Toolbar.TIPS = {
     display = _("Display settings"),
     zoom = _("Zoom: fit, 1:1, your own view"),
     mode = _("Pointer mode: touch or mouse"),
-    keyboard = _("On-screen keyboard"),
+    keyboard = _("Keyboard (drag onto a field to click it and type)"),
     rotate = _("Rotate the screen"),
     scroll_lock = _("Scroll lock: two-finger drag scrolls the remote"),
     scroll_up = _("Scroll up"),
@@ -285,7 +288,12 @@ function Toolbar:relayout(at)
             expand = { icon_file = Icons.path("toolbar"), callback = function() app:set_toolbar_collapsed(false) end }
         end
     end
+    -- the buttons left to right and where the first one starts inside the frame (`button_rect`)
+    self.ids = ids
+    self.cell = cell
     if self.collapsed and not expand then
+        self.ids = { "toggle" }
+        self.inset = border
         local button = make_button({ icon_file = Icons.path("toolbar"),
             callback = function() app:set_toolbar_collapsed(false) end }, Toolbar.TIPS.expand)
         self.button_by_id.toggle = button
@@ -315,10 +323,12 @@ function Toolbar:relayout(at)
         -- the buttons are square and paint their own white: inset them just enough that their
         -- corners stay inside the rounded border's inner arc instead of covering it
         local radius = Size.radius.window
+        local inset = math.max(0, math.ceil((radius - border) * (1 - 1 / math.sqrt(2))))
+        self.inset = border + inset
         self[1] = FrameContainer:new{
             bordersize = border,
             radius = radius,
-            padding = math.max(0, math.ceil((radius - border) * (1 - 1 / math.sqrt(2)))),
+            padding = inset,
             margin = 0,
             background = Blitbuffer.COLOR_WHITE,
             group,
@@ -351,6 +361,54 @@ function Toolbar:move_to(x, y)
     self:_store_pos()
 end
 
+--- Where button `id` is on the screen (its cell), or nil when the bar does not show it. Computed from
+--- the layout, so it is known before the bar is painted.
+function Toolbar:button_rect(id)
+    local d = self.dimen
+    if not (d and self.ids) then return nil end
+    for i, b in ipairs(self.ids) do
+        if b == id then
+            return Geom:new{ x = d.x + self.inset + (i - 1) * self.cell, y = d.y + self.inset, w = self.cell, h = self.cell }
+        end
+    end
+    return nil
+end
+
+--- Whether screen point `pos` is on the Keyboard button.
+function Toolbar:_on_keyboard_button(pos)
+    local r = pos and self:button_rect("keyboard")
+    return r ~= nil and pos.x >= r.x and pos.x < r.x + r.w and pos.y >= r.y and pos.y < r.y + r.h
+end
+
+--[[--
+Puts the keyboard icon a drag off the Keyboard button carries centred on screen point `pos`, or
+takes it away (`pos` nil). Repaints where it was and where it is with `mode` (`"fast"` while it
+follows the finger, `"ui"` once it is gone). The icon is `drag_icon` (`{ dimen = }`) while it is up.
+]]
+function Toolbar:_place_icon(pos, mode)
+    local old = self.drag_icon and self.drag_icon.dimen
+    local new
+    if pos then
+        if not self._icon_widget then
+            local icon_size = sizes()
+            self._icon_widget = FrameContainer:new{
+                bordersize = Size.border.window,
+                radius = Size.radius.window,
+                padding = Size.padding.small,
+                margin = 0,
+                background = Blitbuffer.COLOR_WHITE,
+                IconWidget:new{ file = Icons.path("keyboard"), width = icon_size, height = icon_size },
+            }
+        end
+        local size = self._icon_widget:getSize()
+        new = Geom:new{ x = pos.x - math.floor(size.w / 2), y = pos.y - math.floor(size.h / 2), w = size.w, h = size.h }
+        self.drag_icon = { dimen = new }
+    else
+        self.drag_icon = nil
+    end
+    if old or new then self.app:_toolbar_moved(old or new, new or old, mode) end
+end
+
 --- Gestures that move the bar: a one-finger drag that starts on it, ending in a pan_release, or in
 --- a swipe when the finger lifts while still moving (a swipe's `pos` is where it started).
 Toolbar.DRAG_GESTURES = { pan = true, pan_release = true, swipe = true, multiswipe = true }
@@ -369,8 +427,15 @@ function Toolbar:_on_drag(ges)
         local drag = self.drag
         -- a pan from a new start point is a new drag (a lost end must not carry over)
         if not drag or drag.sx ~= start.x or drag.sy ~= start.y then
-            drag = { sx = start.x, sy = start.y, x = old.x, y = old.y, from = old }
+            if drag and drag.icon then self:_place_icon(nil, "ui") end
+            drag = { sx = start.x, sy = start.y, x = old.x, y = old.y, from = old,
+                     icon = self:_on_keyboard_button(start) or nil }
             self.drag = drag
+        end
+        if drag.icon then
+            -- the keyboard icon follows the finger; the bar stays, nothing is sent
+            self:_place_icon(ges.pos, "fast")
+            return true
         end
         local rel = ges.relative or { x = 0, y = 0 }
         self:move_to(drag.x + (rel.x or 0), drag.y + (rel.y or 0))
@@ -379,7 +444,23 @@ function Toolbar:_on_drag(ges)
     end
     local drag = self.drag
     self.drag = nil
-    if kind == "swipe" or kind == "multiswipe" then
+    local swipe = kind == "swipe" or kind == "multiswipe"
+    if swipe and not (drag and drag.sx == ges.pos.x and drag.sy == ges.pos.y) then
+        -- a flick with no pan of its own: it counts by where it started
+        if drag and drag.icon then
+            self:_place_icon(nil, "ui")
+            drag = nil
+        end
+        if self:_on_keyboard_button(ges.pos) then drag = { icon = true } end
+    end
+    if drag and drag.icon then
+        -- the keyboard icon is put down: where the finger lifted (a swipe's end)
+        local at = swipe and (ges.end_pos or ges.pos) or ges.pos
+        self:_place_icon(nil, "ui")
+        self.app:drop_keyboard_at(at)
+        return true
+    end
+    if swipe then
         local s, e = ges.pos, ges.end_pos or ges.pos
         local x0, y0 = old.x, old.y
         if drag and drag.sx == s.x and drag.sy == s.y then x0, y0 = drag.x, drag.y end
@@ -403,6 +484,8 @@ end
 --- InputContainer's own paintTo would move it to the viewer's origin.
 function Toolbar:paintTo(bb, x, y)
     self[1]:paintTo(bb, x + self.dimen.x, y + self.dimen.y)
+    local icon = self.drag_icon
+    if icon then self._icon_widget:paintTo(bb, x + icon.dimen.x, y + icon.dimen.y) end
 end
 
 return Toolbar

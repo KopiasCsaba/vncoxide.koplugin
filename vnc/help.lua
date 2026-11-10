@@ -30,6 +30,7 @@ Help.ROWS = {
         { _("Tap"), _("Left click at the finger") },
         { _("Long press"), _("Right click at the finger") },
         { _("Drag"), _("Drag with the left button") },
+        { _("Two-finger long press"), _("Left click between the fingers, then the keyboard") },
     },
     mouse = rows_for{
         { _("Tap"), _("Left click at the pointer") },
@@ -37,6 +38,7 @@ Help.ROWS = {
         { _("Drag"), _("Move the pointer") },
         { _("Tap, then drag"), _("Drag with the left button") },
         { _("Tap, then long press"), _("Hold the left button: move to drag, lift to let go") },
+        { _("Two-finger long press"), _("Left click at the pointer, then the keyboard") },
     },
 }
 
@@ -65,7 +67,7 @@ function Help.text(mode)
             "  " .. _("Display: the display panel (below)."),
             "  " .. _("Zoom: cycle fit, 1:1 (one remote pixel per screen pixel) and your own view (the last one you made by pinching or panning); without one, just fit and 1:1. The icon shows the current state."),
             "  " .. _("Mode: switch between Touch and Mouse mode."),
-            "  " .. _("Keyboard: show or hide the on-screen keyboard with the key strip; closes the Send keys panel if it is open. The viewer opens with the keyboard as you last left it."),
+            "  " .. _("Keyboard: show or hide the on-screen keyboard with the key strip; closes the Send keys panel if it is open. The viewer opens with the keyboard as you last left it. Drag the button out onto the picture to click a field and type: where you let go it left-clicks (Mouse mode: the pointer moves there first) and shows the keyboard; let go anywhere else and nothing happens."),
             "  " .. _("Rotate: turn the screen a quarter turn clockwise; the viewer remembers the orientation."),
             "  " .. _("Scroll lock: while on, a two-finger drag scrolls and does not move the picture (see below)."),
             "  " .. _("Scroll up / down: mouse-wheel notches (hidden by default)."),

@@ -258,6 +258,28 @@ Long press on a button: a one-line tooltip (Toolbar.TIPS) and nothing else. KORe
 toast on any input that passes it, and the hold's own hold_release would close it the moment the
 finger lifts, so the tooltip's toast lets hold_release and hold_pan through without closing.
 
+Click and type, two ways (ViewerApp:_click_and_type: flush a deferred Mouse click, end a stale
+action, then the armed modifiers + move/press/release, then set_keyboard_visible(true) unless the
+keyboard is already wished or the Send keys panel is up; it is the button's own saved wish,
+keyboard_shown):
+- A one-finger drag (pan... pan_release, or a swipe) that starts on the Keyboard button
+  (Toolbar:button_rect, computed from the layout, so it works before a paint; the collapsed short
+  bar too) drags a keyboard icon (Toolbar.drag_icon, painted by Toolbar:paintTo after the bar;
+  "fast" over old+new icon rects per move, "ui" over the last one on release) instead of the bar.
+  Nothing is sent meanwhile. The drop (pan_release pos, or a swipe's end_pos) goes to
+  ViewerApp:drop_keyboard_at: on the canvas and not on the bar, nor below
+  dimen.h - _bottom_cover_height() (keyboard + strip, or the panel), with no popup above
+  (_input_target) -> click there (Mouse mode: the pointer moves there, _mouse_x/_mouse_y follow);
+  otherwise nothing. A flick without pans shows no icon and drops at its end. The keyboard keys do
+  not take the pan_release/swipe of such a drop (checked), so the icon never stays behind.
+- A two-finger long press: onTwoFingerHold remembers it (_two_hold, pos = GestureDetector's
+  midpoint of the two contacts, time) when no one-finger action of ours is under way, under no
+  popup and on the canvas spot as above; two_finger_hold_pan voids it (its pan_release then does
+  nothing); two_finger_hold_release clicks (Touch at the midpoint, Mouse at the pointer) and shows
+  the keyboard - unless it comes less than HOLD_CONFIRM after the hold: InkView's late burst of a
+  two-finger tap, so it does onTwoFingerTap (fit) instead. A two_finger_hold that ends a long press
+  or drag of ours (_two_finger_ends_ours) leaves _two_hold void, so that gesture's lift sends nothing.
+
 Which buttons the bar shows is `toolbar_buttons` ({ id = bool }, Settings.TOOLBAR_BUTTONS has the
 ids and defaults; Close and More are not in it and always shown). It replaced three switches:
 Settings:normalise turns `toolbar_scroll_buttons` (both scroll ids), `toolbar_brightness_button`
@@ -347,7 +369,7 @@ the 250 ms re-check (_watch_keyboard_state). That is also why a toast (a Bell no
 explicitly flagged `toast = true`: it is allowed to share the screen with the keyboard.
 
 The keyboard has no gestures of its own any more: the toolbar's Keyboard button shows and hides it
-together with the key strip (tap), and opens the full Send keys panel (long press). KOReader's keyboard consumes swipes itself
+together with the key strip (tap); dragged out onto the remote it clicks there and shows it (above). KOReader's keyboard consumes swipes itself
 - every VirtualKey carries a SwipeKey ges_event over its own rectangle whose handler always returns
 true and runs the key's swipe_callback (a south swipe on `q` inserts its variant) - and
 WidgetContainer:handleEvent propagates to the children first, so a "swipe down on the keyboard to
@@ -674,7 +696,7 @@ it, the fitted zoom modes and the keyboard-aware placement behave, the keyboard 
 the toolbar (its buttons, their tooltips, collapsing, dragging and clamping, the top-zone swipe
 toggling it, taps on it never reaching the remote, the Toolbar buttons… menu), both
 pointer modes' gestures (the deferred Mouse click, double tap and move, two-finger tap, no scroll or
-rotate gesture), the Help page and the mode tooltip, scroll lock (wheel notches per drag), the Display panel and its quality presets, the More menu, the key
+rotate gesture, click and type by the Keyboard button's drag and by a two-finger long press), the Help page and the mode tooltip, scroll lock (wheel notches per drag), the Display panel and its quality presets, the More menu, the key
 strip, the reconnect box and loop (backoff, Retry now, Close, no background retry, Wi-Fi kept on while
 retrying), platform text input is enabled exactly while the viewer is shown, typed
 text and physical keys reach the remote (through KOReader's own SDL event handler), the Send keys

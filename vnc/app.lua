@@ -1101,8 +1101,9 @@ end
 A second finger joined a long press of ours: GestureDetector ends it with a two_finger_hold (when
 the second finger's own hold fires, voiding ours), a two_finger_hold_pan, or a
 two_finger_hold(_pan)_release - never the hold_release it waits for. Let go now, at the pointer.
+True when there was one (pending or under way) to end.
 ]]
-function ViewerApp:onTwoFingerHold()
+function ViewerApp:_two_finger_ends_ours()
     if self._hold_pending or self._false_hold then
         self:_cancel_hold("two-finger gesture")
         if not (self._hold_active or self._drag_active) then return true end
@@ -1111,9 +1112,124 @@ function ViewerApp:onTwoFingerHold()
     self:_end_pointer_action("two-finger gesture")
     return true
 end
-ViewerApp.onTwoFingerHoldPan = ViewerApp.onTwoFingerHold
-ViewerApp.onTwoFingerHoldRelease = ViewerApp.onTwoFingerHold
-ViewerApp.onTwoFingerHoldPanRelease = ViewerApp.onTwoFingerHold
+
+--[[--
+Two fingers held down: when no one-finger action of ours is under way, the start of a two-finger
+long press - remembered (`_two_hold`), it acts on its lift (`onTwoFingerHoldRelease`). Only on the
+remote (`_on_canvas_spot`: not on the toolbar or the keyboard) and with nothing but our overlays
+above us. A two_finger_hold that ends a long press of ours is that and nothing more: its lift is
+ignored.
+]]
+function ViewerApp:onTwoFingerHold(_, ges)
+    if self:_two_finger_ends_ours() then
+        self._two_hold = { void = true }
+        return true
+    end
+    self._two_hold = nil
+    if self:_one_finger_busy() or not (ges and ges.pos) then return nil end
+    if not (self:_input_target() and self:_on_canvas_spot(ges.pos)) then return nil end
+    self._two_hold = { pos = ges.pos:copy(), time = type(ges.time) == "number" and ges.time or time.now() }
+    logger.dbg("vnc-hold:", "two-finger hold at", ges.pos.x, ges.pos.y)
+    return true
+end
+
+--- The fingers of a two-finger long press move: it does nothing (nor does its lift).
+function ViewerApp:onTwoFingerHoldPan()
+    local ended = self:_two_finger_ends_ours()
+    if self._two_hold then
+        if not self._two_hold.void then logger.dbg("vnc-hold:", "two-finger hold moved: cancelled") end
+        self._two_hold = { void = true }
+        return true
+    end
+    return ended
+end
+
+--[[--
+The lift of a two-finger long press: a left click (Touch mode where the fingers were, their
+midpoint; Mouse mode at the pointer), then the keyboard (`_click_and_type`). Lifted sooner than
+HOLD_CONFIRM after the hold, it is InkView's late burst of a two-finger tap (see HOLD_CONFIRM),
+and does what that does (`onTwoFingerTap`).
+]]
+function ViewerApp:onTwoFingerHoldRelease(_, ges)
+    local ended = self:_two_finger_ends_ours()
+    local held = self._two_hold
+    self._two_hold = nil
+    if not held then return ended end
+    if held.void or ended or not self:_input_target() then return true end
+    local now = ges and type(ges.time) == "number" and ges.time or time.now()
+    if time.to_s(now - held.time) < self.HOLD_CONFIRM then
+        logger.dbg("vnc-hold:", "two-finger hold lifted before", self.HOLD_CONFIRM, "s: a two-finger tap")
+        return self:onTwoFingerTap(nil, ges)
+    end
+    self:_click_and_type(self:get_pointer_mode() ~= "mouse" and held.pos or nil)
+    return true
+end
+
+--- A two-finger long press that moved ends: nothing (it was cancelled when it moved).
+function ViewerApp:onTwoFingerHoldPanRelease()
+    local ended = self:_two_finger_ends_ours()
+    if self._two_hold then
+        self._two_hold = nil
+        return true
+    end
+    return ended
+end
+
+--- Whether screen point `pos` is on the remote's canvas and nothing of ours covers it there: not
+--- the toolbar, not the keyboard with its key strip, not the "Send keys" panel.
+function ViewerApp:_on_canvas_spot(pos)
+    local c = self:canvas_geom()
+    if pos.x < c.x or pos.y < c.y or pos.x >= c.x + c.w or pos.y >= c.y + c.h then return false end
+    local bar = self.toolbar_visible and self.toolbar and self.toolbar.dimen
+    if bar and pos.x >= bar.x and pos.x < bar.x + bar.w and pos.y >= bar.y and pos.y < bar.y + bar.h then
+        return false
+    end
+    local size = self.dimen or Screen:getSize()
+    return pos.y < size.h - self:_bottom_cover_height()
+end
+
+--[[--
+Click and type: a left click on the remote - at screen point `pos` (Mouse mode: the pointer moves
+there first), or with no `pos` at the Mouse-mode pointer - then the on-screen keyboard, saved like
+the keyboard button saves it (`keyboard_shown`). A click a Mouse-mode tap left pending goes first,
+the modifiers armed on the key strip go with this one, as with a tap. With the keyboard already up,
+or the "Send keys" panel in its place, only the click.
+]]
+function ViewerApp:_click_and_type(pos)
+    self:_flush_deferred_click()
+    self:_end_stale_pointer_action("click and type")
+    self._last_touch_tap = nil
+    local rx, ry
+    if pos then
+        rx, ry = self:_to_remote(pos.x, pos.y)
+    else
+        rx, ry = self:_mouse_pointer_px()
+    end
+    self:_press_armed()
+    self:send_pointer(rx, ry, 0)
+    self:send_pointer(rx, ry, 1, "click and type")
+    self:send_pointer(rx, ry, 0, "click and type")
+    self:_release_action_mods()
+    -- (Mouse mode: the pointer is where it clicked now)
+    self._mouse_x, self._mouse_y = rx, ry
+    if not self.key_panel and not self:is_keyboard_wanted() then
+        self:set_keyboard_visible(true)
+    end
+end
+
+--[[--
+The keyboard icon dragged off the toolbar's Keyboard button is put down at screen point `pos`: on
+the remote (`_on_canvas_spot`, nothing but our overlays above us) it clicks there and brings the
+keyboard up (`_click_and_type`); anywhere else it does nothing. True when it clicked.
+]]
+function ViewerApp:drop_keyboard_at(pos)
+    if not (pos and self:_input_target() and self:_on_canvas_spot(pos)) then
+        logger.dbg("vnc-pointer:", "keyboard icon dropped off the remote: nothing")
+        return false
+    end
+    self:_click_and_type(pos)
+    return true
+end
 
 --- Lets go of the right click a long press of ours started - also when a popup came up on top in
 --- the meantime or the finger lifted over the key panel: the button and the modifiers it took
