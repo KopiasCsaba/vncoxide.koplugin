@@ -141,7 +141,9 @@ function Protocol:_handshake()
         error(string.format("bad ProtocolVersion %q from %s:%d", version, self.host, self.port), 0)
     end
     major, minor = tonumber(major), tonumber(minor)
-    if major == 3 and minor >= 8 then
+    -- (a later major, e.g. RealVNC's 4.1 / 5.0, speaks 3.8 too: the client may answer any version
+    -- up to the server's, RFC 6143 7.1.1)
+    if major > 3 or (major == 3 and minor >= 8) then
         self.version = 38
         self.io.write("RFB 003.008\n")
     elseif major == 3 and minor == 7 then

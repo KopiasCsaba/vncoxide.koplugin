@@ -2194,6 +2194,30 @@ local function main()
             if got ~= "hello" then return nil, "cut text not delivered" end
             return waiting == 1, "should be waiting for the next message"
         end)
+        -- RealVNC announces 4.1 or 5.0: those speak 3.8, which is what the client answers (it
+        -- used to fall back to 3.3, and with it to the 3.3 security handshake).
+        check("protocol_answers_a_later_major_version_with_3_8", function()
+            for _i, announced in ipairs{ "RFB 004.001\n", "RFB 005.000\n" } do
+                local sent, size = {}, nil
+                local proto = Protocol.new{ io = { write = function(d) sent[#sent + 1] = d end }, host = "test",
+                    port = 0, callbacks = { on_connected = function(_, w, h) size = { w, h } end },
+                    get_plane = function() return nil end }
+                local script = announced .. server_init(8, 6, 1, "x"):sub(13)
+                local pos, kind, arg = 1, proto:step(nil)
+                while kind == "need" and pos + arg - 1 <= #script do
+                    local data = script:sub(pos, pos + arg - 1)
+                    pos = pos + arg
+                    kind, arg = proto:step(data)
+                end
+                if sent[1] ~= "RFB 003.008\n" then
+                    return nil, announced:sub(1, 11) .. " answered with " .. tostring(sent[1])
+                end
+                if not (size and size[1] == 8 and size[2] == 6) then
+                    return nil, announced:sub(1, 11) .. ": no 3.8 handshake (" .. tostring(kind) .. " " .. tostring(arg) .. ")"
+                end
+            end
+            return true
+        end)
     end
 
     -- NetworkMgr calls back once Wi-Fi is up - possibly long after the attempt it was armed for
