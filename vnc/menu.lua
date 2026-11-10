@@ -231,6 +231,16 @@ function MenuBuilder.open(app)
         end,
     }, function(item) item.mandatory = settings.keep_screen_on and "✓" or "-" end)
 
+    -- ---- turn the screen to the remote's orientation after connecting (nothing turns right now)
+    item_table[#item_table + 1] = stays_open({
+        text = _("Match orientation to the remote screen"),
+        help_text = _("After connecting, and when the remote screen changes between landscape and portrait, turn this screen the same way: to the landscape (or portrait) side you last picked by hand. A rotation you pick yourself is kept until the remote's orientation changes."),
+        callback = function()
+            settings.match_orientation = not settings.match_orientation
+            plugin.settings:flush()
+        end,
+    }, function(item) item.mandatory = settings.match_orientation and "✓" or "-" end)
+
     -- ---- the toolbar's scroll buttons: the bar is rebuilt and the area it covered repainted
     item_table[#item_table + 1] = stays_open({
         text = _("Show scroll buttons on toolbar"),

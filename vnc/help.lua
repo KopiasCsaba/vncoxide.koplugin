@@ -96,6 +96,7 @@ function Help.text(mode)
             "  " .. _("Page buttons send: Page Up/Down keys or mouse-wheel notches."),
             "  " .. _("Keyboard always visible: keep the keyboard up."),
             "  " .. _("Keep screen on: stop the device from going to sleep or dimming the light while the viewer is open."),
+            "  " .. _("Match orientation to the remote screen: after connecting (or when the remote switches between landscape and portrait), turn this screen the same way, to the side you last picked by hand. A rotation you pick yourself stays until the remote's orientation changes."),
             "  " .. _("Show scroll buttons on toolbar: the scroll up / down buttons."),
             "  " .. _("Enable brightness button, Enable contrast button: those toolbar buttons."),
             "  " .. _("Help: this page."),

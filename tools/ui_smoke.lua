@@ -3730,7 +3730,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text:gsub("^Connected to.*", "status") end
     assert_true(table.concat(order, "|") == "status|Connections…|Send text…|Refresh|Ctrl+Alt+Del|Lock screen|"
-        .. "Page buttons send|Keyboard always visible|Keep screen on|Show scroll buttons on toolbar|Enable brightness button|Enable contrast button|Help|Leave (keep connection)",
+        .. "Page buttons send|Keyboard always visible|Keep screen on|Match orientation to the remote screen|Show scroll buttons on toolbar|Enable brightness button|Enable contrast button|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app:send_text("a\nb\1") == 1)
@@ -6940,6 +6940,33 @@ check("orientation_leaving_restores_the_mode_from_before", function()
     plugin.app = saved_app
     assert_true(Screen:getRotationMode() == 0, "back to upright: " .. Screen:getRotationMode())
     orient_done(app, remote, log)
+end)
+
+check("orientation_match_menu_switch_and_help", function()
+    local MATCH = "Match orientation to the remote screen"
+    local Screen_mode = Screen:getRotationMode()
+    local app, remote = new_app()
+    app.settings.match_orientation = true
+    local flushed = 0
+    app.plugin.settings.flush = function() flushed = flushed + 1 end
+    local menu = app:open_menu()
+    local keep, match
+    for i, item in ipairs(menu.item_table) do
+        if item.text == "Keep screen on" then keep = i end
+        if item.text == MATCH then match = i end
+    end
+    assert_true(match and keep and match == keep + 1, "right after Keep screen on: " .. tostring(match))
+    assert_true(menu.item_table[match].mandatory == "\u{2713}", "checked while on")
+    menu:onMenuSelect(menu.item_table[match])
+    UIManager:_checkTasks()
+    app:close_menu()
+    assert_true(app.settings.match_orientation == false and flushed == 1, "toggled off and persisted")
+    assert_true(Screen:getRotationMode() == Screen_mode, "toggling turns nothing")
+    menu = app:open_menu()
+    assert_true(find_item(menu.item_table, MATCH).mandatory == "-", "unchecked while off")
+    app:close_menu()
+    assert_true(require("vnc/help").text("touch"):find(MATCH, 1, true), "the help names it")
+    close_viewer(app, remote)
 end)
 
 if failures > 0 then

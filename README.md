@@ -84,7 +84,7 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
    closes the **Send keys** panel if it is open); a long press opens the full **Send keys** panel.
 6. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
    Display panel: a pinch never turns the screen.) The viewer remembers the orientation you last
-   used and opens in it.
+   used and opens in it, unless **Match orientation to the remote screen** (see below) turns it.
 7. **Scroll lock** is a toggle, drawn inverted while on; it starts off each time the viewer opens.
    While it is on, a two-finger drag scrolls the remote instead of moving the picture (see below).
 8. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
@@ -148,6 +148,18 @@ the live state) except a rotation, which closes it. It tells:
 - **Orientation**: four icon buttons, the same ones KOReader uses for screen rotation (90° counter-
   clockwise, upright, 90° clockwise, 180°, relative to the screen as it is now); the current one is
   highlighted. The viewer remembers the last orientation used and opens in it.
+
+**Matching the remote's orientation.** With **Match orientation to the remote screen** on (⋯ menu,
+default on), the screen turns to the remote desktop's orientation once its size is known: a
+landscape remote (wider than tall) on a portrait screen turns it to landscape, a portrait remote on
+a landscape screen to portrait; a square remote, or one already of the screen's orientation, turns
+nothing. The side it turns to is the landscape (or portrait) side you last picked with Rotate or
+the Display panel, else KOReader's default landscape (90° clockwise) or upright. It happens after
+connecting (in one rotation together with the remembered orientation), and after a reconnect or a
+remote desktop resize only when the remote's orientation changed since it was last matched for that
+connection: a rotation you picked by hand meanwhile survives a reconnect to the same remote. It does
+not change the remembered orientation, and leaving the viewer still restores the orientation from
+before it opened.
 - **Picture quality (reconnects)**: **Best**, **Balanced**, **Fast**. The preset is a set of the
   connection's picture settings:
 
@@ -170,6 +182,7 @@ and send it to the remote as key presses; characters with no key are skipped and
 **Refresh** (asks for a full picture and flashes the screen), **Ctrl+Alt+Del**, **Lock screen**
 (Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel), **Keyboard always visible**,
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
+**Match orientation to the remote screen** (default on, see above),
 **Show scroll buttons on toolbar**, **Enable brightness button**, **Enable contrast button**, **Help** and **Leave (keep connection)**. Switches keep the menu open;
 anything else closes it.
 
@@ -322,6 +335,9 @@ return {
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)
+        ["match_orientation"] = true,      -- turn the screen to the remote's orientation after connecting
+        ["landscape_orientation"] = 1,     -- landscape side last picked by hand (1 = 90° clockwise)
+        ["portrait_orientation"] = 0,      -- portrait side last picked by hand (0 = upright)
         ["keyboard_always_visible"] = false,
         ["keep_screen_on"] = true,         -- no auto-suspend, standby or light dimming while the viewer is open
         ["zoom_mode"] = "fit",             -- "fit", "fit_with_keyboard" or 0.25 .. 4
