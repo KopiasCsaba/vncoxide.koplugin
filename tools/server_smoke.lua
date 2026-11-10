@@ -4397,5 +4397,24 @@ check("a_burst_of_small_messages_does_not_overflow_the_stack", function()
     end)
 end)
 
+check("a_failed_authentication_is_told_why_before_the_close", function()
+    -- The SecurityResult and its reason were queued and the socket closed without flushing them.
+    with_hostile_server("secret", function(server, port)
+        local cli = hostile_connect(port)
+        recv_exact(cli, 12, server)
+        cli:send("RFB 003.008\n")
+        assert_true(recv_exact(cli, 2, server) == "\1\2", "VNC Authentication must be offered")
+        cli:send("\2")
+        recv_exact(cli, 16, server)
+        cli:send(string.rep("\0", 16))
+        local reason = "Authentication failure"
+        local want = "\0\0\0\1" .. string.char(0, 0, 0, #reason) .. reason
+        local got = recv_exact(cli, #want, server)
+        assert_true(got == want, string.format("expected SecurityResult 1 + reason, got %q", got))
+        assert_true(server:client_count() == 0, "the client must be dropped")
+        cli:close()
+    end)
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -76,6 +76,8 @@ Server.STALL_TIMEOUT = 10
 --- client asked for, or a non-incremental request, ends it (c.f., Server:_answer_held).
 Server.HOLD_DEADLINE = 1
 Server.MAX_CLIENTS = 4
+--- Most bytes still queued for a client that are sent when it is dropped (c.f., Server:_drop_client).
+Server.FINAL_FLUSH_LIMIT = 4096
 Server.DIRTY_LIMIT = 64              -- dirty rectangles kept before falling back to a full frame
 Server.READ_CHUNK = 65536
 --- Bytes read from one client per poll tick, at most: a client that flooded the socket must not
@@ -668,6 +670,13 @@ function Server:_drop_client(client, why)
     -- dropping a client must not fail half-way because a widget's handler did.
     local ok, err = pcall(self._release_input, self, client.server and client.server.client)
     if not ok then logger.warn("vnc: releasing a dropped client's input failed:", tostring(err)) end
+    -- What the protocol queued last - a failed authentication's SecurityResult and its reason - is
+    -- the client's only explanation, so it gets one bounded, best-effort send before the close.
+    if client.sock and client.tx_len > 0 and client.tx_len <= Server.FINAL_FLUSH_LIMIT then
+        client.sock:settimeout(Server.IO_TIMEOUT)
+        pcall(client.sock.send, client.sock, table.concat(client.tx))
+    end
+    client.tx, client.tx_len = {}, 0
     if client.sock then
         client.sock:close()
         client.sock = nil
