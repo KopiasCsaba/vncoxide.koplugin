@@ -1014,6 +1014,28 @@ local function main()
         return true
     end)
 
+    -- Inflated ZRLE data that ends before its tiles do fails the rect with a message about the
+    -- data (it used to read "encodings.lua:444: transport returned 21 bytes, wanted 32").
+    check("zrle_short_inflated_data_reads_as_a_data_error", function()
+        local ZStream = require("vnc/zstream")
+        local Util = require("vnc/util")
+        local d = ZStream.new_deflate()
+        local z = assert(d:deflate("\0\1\2\3", 4)) -- a raw tile, 16 pixels short
+        d:free()
+        local plane = BB.new(4, 4, BB.TYPE_BBRGB24)
+        local streams = Encodings.new_streams()
+        local ok, err = pcall(Encodings.decode, { x = 0, y = 0, w = 4, h = 4, encoding = Encodings.ZRLE,
+            r = Util.mem_reader(Util.writer():u32(#z):raw(z):tostring()), plane = plane,
+            vp = plane:viewport(0, 0, 4, 4), streams = streams, fmt = PxFmt.for_depth(24) })
+        Encodings.free_streams(streams)
+        plane:free()
+        if ok then return nil, "short data decoded" end
+        err = tostring(err)
+        if err:find("%.lua:%d") or err:find("transport", 1, true) then return nil, "unclear error: " .. err end
+        if not err:find("data ends early", 1, true) then return nil, "unexpected error: " .. err end
+        return true
+    end)
+
     -- ZRLE and Tight (zlib and JPEG) payloads are consumed with reader:ptr, never as a string.
     check("zrle_and_tight_payloads_never_become_strings", function()
         local ZStream = require("vnc/zstream")
