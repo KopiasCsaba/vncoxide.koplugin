@@ -254,6 +254,8 @@ function Toolbar:relayout(at)
         local button = make_button({ icon_file = Icons.path("toolbar"),
             callback = function() app:set_toolbar_collapsed(false) end }, Toolbar.TIPS.expand)
         self.button_by_id.toggle = button
+        -- the square button would paint its white corners over the round border: only its icon is drawn
+        button.frame.background = nil
         self[1] = FrameContainer:new{
             bordersize = border,
             radius = math.floor((cell + 2 * border) / 2),
@@ -272,10 +274,13 @@ function Toolbar:relayout(at)
             self.button_by_id[id] = button
             group[#group + 1] = CenterContainer:new{ dimen = Geom:new{ w = cell, h = cell }, button }
         end
+        -- the buttons are square and paint their own white: inset them just enough that their
+        -- corners stay inside the rounded border's inner arc instead of covering it
+        local radius = Size.radius.window
         self[1] = FrameContainer:new{
             bordersize = border,
-            radius = Size.radius.window,
-            padding = 0,
+            radius = radius,
+            padding = math.max(0, math.ceil((radius - border) * (1 - 1 / math.sqrt(2)))),
             margin = 0,
             background = Blitbuffer.COLOR_WHITE,
             group,

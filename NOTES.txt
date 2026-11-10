@@ -297,7 +297,7 @@ the remote, remote updates keep repainting under it, and the canvas places a vie
 it, exactly as for the keyboard (ViewerApp:_bottom_cover_height; the keyboard hides while it is
 open). The panel swallows gestures on its own rectangle that none of its buttons took, so the gaps
 between buttons never click the hidden remote; a drag belongs to where it started. Its height never
-changes with the tab (every grid is four key rows tall), so switching tabs never moves the view.
+changes with the tab (every grid is three key rows tall), so switching tabs never moves the view.
 Its top row is the key strip's row (KeyPanel:_top_row), only the two buttons at the left differ
 (panel: close, keyboard; strip: close, Send keys); "Modifiers only" on the Keys tab sends the armed
 modifiers alone.

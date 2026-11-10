@@ -209,10 +209,10 @@ stay armed there); then **Ctrl**, **Shift**, **Alt**, **Super**, Esc, Tab, the f
 Tap a modifier to arm it (it turns black), tap again to cancel. Armed modifiers go with exactly one
 action and are then let go: the next key from the panel, or the next tap, long press or drag on the
 screen (Ctrl+click, Shift+click or Shift+drag to select, Alt+drag). The tabs hold the other special
-keys (**Keys**: Enter, Backspace, Insert, Home, End, Page Up, Page Down, Space, Menu, Print Screen,
-Pause and **Modifiers only**, which sends just the armed modifiers: Super on its own opens most
-desktops' launcher), F1-F12, letters and digits, and the symbol keys of a US keyboard (use Shift for
-the shifted ones). The bottom row repeats your last four combos exactly
+keys (**Keys**: Home above End, Page Up above Page Down, Insert above Space, Backspace above Enter,
+then Print Screen, Pause, Menu and **Modifiers only**, which sends just the armed modifiers: Super on
+its own opens most desktops' launcher) and F1-F12; letters and symbols are on the on-screen keyboard
+(armed modifiers go with its keys too). The bottom row repeats your last four combos exactly
 (armed modifiers are not added to them, and are cleared), and **Release all** disarms every modifier
 and lets go of whatever a drag or long press still holds on the remote (its button, then its
 modifiers), e.g. when its release never arrived; it is available whenever something is armed or

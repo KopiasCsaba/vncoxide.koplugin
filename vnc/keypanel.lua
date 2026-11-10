@@ -64,23 +64,6 @@ local X = Keysyms.x11
 
 -- ---------------------------------------------------------------- the keys
 
-local function letters()
-    local rows = {}
-    local function row(chars)
-        local out = {}
-        for ch in chars:gmatch(".") do
-            -- keycaps show capitals; the keysym is the unshifted one (Shift is the user's modifier)
-            out[#out + 1] = { ch:upper(), ch:byte() }
-        end
-        rows[#rows + 1] = out
-    end
-    row("1234567890")
-    row("qwertyuiop")
-    row("asdfghjkl")
-    row("zxcvbnm")
-    return rows
-end
-
 local function function_keys()
     local rows = {}
     for r = 0, 2 do
@@ -101,33 +84,22 @@ local TABS = {
         label = _("Keys"),
         columns = 4,
         -- (Esc, Tab, the arrows and Del are on the top row; `modifiers_only` is no key, see `_grid`)
+        -- by column: Home/End, Page Up/Page Down, Insert/Space, Backspace/Enter
         rows = {
-            { { _("Enter"), X.Return }, { _("Backspace"), X.BackSpace }, { _("Insert"), X.Insert },
-              { _("Home"), X.Home } },
-            { { _("End"), X.End }, { _("Page Up"), X.Prior }, { _("Page Down"), X.Next },
-              { _("Space"), X.space } },
-            { { _("Menu"), X.Menu }, { _("Print Screen"), X.Print }, { _("Pause"), X.Pause },
+            { { _("Home"), X.Home }, { _("Page Up"), X.Prior }, { _("Insert"), X.Insert },
+              { _("Backspace"), X.BackSpace } },
+            { { _("End"), X.End }, { _("Page Down"), X.Next }, { _("Space"), X.space },
+              { _("Enter"), X.Return } },
+            { { _("Print Screen"), X.Print }, { _("Pause"), X.Pause }, { _("Menu"), X.Menu },
               { _("Modifiers only"), modifiers_only = true } },
         },
     },
     { label = "F1–F12", columns = 4, rows = function_keys() },
-    { label = _("Letters"), columns = 10, rows = letters() },
-    {
-        -- the unshifted US-layout symbol keys, by keyboard row; Shift reaches the other half
-        label = _("Symbols"),
-        columns = 3,
-        rows = {
-            { { "`", 0x60 }, { "-", 0x2D }, { "=", 0x3D } },
-            { { "[", 0x5B }, { "]", 0x5D }, { "\\", 0x5C } },
-            { { ";", 0x3B }, { "'", 0x27 } },
-            { { ",", 0x2C }, { ".", 0x2E }, { "/", 0x2F } },
-        },
-    },
 }
 
 --- Key rows every tab's grid is as tall as, so switching tabs never changes the panel's height
 --- (which would move the view above it).
-local GRID_ROWS = 4
+local GRID_ROWS = 3
 
 -- ---------------------------------------------------------------- the widget
 
@@ -420,6 +392,8 @@ function KeyPanel:_tab_row(width, row_height)
         config = self,
         -- the hardware arrows belong to the remote, not to focus moves in here
         key_events_enabled = false,
+        -- with two tabs a tap must still pick the tapped one, not flip to the other
+        alternate = false,
         callback = function(position) self:select_tab(position) end,
     }
     switch.key_events = {}

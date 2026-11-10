@@ -3965,15 +3965,15 @@ check("key_panel_armed_modifier_wraps_the_next_key_only", function()
     assert_true(take_keys(sent) == "", "arming sends nothing")
     assert_true(panel.button_by_id["mod:Ctrl"].preselect == true, "the Ctrl button shows it")
     assert_true(panel.button_by_id["modifiers_only"].enabled == true, "and Modifiers only has something to send")
-    pick_tab(panel, 3) -- Letters
-    touch(panel, "key:T")
+    pick_tab(panel, 2) -- F1–F12
+    touch(panel, "key:F5")
     local got = take_keys(sent)
-    assert_true(got == "+0xFFE3,+0x74,-0x74,-0xFFE3", "Ctrl+T on the wire, got " .. got)
+    assert_true(got == "+0xFFE3,+0xFFC2,-0xFFC2,-0xFFE3", "Ctrl+F5 on the wire, got " .. got)
     assert_true(panel:modifier_state("Ctrl") == nil, "Ctrl is disarmed after one key")
     assert_true(not panel.button_by_id["mod:Ctrl"].preselect, "the Ctrl button shows it")
-    touch(panel, "key:T")
+    touch(panel, "key:F5")
     got = take_keys(sent)
-    assert_true(got == "+0x74,-0x74", "the next key goes alone, got " .. got)
+    assert_true(got == "+0xFFC2,-0xFFC2", "the next key goes alone, got " .. got)
     -- tap, tap again: disarmed, nothing sent
     touch(panel, "mod:Shift")
     touch(panel, "mod:Shift")
@@ -4247,14 +4247,14 @@ check("key_panel_recent_combos_record_and_replay", function()
     local flushed = 0
     app.plugin.settings.flush = function() flushed = flushed + 1 end
     local panel = open_key_panel(app)
-    pick_tab(panel, 3)
+    pick_tab(panel, 2)
     touch(panel, "mod:Ctrl")
-    touch(panel, "key:T")
+    touch(panel, "key:F5")
     assert_true(flushed > 0, "the recent list is saved")
     local recent = app.settings.recent_combos
-    assert_true(#recent == 1 and recent[1].keysym == 0x74 and recent[1].mods[1] == "Ctrl"
-        and #recent[1].mods == 1 and recent[1].label == "T", "Ctrl+T is recorded")
-    assert_true(panel.button_by_id["recent:1"].text == "Ctrl+T", "and shown")
+    assert_true(#recent == 1 and recent[1].keysym == 0xFFC2 and recent[1].mods[1] == "Ctrl"
+        and #recent[1].mods == 1 and recent[1].label == "F5", "Ctrl+F5 is recorded")
+    assert_true(panel.button_by_id["recent:1"].text == "Ctrl+F5", "and shown")
     take_keys(sent)
 
     -- a replay is the action: it sends exactly that combo (the armed Shift is not added) and
@@ -4262,9 +4262,9 @@ check("key_panel_recent_combos_record_and_replay", function()
     touch(panel, "mod:Shift")
     touch(panel, "recent:1")
     local got = take_keys(sent)
-    assert_true(got == "+0xFFE3,+0x74,-0x74,-0xFFE3", "replay of Ctrl+T without the armed Shift, got " .. got)
+    assert_true(got == "+0xFFE3,+0xFFC2,-0xFFC2,-0xFFE3", "replay of Ctrl+F5 without the armed Shift, got " .. got)
     assert_true(panel:modifier_state("Shift") == nil, "the replay used up the armed Shift")
-    assert_true(panel.button_by_id["recent:1"].text == "Ctrl+T", "and the list still says Ctrl+T")
+    assert_true(panel.button_by_id["recent:1"].text == "Ctrl+F5", "and the list still says Ctrl+F5")
 
     -- distinct combos, most recent first, at most four; a repeat moves to the front
     pick_tab(panel, 1)
@@ -4415,20 +4415,12 @@ check("key_panel_every_tab_sends_its_keysyms", function()
     local tabs = {
         -- (plus Modifiers only, which is no key: key_panel_combo_order_and_modifiers_only)
         { "Keys", {
-            { "Enter", 0xFF0D }, { "Backspace", 0xFF08 }, { "Insert", 0xFF63 }, { "Home", 0xFF50 },
-            { "End", 0xFF57 }, { "Page Up", 0xFF55 }, { "Page Down", 0xFF56 }, { "Space", 0x20 },
-            { "Menu", 0xFF67 }, { "Print Screen", 0xFF61 }, { "Pause", 0xFF13 } } },
+            { "Home", 0xFF50 }, { "Page Up", 0xFF55 }, { "Insert", 0xFF63 }, { "Backspace", 0xFF08 },
+            { "End", 0xFF57 }, { "Page Down", 0xFF56 }, { "Space", 0x20 }, { "Enter", 0xFF0D },
+            { "Print Screen", 0xFF61 }, { "Pause", 0xFF13 }, { "Menu", 0xFF67 } } },
         { "F1–F12", {} },
-        { "Letters", {} },
-        { "Symbols", {
-            { "`", 0x60 }, { "-", 0x2D }, { "=", 0x3D }, { "[", 0x5B }, { "]", 0x5D }, { "\\", 0x5C },
-            { ";", 0x3B }, { "'", 0x27 }, { ",", 0x2C }, { ".", 0x2E }, { "/", 0x2F } } },
     }
     for i = 1, 12 do table.insert(tabs[2][2], { "F" .. i, 0xFFBE + i - 1 }) end
-    for c = string.byte("a"), string.byte("z") do
-        table.insert(tabs[3][2], { string.char(c):upper(), c })
-    end
-    for d = 0, 9 do table.insert(tabs[3][2], { tostring(d), 0x30 + d }) end
     -- the top row's keys are on every tab
     local top_keys = { { "Esc", 0xFF1B }, { "Tab", 0xFF09 }, { "←", 0xFF51 }, { "↑", 0xFF52 },
                        { "↓", 0xFF54 }, { "→", 0xFF53 }, { "Del", 0xFFFF } }
@@ -4879,14 +4871,14 @@ check("key_panel_top_row_is_the_strip_row_with_close_and_keyboard", function()
     table.sort(grid, function(a, b) return a.y < b.y or (a.y == b.y and a.x < b.x) end)
     ids = {}
     for i, e in ipairs(grid) do ids[i] = e.id end
-    assert_true(table.concat(ids, ",") == "key:Enter,key:Backspace,key:Insert,key:Home,key:End,key:Page Up,"
-        .. "key:Page Down,key:Space,key:Menu,key:Print Screen,key:Pause,modifiers_only",
+    assert_true(table.concat(ids, ",") == "key:Home,key:Page Up,key:Insert,key:Backspace,key:End,key:Page Down,"
+        .. "key:Space,key:Enter,key:Print Screen,key:Pause,key:Menu,modifiers_only",
         "the Keys grid: " .. table.concat(ids, ","))
     assert_true(grid[1].y < grid[5].y and grid[5].y < grid[9].y and grid[4].y == grid[1].y, "4 columns, 3 rows")
-    -- seven rows: top, tabs, four grid rows, recent; six lines between them; the window border
+    -- six rows: top, tabs, three grid rows, recent; five lines between them; the window border
     local line, border = Size.line.medium, Size.border.window
-    local h = 7 * KeyPanel.row_height() + 6 * line + 2 * border
-    assert_true(panel.dimen.h == h, "seven rows tall: " .. panel.dimen.h .. " vs " .. h)
+    local h = 6 * KeyPanel.row_height() + 5 * line + 2 * border
+    assert_true(panel.dimen.h == h, "six rows tall: " .. panel.dimen.h .. " vs " .. h)
     -- a top-row key from the panel goes to the recent combos (the strip's do not)
     touch(panel, "mod:Ctrl")
     touch(panel, "key:Tab")
@@ -7428,6 +7420,38 @@ check("orientation_match_menu_switch_and_help", function()
     assert_true(find_item(menu.item_table, MATCH).mandatory == "-", "unchecked while off")
     app:close_menu()
     assert_true(require("vnc/help").text("touch"):find(MATCH, 1, true), "the help names it")
+    close_viewer(app, remote)
+end)
+
+
+check("toolbar_corners_are_round_not_covered_by_buttons", function()
+    -- the square buttons must not paint white over the rounded border's corners (bar and round button)
+    local BBc = require("ffi/blitbuffer")
+    local app, remote = new_app()
+    local function corner_pixels()
+        local d = app.toolbar.dimen
+        local canvas = BBc.new(Screen:getWidth(), Screen:getHeight(), BBc.TYPE_BB8)
+        canvas:fill(BBc.COLOR_BLACK)
+        app.toolbar:paintTo(canvas, 0, 0)
+        local out = {}
+        -- just inside the border's rectangle, which a rounded corner leaves outside the shape
+        local b = require("ui/size").border.window
+        local l, t, r, btm = d.x + b, d.y + b, d.x + d.w - 1 - b, d.y + d.h - 1 - b
+        for _, p in ipairs({ { l, t }, { r, t }, { l, btm }, { r, btm } }) do
+            out[#out + 1] = canvas:getPixel(p[1], p[2]):getColor8().a
+        end
+        canvas:free()
+        return out
+    end
+    for _, collapsed in ipairs({ false, true }) do
+        app:set_toolbar_collapsed(collapsed)
+        UIManager:forceRePaint()
+        for i, v in ipairs(corner_pixels()) do
+            assert_true(v == 0, string.format("%s: corner %d left alone, got %d",
+                collapsed and "round button" or "bar", i, v))
+        end
+    end
+    app:set_toolbar_collapsed(false)
     close_viewer(app, remote)
 end)
 
