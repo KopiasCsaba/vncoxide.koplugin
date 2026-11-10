@@ -176,6 +176,40 @@ function ViewerApp:toggle_toolbar()
     self:set_toolbar_visible(not self.toolbar_visible)
 end
 
+--[[--
+Folds the toolbar into its small round button (`on`), at the spot where its Collapse button was,
+or opens it again from there; stored (`toolbar_collapsed`, `toolbar_pos`). Repaints the area of both.
+]]
+function ViewerApp:set_toolbar_collapsed(on)
+    on = on and true or false
+    local bar = self.toolbar
+    if on == (bar.collapsed and true or false) then
+        if self.settings.toolbar_collapsed ~= on then
+            self.settings.toolbar_collapsed = on
+            self.plugin.settings:flush()
+        end
+        return
+    end
+    local old = bar.dimen
+    self.settings.toolbar_collapsed = on
+    bar:relayout({ x = old.x, y = old.y })
+    self.plugin.settings:flush()
+    if not self.toolbar_visible then return end
+    local area = old:combine(bar.dimen)
+    UIManager:setDirty(self, function() return "ui", area end)
+end
+
+--[[--
+The toolbar moved from `old` to `new` (a drag): repaints both areas with `mode` (`"fast"` while it
+follows the finger, `"ui"` once it is put down, which also stores the position when `done`).
+]]
+function ViewerApp:_toolbar_moved(old, new, mode, done)
+    if done then self.plugin.settings:flush() end
+    if not self.toolbar_visible then return end
+    local area = old:combine(new)
+    UIManager:setDirty(self, function() return mode, area end)
+end
+
 --- Rebuilds the toolbar (mode label, scroll buttons) and repaints the area it covered before and
 --- covers now.
 function ViewerApp:_toolbar_changed()
@@ -190,18 +224,22 @@ end
 local MULTI_FINGER = { pinch = true, spread = true, inward_pan = true, outward_pan = true }
 
 --[[--
-True when gesture `ges` belongs to the toolbar: it is up, nothing but our overlays is above us
-(`_input_target`: under a popup the bar is covered, not live) and the gesture started on it. Never
-while a drag or long press of ours is under way (its end is ours wherever the finger lifts), and
-never for a swipe (the top-zone toggle, the end of a quick drag) or a multi-finger gesture: a pinch
-or spread zooms the canvas wherever it is made.
+True when gesture `ges` belongs to the toolbar (or its round button while collapsed): it is up,
+nothing but our overlays is above us (`_input_target`: under a popup the bar is covered, not live)
+and the gesture started on it. While the bar is being dragged its moves and its end are its own
+wherever the finger is. Never while a drag or long press of ours is under way (its end is ours
+wherever the finger lifts), never for a pan_release of a drag the bar did not start, and never for
+a multi-finger gesture: a pinch or spread zooms the canvas wherever it is made. A swipe counts by
+where it started: on the bar it is a quick drag of the bar, elsewhere the top-zone toggle or the
+end of a quick drag of ours.
 ]]
 function ViewerApp:_toolbar_owns(ges)
     if not (self.toolbar_visible and self.toolbar and ges and ges.pos) then return false end
     if not self:_input_target() then return false end
     if self:_one_finger_busy() then return false end
     local kind = ges.ges or ""
-    if kind == "swipe" or kind:sub(1, 11) == "two_finger_" or MULTI_FINGER[kind] then return false end
+    if self.toolbar:is_dragging() and Toolbar.DRAG_GESTURES[kind] then return true end
+    if kind == "pan_release" or kind:sub(1, 11) == "two_finger_" or MULTI_FINGER[kind] then return false end
     local rel = ges.relative or { x = 0, y = 0 }
     local start = Geom:new{ x = ges.pos.x - (rel.x or 0), y = ges.pos.y - (rel.y or 0), w = 0, h = 0 }
     return self.toolbar.dimen:contains(start)
@@ -285,16 +323,21 @@ gain nothing. The zoom itself never changes here; only where the very same view 
 ]=]
 --[[--
 Shows a KOReader toast the way every hint of the viewer should appear: it keeps the stock
-Notification's stacking, timeout and refresh, but while the toolbar is up it is pushed down to
-start right below it instead of covering it. (The refresh region is the frame's own `dimen`, which
-is set where the frame is drawn, so it follows the shift.)
+Notification's stacking, timeout and refresh, but while the toolbar (or its round button) is up
+where the toast would be drawn, it is pushed down to start right below it instead of covering it.
+(The refresh region is the frame's own `dimen`, which is set where the frame is drawn, so it
+follows the shift.)
 ]]
 function ViewerApp:show_toast(text, timeout)
     local toast = Util.keyboard_tap_interval(Notification:new{ text = text, timeout = timeout })
     if self.toolbar_visible and self.toolbar then
         local d = self.toolbar.dimen
         local span = toast[1][1]   -- the leading RectSpan of the toast's VerticalGroup
-        span.height = span.height + d.y + d.h
+        -- the toast's own height, its leading span included: a bar lower down is not in its way
+        if d.y < toast[1]:getSize().h then
+            span.height = span.height + d.y + d.h
+        end
+        toast[1]:resetLayout()
     end
     UIManager:show(toast)
     return toast
@@ -1150,13 +1193,11 @@ function ViewerApp:set_pointer_mode(mode)
     end
 end
 
---- Flips Touch <-> Mouse; the toolbar's Mode button follows. A tooltip says which one it is now
---- and where the help is.
+--- Flips Touch <-> Mouse; the toolbar's Mode button follows. A tooltip says which one it is now.
 function ViewerApp:toggle_pointer_mode()
     self:set_pointer_mode(self:get_pointer_mode() == "mouse" and "touch" or "mouse")
     self:_toolbar_changed()
-    self:show_toast(self:get_pointer_mode() == "mouse" and _("Mouse mode \u{2014} long press for help")
-        or _("Touch mode \u{2014} long press for help"))
+    self:show_toast(self:get_pointer_mode() == "mouse" and _("Mouse mode") or _("Touch mode"))
 end
 
 --- Shows the help page (the current pointer mode's gestures first), replacing one still up.
@@ -1875,23 +1916,6 @@ function ViewerApp:send_osk_key(keysym)
     end
     self:send_key(keysym, true)
     self:send_key(keysym, false)
-end
-
---- Types `text` on the remote, one key down/up per character ("\n" becomes Return). Characters
---- with no keysym are skipped.
---- @treturn number how many were skipped
-function ViewerApp:send_text(text)
-    local skipped = 0
-    for _, ch in ipairs(Util.split_chars(text)) do
-        local keysym = Keysyms.from_char(ch)
-        if keysym then
-            self:send_key(keysym, true)
-            self:send_key(keysym, false)
-        else
-            skipped = skipped + 1
-        end
-    end
-    return skipped
 end
 
 --- Presses `keysyms` together: downs in order, ups in reverse.

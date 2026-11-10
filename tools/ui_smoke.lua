@@ -715,7 +715,7 @@ check("pointer_mode_is_cleaned_and_kept_per_profile", function()
     assert_true(s:get_profile("j").pointer_mode == "touch", "junk cleans to touch")
     s:save_profile({ name = "m", host = "h2", port = 1 }, "m")
     assert_true(s:get_profile("m").pointer_mode == "mouse", "an edit without the field keeps it")
-    assert_true(s.data.settings.pointer_speed == "normal" and s.data.settings.toolbar_scroll_buttons == false)
+    assert_true(s.data.settings.pointer_speed == "normal" and s.data.settings.toolbar_buttons.scroll_up == false)
 end)
 check("canvas_covers_the_screen", function()
     local app, remote = new_app(nil, nil, { toolbar = true })
@@ -1953,10 +1953,9 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
 
     -- items that need the canvas still close it
     menu = app:open_menu()
-    tap(find_item(menu.item_table, "Send text…"))
-    local dialog = top()
-    assert_true(app.menu == nil and dialog.title == "Send text", "Send text… closes the menu and opens the dialog")
-    UIManager:close(dialog)
+    tap(find_item(menu.item_table, "Help"))
+    assert_true(app.menu == nil and app.help ~= nil and top() == app.help, "Help closes the menu and opens the help")
+    app.help:onClose()
 
     app:onCloseWidget()
     remote:free()
@@ -3621,13 +3620,23 @@ local function take_keys(sent)
     return table.concat(out, ",")
 end
 
---- Opens the panel the way a user does: a long press on the toolbar's keyboard button (the toolbar
---- is shown for it and hidden again when it was hidden).
+--- Opens the panel the way a user does: the toolbar's keyboard button (when the key strip is not up
+--- yet), then the strip's Send keys icon (the toolbar is shown for it and hidden again when it was
+--- hidden).
 local function open_key_panel(app)
-    local shown = app.toolbar_visible
-    if not shown then app:set_toolbar_visible(true) end
-    hold_toolbar(app, "keyboard")
-    if not shown then app:set_toolbar_visible(false) end
+    if app.key_panel then return app.key_panel end
+    if not app.key_strip then
+        local shown = app.toolbar_visible
+        if not shown then app:set_toolbar_visible(true) end
+        tap_toolbar(app, "keyboard")
+        if not shown then app:set_toolbar_visible(false) end
+    end
+    UIManager:_checkTasks()
+    UIManager:setDirty(app, "ui")
+    UIManager:forceRePaint()
+    local button = app.key_strip.button_by_id.panel
+    dispatch_gesture{ ges = "tap", pos = Geom:new{ x = button.dimen.x + math.floor(button.dimen.w / 2),
+                                                  y = button.dimen.y + math.floor(button.dimen.h / 2) } }
     UIManager:_checkTasks()
     return app.key_panel
 end
@@ -3687,21 +3696,24 @@ check("mode_switch_shows_a_tooltip_not_a_card", function()
     tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "mouse", "switched")
     local tip = top()
-    assert_true(tip.text == "Mouse mode \u{2014} long press for help" and tip.toast,
+    assert_true(tip.text == "Mouse mode" and tip.toast,
         "a tooltip on top: " .. stack_desc() .. " " .. tostring(tip.text))
     assert_true(getmetatable(tip) == Notification or tip.timeout, "a Notification")
     assert_true(app.help == nil and #sent.pointer == 0, "no card, nothing sent")
     UIManager:close(tip)
     tap_toolbar(app, "mode")
-    assert_true(app:get_pointer_mode() == "touch" and top().text == "Touch mode \u{2014} long press for help")
+    assert_true(app:get_pointer_mode() == "touch" and top().text == "Touch mode")
     UIManager:close(top())
     close_viewer(app, remote)
 end)
 
-check("help_opens_from_mode_hold_and_menu_and_is_local", function()
+check("help_opens_from_the_menu_and_is_local", function()
     local Key = require("device/key")
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     hold_toolbar(app, "mode")
+    assert_true(app.help == nil, "a long press on Mode only shows its tooltip")
+    UIManager:close(top())
+    app:open_help()
     local help = app.help
     assert_true(help ~= nil and top() == help, "the help is on top: " .. stack_desc())
     assert_true(help.title == "VNC viewer help", "title")
@@ -3709,8 +3721,8 @@ check("help_opens_from_mode_hold_and_menu_and_is_local", function()
     assert_true(text:find("Tap, then long press", 1, true) and text:find("Scroll lock", 1, true), "content")
     assert_true(text:find("KEY STRIP", 1, true) and text:find("RECONNECT", 1, true), "strip and reconnect")
     assert_true(not text:find("Keys\u{2026}", 1, true), "no Keys\u{2026} button any more")
-    for _, needle in ipairs({ "Zoom: cycle", "1:1", "Brightness:", "Contrast:", "Enable brightness button",
-                              "Enable contrast button", "keyboard icon" }) do
+    for _, needle in ipairs({ "Zoom: cycle", "1:1", "Brightness:", "Contrast:", "Toolbar buttons\u{2026}",
+                              "keyboard icon", "Collapse", "drag" }) do
         assert_true(text:find(needle, 1, true), "the help tells about " .. needle)
     end
     -- the current mode (touch) is described before the other one
@@ -3739,18 +3751,22 @@ check("more_menu_order_and_actions", function()
     local app, remote, sent = new_app()
     local log = wire_log(app)
     local menu = app:open_menu()
-    assert_true(menu.item_table[1].select_enabled == false and menu.item_table[1].text:find("^Connected to test"))
-    for _, t in ipairs{ "Send keys…", "Disconnect", "Show keyboard", "Hide keyboard", "Zoom…" } do
-        for _, item in ipairs(menu.item_table) do assert_true(item.text ~= t, t .. " moved out") end
+    assert_true(menu.title == "test \u{00B7} 400\u{00D7}300", "the status is the title: " .. tostring(menu.title))
+    for _, t in ipairs{ "Send keys…", "Disconnect", "Show keyboard", "Hide keyboard", "Zoom…", "Send text…",
+                        "Ctrl+Alt+Del", "Show scroll buttons on toolbar", "Enable brightness button",
+                        "Enable contrast button" } do
+        for _, item in ipairs(menu.item_table) do assert_true(item.text ~= t, t .. " is gone") end
+    end
+    for _, item in ipairs(menu.item_table) do
+        assert_true(item.select_enabled ~= false, "no status row: " .. item.text)
     end
     local order = {}
-    for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text:gsub("^Connected to.*", "status") end
-    assert_true(table.concat(order, "|") == "status|Connections…|Send text…|Refresh|Ctrl+Alt+Del|Lock screen|"
-        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Show scroll buttons on toolbar|Enable brightness button|Enable contrast button|Help|Leave (keep connection)",
+    for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text end
+    assert_true(table.concat(order, "|") == "Connections…|Refresh|Lock screen|"
+        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Toolbar buttons…|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
-    assert_true(app:send_text("a\nb\1") == 1)
-    assert_true(log() == "+0x61,-0x61,+0xFF0D,-0xFF0D,+0x62,-0x62", "send_text")
+    assert_true(app.send_text == nil, "send_text is gone with its dialog")
     app:send_combo{ 0xFFE3, 0xFFE9, 0xFFFF }
     assert_true(log() == "+0xFFE3,+0xFFE9,+0xFFFF,-0xFFFF,-0xFFE9,-0xFFE3", "send_combo")
 
@@ -3759,8 +3775,6 @@ check("more_menu_order_and_actions", function()
         menu:onMenuSelect(find_item(menu.item_table, text))
         UIManager:_checkTasks()
     end
-    choose("Ctrl+Alt+Del")
-    assert_true(app.menu == nil and log() == "+0xFFE3,+0xFFE9,+0xFFFF,-0xFFFF,-0xFFE9,-0xFFE3", "Ctrl+Alt+Del")
     choose("Lock screen")
     assert_true(app.menu == nil and log() == "+0xFFEB,+0x6C,-0x6C,-0xFFEB", "Lock screen")
 
@@ -3775,51 +3789,120 @@ check("more_menu_order_and_actions", function()
     local full = false
     for _, m in ipairs(dirty) do if m == "full" then full = true end end
     assert_true(sent.full_updates == 1 and full and app.menu == nil, "Refresh asks for a full update and repaint")
-
-    -- the scroll buttons toggle stays open and rebuilds the toolbar
-    menu = app:open_menu()
-    local item = find_item(menu.item_table, "Show scroll buttons on toolbar")
-    assert_true(item.mandatory == "-" and app.toolbar.button_by_id.scroll_up == nil)
-    menu:onMenuSelect(item)
-    UIManager:_checkTasks()
-    assert_true(app.menu == menu and app.settings.toolbar_scroll_buttons == true and item.mandatory == "✓")
-    assert_true(app.toolbar.button_by_id.scroll_up ~= nil, "scroll buttons appear")
-    menu:onMenuSelect(item)
-    UIManager:_checkTasks()
-    assert_true(app.settings.toolbar_scroll_buttons == false and app.toolbar.button_by_id.scroll_up == nil, "and go")
-    app:close_menu()
-
-    -- the brightness and contrast switches: they stay open and rebuild the toolbar
-    for _, case in ipairs({ { "Enable brightness button", "toolbar_brightness_button", "brightness" },
-                            { "Enable contrast button", "toolbar_contrast_button", "contrast" } }) do
-        local text, key, id = case[1], case[2], case[3]
-        app.settings[key] = false; app.toolbar:relayout()
-        menu = app:open_menu()
-        item = find_item(menu.item_table, text)
-        assert_true(item.mandatory == "-" and app.toolbar.button_by_id[id] == nil, text .. ": off, no button")
-        menu:onMenuSelect(item)
-        UIManager:_checkTasks()
-        assert_true(app.menu == menu and app.settings[key] == true and item.mandatory == "✓", text .. ": on")
-        assert_true(app.toolbar.button_by_id[id] ~= nil, text .. ": the button appears")
-        menu:onMenuSelect(item)
-        UIManager:_checkTasks()
-        assert_true(app.settings[key] == false and app.toolbar.button_by_id[id] == nil, text .. ": and goes")
-        app:close_menu()
-    end
-
-    -- Send text…: dialog, Send closes it and types
-    menu = app:open_menu()
-    menu:onMenuSelect(find_item(menu.item_table, "Send text…"))
-    UIManager:_checkTasks()
-    local dialog = top()
-    assert_true(dialog.title == "Send text", "Send text dialog is on top")
-    dialog:setInputText("hi\1")
-    local btn = find_button(dialog, "Send")
-    find_button(dialog, "Cancel")
-    btn.callback()
-    UIManager:_checkTasks()
-    assert_true(top() ~= dialog and log() == "+0x68,-0x68,+0x69,-0x69", "Send types the text and closes")
     close_viewer(app, remote)
+end)
+
+check("menu_title_carries_the_connection_state", function()
+    local app, remote = new_app(400, 300, { state = "error" })
+    app.session.get_error = function() return "connection reset" end
+    local menu = app:open_menu()
+    assert_true(menu.title == "test \u{00B7} connection lost", tostring(menu.title))
+    local item = menu.item_table[1]
+    assert_true(item.text == "Reconnect to test" and item.help_text == "connection reset",
+        "the error is the help of the Reconnect row: " .. tostring(item.text) .. " / " .. tostring(item.help_text))
+    app:close_menu()
+    app.session.state = "connecting"
+    menu = app:open_menu()
+    assert_true(menu.title == "test \u{00B7} connecting", tostring(menu.title))
+    assert_true(menu.item_table[1].text == "Connections…", "no Reconnect row without an error")
+    app:close_menu()
+    local get_profile = app.session.get_profile
+    app.session.get_profile = function() return nil end
+    menu = app:open_menu()
+    assert_true(menu.title == "VNC viewer", tostring(menu.title))
+    app:close_menu()
+    app.session.get_profile = get_profile
+    close_viewer(app, remote)
+end)
+
+check("menu_toolbar_buttons_submenu", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local has = Device.hasFrontlight
+    local ok, err = pcall(function()
+        Device.hasFrontlight = function() return true end
+        app.toolbar:relayout()
+        local menu = app:open_menu()
+        local parent = find_item(menu.item_table, "Toolbar buttons…")
+        assert_true(parent.help_text and parent.help_text:find("More", 1, true), "its help says why More stays")
+        local rows = parent.sub_item_table
+        local texts = {}
+        for _, r in ipairs(rows) do texts[#texts + 1] = r.text end
+        assert_true(table.concat(texts, "|") == "Collapse button|Display|Zoom|Mode|Keyboard|Rotate|Scroll lock|"
+            .. "Scroll up/down|Brightness|Contrast", table.concat(texts, "|"))
+        local cases = {
+            { "Collapse button", { "toggle" }, true }, { "Display", { "display" }, true },
+            { "Zoom", { "zoom" }, true }, { "Mode", { "mode" }, true }, { "Keyboard", { "keyboard" }, true },
+            { "Rotate", { "rotate" }, true }, { "Scroll lock", { "scroll_lock" }, true },
+            { "Scroll up/down", { "scroll_up", "scroll_down" }, false }, { "Brightness", { "brightness" }, true },
+            { "Contrast", { "contrast" }, false },
+        }
+        for _, case in ipairs(cases) do
+            local text, ids, on = case[1], case[2], case[3]
+            local item = find_item(rows, text)
+            local function shown()
+                for _, id in ipairs(ids) do
+                    if (app.toolbar.button_by_id[id] ~= nil) ~= (item.mandatory == "\u{2713}") then return false end
+                end
+                return true
+            end
+            assert_true(item.mandatory == (on and "\u{2713}" or "-") and shown(), text .. ": default " .. tostring(on))
+            menu:onMenuSelect(item)
+            UIManager:_checkTasks()
+            assert_true(app.menu == menu, text .. ": the menu stays open")
+            assert_true(item.mandatory == (on and "-" or "\u{2713}") and shown(), text .. ": switched")
+            for _, id in ipairs(ids) do
+                assert_true(app.settings.toolbar_buttons[id] == not on, text .. ": stored as " .. id)
+            end
+            menu:onMenuSelect(item)
+            UIManager:_checkTasks()
+            assert_true(item.mandatory == (on and "\u{2713}" or "-") and shown(), text .. ": and back")
+        end
+        local ids = table.concat(app.toolbar:visible_ids(), ",")
+        assert_true(ids:find("close,more$"), "Close and More always stay: " .. ids)
+        -- hiding the collapse button while collapsed brings the bar back
+        app:set_toolbar_collapsed(true)
+        assert_true(app.toolbar.collapsed, "collapsed")
+        menu:onMenuSelect(find_item(rows, "Collapse button"))
+        UIManager:_checkTasks()
+        assert_true(not app.toolbar.collapsed and app.toolbar.button_by_id.more ~= nil
+            and app.settings.toolbar_collapsed == false, "expanded again")
+        menu:onMenuSelect(find_item(rows, "Collapse button"))
+        app:close_menu()
+        -- no frontlight: the Brightness row is dimmed and says why
+        Device.hasFrontlight = function() return false end
+        menu = app:open_menu()
+        local bright = find_item(find_item(menu.item_table, "Toolbar buttons…").sub_item_table, "Brightness")
+        assert_true(bright.dim and bright.select_enabled == false and bright.help_text, "dimmed with a help text")
+        app:close_menu()
+    end)
+    Device.hasFrontlight = has
+    assert_true(ok, tostring(err))
+    close_viewer(app, remote)
+end)
+
+check("toolbar_settings_migrate_and_clean", function()
+    local Settings = require("vnc/settings")
+    local path = data_dir .. "/ui_smoke_toolbar_migrate.lua"
+    local function load(body)
+        local f = io.open(path, "w"); f:write("return { settings = " .. body .. " }\n"); f:close()
+        return Settings.open(path).data.settings
+    end
+    local s = load("{}")
+    assert_true(s.toolbar_buttons.toggle == true and s.toolbar_buttons.scroll_up == false
+        and s.toolbar_buttons.brightness == true and s.toolbar_buttons.contrast == false, "defaults")
+    assert_true(s.toolbar_collapsed == false and s.toolbar_pos.x == 0.5 and s.toolbar_pos.y == 0, "top centre")
+    s = load("{ toolbar_scroll_buttons = true, toolbar_brightness_button = false, toolbar_contrast_button = true }")
+    assert_true(s.toolbar_buttons.scroll_up == true and s.toolbar_buttons.scroll_down == true
+        and s.toolbar_buttons.brightness == false and s.toolbar_buttons.contrast == true, "the old switches migrate")
+    assert_true(s.toolbar_scroll_buttons == nil and s.toolbar_brightness_button == nil
+        and s.toolbar_contrast_button == nil, "and the old keys go")
+    s = load("{ toolbar_scroll_buttons = true, toolbar_buttons = { contrast = true } }")
+    assert_true(s.toolbar_buttons.scroll_up == false and s.toolbar_buttons.contrast == true, "the new key wins")
+    s = load("{ toolbar_buttons = { close = false, more = false, zoom = 'x', bogus = true }, toolbar_pos = { x = 3, y = 0.25 } }")
+    assert_true(s.toolbar_buttons.close == nil and s.toolbar_buttons.more == nil and s.toolbar_buttons.bogus == nil
+        and s.toolbar_buttons.zoom == true, "junk is cleaned")
+    assert_true(s.toolbar_pos.x == 0.5 and s.toolbar_pos.y == 0.25, "a fraction out of range is reset")
+    os.remove(path)
 end)
 
 check("set_pointer_mode_persists_through_the_plugin", function()
@@ -4558,8 +4641,7 @@ check("key_strip_and_panel_are_exclusive", function()
     local app, remote = new_app(400, 300, { toolbar = true })
     tap_toolbar(app, "keyboard")
     assert_true(app.key_strip ~= nil, "strip up")
-    hold_toolbar(app, "keyboard")
-    UIManager:_checkTasks()
+    open_key_panel(app)
     assert_true(app.key_panel ~= nil and app.key_strip == nil and not app.vk_visible,
         "the panel replaces the keyboard and the strip")
     tap_toolbar(app, "keyboard")
@@ -4584,11 +4666,10 @@ check("keyboard_button_shows_then_hides_and_closes_the_panel", function()
     UIManager:_checkTasks()
     assert_true(not app.vk_visible and app.key_strip == nil and not keyboard_on_stack(app),
         "second tap hides both")
-    -- keyboard up, long press: the panel; then a tap closes it and shows nothing
+    -- keyboard up, the strip's keys icon: the panel; then a tap closes it and shows nothing
     tap_toolbar(app, "keyboard")
-    hold_toolbar(app, "keyboard")
-    UIManager:_checkTasks()
-    assert_true(app.key_panel ~= nil and not keyboard_on_stack(app), "long press: the panel alone")
+    open_key_panel(app)
+    assert_true(app.key_panel ~= nil and not keyboard_on_stack(app), "the panel alone")
     tap_toolbar(app, "keyboard")
     UIManager:_checkTasks()
     assert_true(app.key_panel == nil and not app.vk_visible and app.key_strip == nil
@@ -4598,8 +4679,7 @@ check("keyboard_button_shows_then_hides_and_closes_the_panel", function()
     UIManager:_checkTasks()
     assert_true(app.vk_visible and app.key_strip ~= nil, "then a tap shows the keyboard again")
     -- the panel's close also saves "no keyboard"
-    hold_toolbar(app, "keyboard")
-    UIManager:_checkTasks()
+    open_key_panel(app)
     assert_true(app.key_panel ~= nil and app.settings.keyboard_shown == true, "panel open, keyboard still wished")
     tap_toolbar(app, "keyboard")
     UIManager:_checkTasks()
@@ -5677,7 +5757,7 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     assert_true(app.toolbar_visible, "shown on open")
     local Toolbar = require("vnc/toolbar")
-    assert_true(table.concat(Toolbar.IDS, ",") == "close,display,zoom,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,brightness,contrast,more",
+    assert_true(table.concat(Toolbar.IDS, ",") == "toggle,display,zoom,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,brightness,contrast,close,more",
         table.concat(Toolbar.IDS, ","))
     local before = Screen:getRotationMode()
     tap_toolbar(app, "rotate")
@@ -5690,7 +5770,12 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     assert_true(app:get_pointer_mode() == "touch", "and back to touch")
     UIManager:close(top())
     tap_toolbar(app, "keyboard"); assert_true(app.vk_wanted == true, "keyboard tap toggles the keyboard")
-    hold_toolbar(app, "keyboard"); assert_true(app.key_panel ~= nil, "keyboard hold opens the key panel")
+    hold_toolbar(app, "keyboard")
+    local tip
+    for _, w in ipairs(stack()) do if w.toast then tip = w end end
+    assert_true(app.key_panel == nil and tip and tip.text == "On-screen keyboard",
+        "a long press on Keyboard only shows its tooltip: " .. stack_desc())
+    UIManager:close(tip)
     tap_toolbar(app, "display"); assert_true(app.display_panel ~= nil, "display opens the display panel")
     -- the display panel hangs under the toolbar
     UIManager:forceRePaint()
@@ -5703,7 +5788,7 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     app:close_key_panel()
     app:set_keyboard_visible(false)
     assert_true(app.toolbar.button_by_id.scroll_up == nil, "scroll buttons hidden by default")
-    app.settings.toolbar_scroll_buttons = true; app.toolbar:relayout()
+    app.settings.toolbar_buttons = { scroll_up = true, scroll_down = true }; app.toolbar:relayout()
     tap_toolbar(app, "scroll_down")
     local masks = {}
     for _, e in ipairs(sent.pointer) do masks[#masks + 1] = e.mask end
@@ -5713,7 +5798,214 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     masks = {}
     for _, e in ipairs(sent.pointer) do masks[#masks + 1] = e.mask end
     assert_true(table.concat(masks, ",") == "8,0", "exactly one notch up, got " .. table.concat(masks, ","))
-    app.settings.toolbar_scroll_buttons = false
+    app.settings.toolbar_buttons = nil
+    close_viewer(app, remote)
+end)
+
+--- Every toolbar button on (the scroll pair and contrast are off by default), on a device with a
+--- frontlight; returns a function that restores the frontlight probe.
+local function all_toolbar_buttons(app)
+    local has = Device.hasFrontlight
+    Device.hasFrontlight = function() return true end
+    app.settings.toolbar_buttons = { scroll_up = true, scroll_down = true, contrast = true }
+    app.toolbar:relayout()
+    return function() Device.hasFrontlight = has end
+end
+
+check("toolbar_long_press_shows_a_tooltip_and_does_nothing_else", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local restore = all_toolbar_buttons(app)
+    local ok, err = pcall(function()
+        local Toolbar = require("vnc/toolbar")
+        local want = {
+            toggle = "Collapse toolbar", display = "Display settings", zoom = "Zoom: fit, 1:1, your own view",
+            mode = "Pointer mode: touch or mouse", keyboard = "On-screen keyboard", rotate = "Rotate the screen",
+            scroll_lock = "Scroll lock: two-finger drag scrolls the remote", scroll_up = "Scroll up",
+            scroll_down = "Scroll down", brightness = "Frontlight", contrast = "Contrast of the remote picture",
+            close = "Disconnect", more = "Menu",
+        }
+        local rotation, mode, state = Screen:getRotationMode(), app:get_pointer_mode(), app:view_state()
+        for _, id in ipairs(Toolbar.IDS) do
+            local base = #UIManager._window_stack
+            hold_toolbar(app, id)
+            UIManager:_checkTasks()
+            local tip = top()
+            assert_true(tip.toast and tip.text == want[id], id .. ": tooltip, got " .. tostring(tip.text) .. " " .. stack_desc())
+            assert_true(#UIManager._window_stack == base + 1, id .. ": nothing else opens: " .. stack_desc())
+            UIManager:close(tip)
+            assert_true(#sent.pointer == 0 and #sent.key == 0, id .. ": nothing is sent")
+            assert_true(app.menu == nil and app.help == nil and app.key_panel == nil and app.display_panel == nil
+                and app.contrast_dialog == nil and not app.vk_wanted and not app.scroll_lock, id .. ": no action")
+            assert_true(Screen:getRotationMode() == rotation and app:get_pointer_mode() == mode
+                and app:view_state() == state and not app.toolbar.collapsed, id .. ": nothing changed")
+        end
+        -- the collapsed bubble too
+        app:set_toolbar_collapsed(true)
+        hold_toolbar(app, "toggle")
+        assert_true(top().text == "Show toolbar" and app.toolbar.collapsed, "the bubble's tooltip")
+        UIManager:close(top())
+    end)
+    restore()
+    assert_true(ok, tostring(err))
+    close_viewer(app, remote)
+end)
+
+check("toolbar_collapses_into_a_bubble_and_back", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local Icons = require("vnc/icons")
+    local bar = app.toolbar.dimen
+    local toggle = app.toolbar.button_by_id.toggle
+    assert_true(app.toolbar:visible_ids()[1] == "toggle", "the collapse button is the leftmost")
+    assert_true(toggle.label_widget.file == Icons.path("toolbar"), "with the plugin's toolbar icon")
+    UIManager:setDirty(app, "ui")
+    UIManager:forceRePaint()
+    assert_true(toggle.label_widget._bb ~= nil, "and renders it")
+    local dirty = {}
+    local real_dirty = UIManager.setDirty
+    UIManager.setDirty = function(self_, w, mode, ...)
+        if w == app and type(mode) == "function" then
+            local m, r = mode(); dirty[#dirty + 1] = { mode = m, area = r }
+        end
+        return real_dirty(self_, w, mode, ...)
+    end
+    tap_toolbar(app, "toggle")
+    UIManager.setDirty = real_dirty
+    local d = app.toolbar.dimen
+    assert_true(app.toolbar.collapsed and app.settings.toolbar_collapsed == true, "collapsed and stored")
+    assert_true(d.x == bar.x and d.y == bar.y and d.w == d.h and d.w < bar.w, "a small round button where Collapse was")
+    assert_true(#dirty == 1 and dirty[1].mode == "ui" and dirty[1].area:contains(bar), "a ui refresh of the old bar")
+    assert_true(app.toolbar.button_by_id.more == nil and app.toolbar.button_by_id.toggle ~= nil, "just the bubble")
+    -- the bubble is the toolbar: a tap on it never reaches the remote
+    assert_true(app:_toolbar_owns({ ges = "tap", pos = Geom:new{ x = d.x + 2, y = d.y + 2 } }), "the bubble owns its taps")
+    assert_true(not app:_toolbar_owns({ ges = "tap", pos = Geom:new{ x = bar.x + bar.w - 3, y = bar.y + 3 } }),
+        "where the bar was is the canvas again")
+    tap_toolbar(app, "toggle")
+    assert_true(not app.toolbar.collapsed and app.settings.toolbar_collapsed == false, "expanded and stored")
+    assert_true(app.toolbar.dimen.x == bar.x and app.toolbar.dimen.y == bar.y and app.toolbar.dimen.w == bar.w,
+        "the bar is back where it was")
+    assert_true(#sent.pointer == 0, "nothing reached the remote")
+    -- the next viewer opens collapsed; the top-zone swipe still hides and shows the whole thing
+    app:set_toolbar_collapsed(true)
+    local settings = app.settings
+    close_viewer(app, remote)
+    local app2, remote2 = new_app(400, 300, { toolbar = true })
+    app2.settings.toolbar_collapsed = settings.toolbar_collapsed
+    app2.toolbar:relayout()
+    assert_true(app2.toolbar.collapsed, "opens collapsed")
+    app2:toggle_toolbar()
+    assert_true(not app2.toolbar_visible and app2.toolbar.collapsed, "hidden, still collapsed")
+    app2:toggle_toolbar()
+    assert_true(app2.toolbar_visible and app2.toolbar.collapsed, "shown again as the bubble")
+    close_viewer(app2, remote2)
+end)
+
+--- Drags the toolbar by (dx, dy) from point `from` on it: pans then a pan_release, like a slow drag.
+local function drag_toolbar(from, dx, dy, steps)
+    steps = steps or 3
+    for i = 1, steps do
+        local rx, ry = math.floor(dx * i / steps), math.floor(dy * i / steps)
+        dispatch_gesture{ ges = "pan", relative = { x = rx, y = ry }, start_pos = Geom:new{ x = from.x, y = from.y, w = 0, h = 0 },
+                          pos = Geom:new{ x = from.x + rx, y = from.y + ry, w = 0, h = 0 } }
+    end
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = from.x + dx, y = from.y + dy, w = 0, h = 0 } }
+end
+
+check("toolbar_drags_and_stays_on_screen", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local m = require("ui/size").margin.default
+    local W, H = Screen:getWidth(), Screen:getHeight()
+    local bar = app.toolbar.dimen
+    local from = toolbar_button_centre(app, "zoom")
+    local refreshes = {}
+    local real_dirty = UIManager.setDirty
+    UIManager.setDirty = function(self_, w, mode, ...)
+        if w == app and type(mode) == "function" then
+            local mm, r = mode(); refreshes[#refreshes + 1] = { mode = mm, area = r }
+        end
+        return real_dirty(self_, w, mode, ...)
+    end
+    drag_toolbar(from, -15, 200)
+    UIManager.setDirty = real_dirty
+    local d = app.toolbar.dimen
+    assert_true(d.x == bar.x - 15 and d.y == bar.y + 200, string.format("moved with the finger: %d,%d", d.x, d.y))
+    assert_true(#refreshes == 4, "one refresh per move and one at the end, got " .. #refreshes)
+    for i = 1, 3 do assert_true(refreshes[i].mode == "fast", "fast while it follows the finger") end
+    assert_true(refreshes[4].mode == "ui" and refreshes[4].area:contains(d) and refreshes[4].area:contains(bar),
+        "ui at the end, over where it was and is")
+    assert_true(#sent.pointer == 0, "a drag on the bar never reaches the remote")
+    assert_true(app.toolbar_visible and app.menu == nil and app.display_panel == nil, "and it opened nothing")
+    local pos = app.settings.toolbar_pos
+    assert_true(pos and math.abs(pos.y - (d.y - m) / (H - d.h - 2 * m)) < 1e-9
+        and math.abs(pos.x - (d.x - m) / (W - d.w - 2 * m)) < 1e-9, "stored as fractions of the free space")
+    -- clamped: never off the screen
+    drag_toolbar(toolbar_button_centre(app, "zoom"), -W, 2 * H)
+    d = app.toolbar.dimen
+    assert_true(d.x == m and d.y == H - d.h - m, string.format("clamped to the bottom left: %d,%d", d.x, d.y))
+    assert_true(app.settings.toolbar_pos.x == 0 and app.settings.toolbar_pos.y == 1, "stored as 0, 1")
+    -- buttons still work where it is now
+    tap_toolbar(app, "rotate")
+    local W2, H2 = Screen:getWidth(), Screen:getHeight()
+    d = app.toolbar.dimen
+    assert_true(W2 == H and H2 == W, "rotated")
+    assert_true(d.x == m and d.y == H2 - d.h - m, string.format("still at the bottom left after a rotation: %d,%d", d.x, d.y))
+    app:rotate(-1)
+    -- the bubble drags too, and the bar opens where the bubble is
+    app.settings.toolbar_pos = { x = 0.5, y = 0 }
+    app.toolbar:relayout()
+    app:set_toolbar_collapsed(true)
+    local b = app.toolbar.dimen
+    drag_toolbar(toolbar_button_centre(app, "toggle"), 20, 100)
+    assert_true(app.toolbar.dimen.x == b.x + 20 and app.toolbar.dimen.y == b.y + 100, "the bubble moves")
+    assert_true(#sent.pointer == 0 and app.toolbar.collapsed, "and stays a bubble")
+    tap_toolbar(app, "toggle")
+    assert_true(app.toolbar.dimen.x == b.x + 20 and app.toolbar.dimen.y == b.y + 100, "the bar opens at the bubble")
+    close_viewer(app, remote)
+end)
+
+check("a_swipe_that_starts_on_the_toolbar_moves_it", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local bar = app.toolbar.dimen
+    local from = toolbar_button_centre(app, "mode")
+    -- a quick drag ends as a swipe: the pans move the bar, the swipe puts it down
+    dispatch_gesture{ ges = "pan", relative = { x = 0, y = 40 }, start_pos = Geom:new{ x = from.x, y = from.y, w = 0, h = 0 },
+                      pos = Geom:new{ x = from.x, y = from.y + 40, w = 0, h = 0 } }
+    dispatch_gesture{ ges = "swipe", direction = "south", distance = 120, pos = Geom:new{ x = from.x, y = from.y, w = 0, h = 0 },
+                      end_pos = Geom:new{ x = from.x, y = from.y + 120, w = 0, h = 0 } }
+    assert_true(app.toolbar_visible, "the swipe does not hide the bar")
+    assert_true(app.toolbar.dimen.y == bar.y + 120 and app.toolbar.dimen.x == bar.x, "it moved to the lift point")
+    -- a flick without any pan: the same
+    from = toolbar_button_centre(app, "mode")
+    dispatch_gesture{ ges = "swipe", direction = "north", distance = 60, pos = Geom:new{ x = from.x, y = from.y, w = 0, h = 0 },
+                      end_pos = Geom:new{ x = from.x, y = from.y - 60, w = 0, h = 0 } }
+    assert_true(app.toolbar_visible and app.toolbar.dimen.y == bar.y + 60, "flicked up by 60")
+    assert_true(#sent.pointer == 0 and app.mode == nil, "nothing reached the remote")
+    assert_true(app:get_pointer_mode() == "touch", "and the button under the finger did not act")
+    -- a swipe down that starts in the top zone beside the bar still hides it
+    app.toolbar:relayout()
+    close_viewer(app, remote)
+end)
+
+check("toasts_and_the_contrast_box_follow_a_moved_toolbar", function()
+    local Blitbuffer = require("ffi/blitbuffer")
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local H = Screen:getHeight()
+    drag_toolbar(toolbar_button_centre(app, "zoom"), 0, H)
+    local tb = app.toolbar.dimen
+    assert_true(tb.y > H / 2, "the bar is at the bottom")
+    local bb = Blitbuffer.new(Screen:getWidth(), H)
+    local tip = app:show_toast("hello")
+    tip:paintTo(bb, 0, 0)
+    assert_true(tip.frame.dimen.y < H / 4 and not tip.frame.dimen:intersectWith(tb), "the toast stays at the top")
+    UIManager:close(tip)
+    app.settings.toolbar_buttons = { contrast = true }
+    app.toolbar:relayout()
+    tap_toolbar(app, "contrast")
+    local dlg = app.contrast_dialog
+    tb = app.toolbar.dimen
+    assert_true(dlg ~= nil and dlg.dimen.y + dlg.dimen.h <= tb.y, "the contrast box sits above a bar at the bottom")
+    assert_true(dlg.dimen.y >= 0, "on the screen")
+    app:close_contrast_dialog()
+    bb:free()
     close_viewer(app, remote)
 end)
 
@@ -5796,16 +6088,16 @@ end)
 
 check("toolbar_brightness_and_contrast_buttons_follow_their_settings", function()
     local Settings = require("vnc/settings")
-    assert_true(Settings.DEFAULTS.toolbar_brightness_button == true, "brightness on by default")
-    assert_true(Settings.DEFAULTS.toolbar_contrast_button == false, "contrast off by default")
+    assert_true(Settings.TOOLBAR_BUTTONS.brightness == true, "brightness on by default")
+    assert_true(Settings.TOOLBAR_BUTTONS.contrast == false, "contrast off by default")
     local app, remote = new_app(400, 300, { toolbar = true })
     local has = Device.hasFrontlight
     local ok, err = pcall(function()
-        app.settings.toolbar_brightness_button, app.settings.toolbar_contrast_button = true, true
+        app.settings.toolbar_buttons = { brightness = true, contrast = true }
         Device.hasFrontlight = function() return true end
         app.toolbar:relayout()
         local ids = table.concat(app.toolbar:visible_ids(), ",")
-        assert_true(ids:find("brightness,contrast,more", 1, true), "both before More: " .. ids)
+        assert_true(ids:find("brightness,contrast,close,more", 1, true), "both before Close and More: " .. ids)
         assert_true(app.toolbar.button_by_id.contrast.icon == "appbar.contrast", "KOReader's contrast icon")
         assert_true(app.toolbar.button_by_id.brightness.label_widget.file == require("vnc/icons").path("brightness"),
             "the plugin's brightness icon")
@@ -5825,7 +6117,7 @@ check("toolbar_brightness_button_opens_the_frontlight_dialog", function()
     local events = {}
     local ok, err = pcall(function()
         Device.hasFrontlight = function() return true end
-        app.settings.toolbar_brightness_button = true
+        app.settings.toolbar_buttons = { brightness = true }
         app.toolbar:relayout()
         app:toggle_keyboard()
         assert_true(app.vk_visible, "the keyboard is up")
@@ -5877,7 +6169,7 @@ end)
 
 --- Opens the contrast dialog from its toolbar button (switched on for the check).
 local function open_contrast(app)
-    app.settings.toolbar_contrast_button = true
+    app.settings.toolbar_buttons = { contrast = true }
     app.toolbar:relayout()
     tap_toolbar(app, "contrast")
     UIManager:_checkTasks()
@@ -6034,9 +6326,13 @@ check("toolbar_leaves_a_zoom_on_it_to_the_canvas", function()
     assert_true(remote:get_scale() > before,
         string.format("the canvas zoomed: scale %s -> %s", tostring(before), tostring(remote:get_scale())))
     assert_true(spreads == 1, "the spread reached the canvas, got " .. spreads)
-    for _, kind in ipairs({ "pinch", "spread", "inward_pan", "outward_pan", "two_finger_tap", "swipe" }) do
+    for _, kind in ipairs({ "pinch", "spread", "inward_pan", "outward_pan", "two_finger_tap" }) do
         assert_true(app:_toolbar_owns({ ges = kind, pos = over_bar }) == false, kind .. " is never the toolbar's")
     end
+    -- a swipe is the toolbar's only when it starts on it (a quick drag of the bar)
+    local beside = Geom:new{ x = bar.x + bar.w + 5, y = over_bar.y }
+    assert_true(app:_toolbar_owns({ ges = "swipe", pos = beside, end_pos = over_bar }) == false,
+        "a swipe from beside the bar is not")
     assert_true(app:_toolbar_owns({ ges = "tap", pos = over_bar }) == true, "a tap there is")
     close_viewer(app, remote)
 end)
@@ -6543,6 +6839,8 @@ local function toolbar_actions_fired(app, before_each)
             b.callback = function() fired[#fired + 1] = id end
             b.hold_callback = function() fired[#fired + 1] = id .. "(hold)" end
             dispatch_gesture{ ges = "tap", pos = pos }
+            -- (a tap that reached what covers the bar may have closed it: cover it again)
+            before_each()
             dispatch_gesture{ ges = "hold", pos = pos }
             dispatch_gesture{ ges = "hold_release", pos = pos }
             b.callback, b.hold_callback = cb, hold

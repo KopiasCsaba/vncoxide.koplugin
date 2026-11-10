@@ -40,11 +40,12 @@ vnc/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer), the view trans
 vnc/scaler.lua      Global-coordinate sharp/smooth scaler used for partial redraws.
 vnc/app.lua         The full-screen viewer widget: canvas, gestures (Touch and Mouse pointer
                           modes), on-screen keyboard, toolbar routing, remote input.
-vnc/toolbar.lua     The floating toolbar (Close, Display, Zoom cycle, Mode, Keyboard, Rotate,
-                          Scroll lock, optional Scroll up/down, Brightness, Contrast, More); a
-                          child of the viewer, not a window.
+vnc/toolbar.lua     The floating, draggable toolbar (Collapse, Display, Zoom cycle, Mode,
+                          Keyboard, Rotate, Scroll lock, Scroll up/down, Brightness, Contrast,
+                          Close, More; all but the last two can be hidden), or while collapsed its
+                          round button; a child of the viewer, not a window.
 vnc/icons.lua       Absolute paths of the plugin's own icons (the icons/ folder: keyboard.svg,
-                          scroll-lock.svg, keys.svg, zoom-1to1.svg, brightness.svg), which
+                          scroll-lock.svg, keys.svg, zoom-1to1.svg, brightness.svg, toolbar.svg), which
                           KOReader's icon folders do not hold, and how a Button / IconButton
                           gets one.
 vnc/contrastdialog.lua  The contrast dialog (toolbar Contrast button): a ButtonProgressWidget
@@ -229,11 +230,36 @@ The toolbar is a child of the viewer, not a window of its own (vnc/toolbar.lua).
 it after the canvas and its handleEvent hands the toolbar every gesture that started on it
 (ViewerApp:_toolbar_owns), so a tap on the bar never reaches the remote and the canvas around it
 stays live; a window of its own would take the screen's input and hide the viewer from UIManager.
-Not owned by the bar: swipes (the top-zone toggle, the end of a quick drag), multi-finger gestures
-(a pinch zooms wherever it is made) and anything while a drag or long press of ours is under way
-(its end is ours wherever the finger lifts). Every bar button first flushes the deferred click
+Not owned by the bar: swipes that start elsewhere (the top-zone toggle, the end of a quick drag),
+a pan_release of a drag the bar did not start, multi-finger gestures (a pinch zooms wherever it is
+made) and anything while a drag or long press of ours is under way (its end is ours wherever the
+finger lifts).
+
+Moving the bar: a pan that starts on it (or on its round button while collapsed) moves it, and from
+then on the bar owns that drag's pans and its end (pan_release, or a swipe when the finger lifts
+while still moving) wherever the finger is (Toolbar:is_dragging). A swipe that starts on the bar is
+a quick drag of it: it is put down at the lift point (the swipe's end_pos; its pos is where it
+started). While it follows the finger the old and new rectangles get "fast" refreshes, on release
+one "ui" refresh over where it started and where it is. The position is stored as fractions of
+the free space (toolbar_pos, Size.margin.default kept on every side), so it is re-clamped by every
+relayout (rotation, resize) and keeps its relative place. While collapsed toolbar_pos is the round
+button's; collapsing puts the round button at the bar's top left (where the Collapse button is),
+expanding puts the bar's top left at the round button, each clamped and stored again
+(Toolbar:relayout(at)). The toast (ViewerApp:show_toast) is pushed below the bar only when the bar
+is where the toast would be drawn; the contrast box goes under the bar, or above it when there is
+no room; the Display panel's anchor is the bar's rectangle (MovableContainer pops it down, or up).
+
+Long press on a button: a one-line tooltip (Toolbar.TIPS) and nothing else. KOReader closes a
+toast on any input that passes it, and the hold's own hold_release would close it the moment the
+finger lifts, so the tooltip's toast lets hold_release and hold_pan through without closing.
+
+Which buttons the bar shows is `toolbar_buttons` ({ id = bool }, Settings.TOOLBAR_BUTTONS has the
+ids and defaults; Close and More are not in it and always shown). It replaced three switches:
+Settings:normalise turns `toolbar_scroll_buttons` (both scroll ids), `toolbar_brightness_button`
+and `toolbar_contrast_button` into it once, only when there is no `toolbar_buttons` yet; the old
+keys are then dropped. Switching the Collapse button off while collapsed opens the bar first. Every bar button first flushes the deferred click
 below, since a pending click belongs to where the user tapped before reaching for the bar. The
-bar only ever asks for partial "ui" refreshes of its own rectangle. The Display panel is a
+bar only ever asks for partial refreshes of its own rectangle ("ui"; "fast" while it is dragged). The Display panel is a
 ButtonDialog anchored under the bar, rebuilt in place after each choice so the check marks show the
 live state; only a rotation closes it. Quality presets (Settings.QUALITY_PRESETS) are sets of the
 four picture fields of the profile; Settings.preset_of() names the match or "custom".
@@ -638,7 +664,8 @@ checks the flows that are hard to reach by hand: every menu/dialog returns to wh
 a failed connection returns to the connection list with exactly one dismissable message, the
 canvas follows rotations, the keyboard neither rescales nor moves a view that does not fit above
 it, the fitted zoom modes and the keyboard-aware placement behave, the keyboard yields to popups,
-the toolbar (its buttons, the top-zone swipe toggling it, taps on it never reaching the remote), both
+the toolbar (its buttons, their tooltips, collapsing, dragging and clamping, the top-zone swipe
+toggling it, taps on it never reaching the remote, the Toolbar buttons… menu), both
 pointer modes' gestures (the deferred Mouse click, double tap and move, two-finger tap, no scroll or
 rotate gesture), the Help page and the mode tooltip, scroll lock (wheel notches per drag), the Display panel and its quality presets, the More menu, the key
 strip, the reconnect box and loop (backoff, Retry now, Close, no background retry, Wi-Fi kept on while

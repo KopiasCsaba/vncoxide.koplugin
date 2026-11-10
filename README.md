@@ -18,7 +18,8 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
   pointer like a laptop trackpad. Two-finger gestures pan and zoom the view.
 - A small toolbar over the picture for the things you reach for most (including one zoom button
   that cycles fit, 1:1 and your own pinch/pan view, the frontlight and a contrast control for the
-  remote picture), with the rest one tap away behind **⋯**.
+  remote picture), with the rest one tap away behind **⋯**. Drag it anywhere, fold it into a small
+  round button, and pick which buttons it shows.
 - An on-screen keyboard that types into the remote session, plus a physical keyboard with
   modifiers, arrows, function keys and auto-repeat.
 - A key strip above the on-screen keyboard (modifiers, Esc, Tab, arrows, Del) and a **Send keys**
@@ -63,12 +64,17 @@ plugins — so with **VNC auto connect** selected the file browser appears for a
 viewer opens over it. If the connection cannot be made, the failure is reported exactly as a manual
 connect's is, and you are left in the normal KOReader UI; there is no retry.
 
-**The toolbar** is a small bar at the top centre of the screen, over the remote picture; the picture
-stays visible and clickable beside and below it. It is shown when a connection opens. A **swipe down
-in the top strip of the screen** (KOReader's menu zone) hides it and shows it again; nothing else
-hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
+**The toolbar** is a small bar over the remote picture, at the top centre until you move it; the
+picture stays visible and clickable beside and below it. It is shown when a connection opens. A
+**swipe down in the top strip of the screen** (KOReader's menu zone) hides it and shows it again
+(folded or not). A tap on the bar never reaches the remote. A **long press** on any button only
+shows its name in a one-line tooltip. **Drag** the bar by any of its buttons to move it: it follows
+the finger, stays fully on the screen, and keeps its place (as a share of the free space, so also
+after a rotation) for the next time. Its buttons, left to right:
 
-1. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
+1. **Collapse** (a small bar icon) folds the toolbar into a round button with the same icon, at the
+   same spot. A tap on the round button opens the toolbar again; it can be dragged like the bar,
+   and the bar opens where it is. The folded state is remembered.
 2. **Display** opens the Display panel (below).
 3. **Zoom** cycles the view: **fit** → **1:1** (one remote pixel per screen pixel, keeping the
    middle of the view where it was) → **your view** → fit … "Your view" is the last one you made
@@ -77,11 +83,10 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
    screen size changes) the button just switches between fit and 1:1. The icon shows the current
    state: a page (fit), **1:1**, or a magnifier (your view; also shown for another Display panel
    zoom preset, from which the button goes to fit). Fit follows the keyboard like a two-finger tap.
-4. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a short tooltip (*Touch mode — long
-   press for help* or *Mouse mode — long press for help*). A long press opens the **Help** page
-   (also under **⋯**). The mode is remembered per connection.
-5. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard together with the key strip (and
-   closes the **Send keys** panel if it is open); a long press opens the full **Send keys** panel.
+4. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a short tooltip (*Touch mode*
+   or *Mouse mode*). The **Help** page is under **⋯**. The mode is remembered per connection.
+5. **⌨ Keyboard** shows or hides the on-screen keyboard together with the key strip (and closes
+   the **Send keys** panel if it is open; the panel opens from the strip's keys icon).
    The viewer opens with the keyboard as you last left it (shown or hidden; the strip's **✕** and the
    panel's **✕** and keyboard icon count too; a menu or dialog hides it only while it is open).
 6. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
@@ -89,16 +94,18 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
    used and opens in it, unless **Match orientation to the remote screen** (see below) turns it.
 7. **Scroll lock** is a toggle, drawn inverted while on; it starts off each time the viewer opens.
    While it is on, a two-finger drag scrolls the remote instead of moving the picture (see below).
-8. **Scroll up / down** send one wheel notch each. They are hidden until you switch on **Show
-   scroll buttons on toolbar** in **⋯**.
-9. **Brightness** (a sun) opens KOReader's own frontlight dialog. Shown on devices with a
-   frontlight while **Enable brightness button** in **⋯** is on (the default).
-10. **Contrast** opens a small dialog under the toolbar with a stepped bar (50 % … 300 %, 100 % is
-    the picture as the server sends it, marked as the default). It changes the contrast of the remote
-    picture as it is drawn on this screen (a stretch around mid grey; the remote desktop is not
-    touched), at once and without a new picture from the server, and is remembered. ✕, Back, a tap
-    outside or the button close it. Hidden until you switch on **Enable contrast button** in **⋯**.
-11. **⋯** opens the menu (below).
+8. **Scroll up / down** send one wheel notch each. Hidden by default.
+9. **Brightness** (a sun) opens KOReader's own frontlight dialog. Only on devices with a frontlight.
+10. **Contrast** opens a small dialog under the toolbar (above it when the bar sits low) with a
+    stepped bar (50 % … 300 %, 100 % is the picture as the server sends it, marked as the default).
+    It changes the contrast of the remote picture as it is drawn on this screen (a stretch around
+    mid grey; the remote desktop is not touched), at once and without a new picture from the
+    server, and is remembered. ✕, Back, a tap outside or the button close it. Hidden by default.
+11. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
+12. **⋯** opens the menu (below).
+
+**⋯ › Toolbar buttons…** switches each button but Close and **⋯** on or off (one row for the scroll
+pair); **⋯** always stays, as on a device without keys it is the only way to the menu.
 
 | Gesture | Touch mode | Mouse mode |
 | --- | --- | --- |
@@ -142,7 +149,7 @@ A tap is *always* a click on the remote, everywhere outside the bar, so there is
 on the screen. With a physical keyboard, the **Menu** key (F1 on KOReader's own keymap) opens the
 menu and **Back** closes whatever is open on top.
 
-**The Display panel** hangs under the toolbar. A choice stays in the panel (the check marks follow
+**The Display panel** hangs under the toolbar (above it when there is no room below). A choice stays in the panel (the check marks follow
 the live state) except a rotation, which closes it. It tells:
 
 - **Zoom**: Fit screen, Fit (with keyboard), 25 %, 50 %, 75 %, 100 %, 150 %, 200 %, 400 %.
@@ -178,22 +185,22 @@ before it opened.
 - **Pointer speed (mouse mode)**: Slow (0.75), Normal (1.25), Fast (2.0): a multiplier on how far
   the pointer moves for a given drag.
 
-**The ⋯ menu** holds the rest: a status line, **Reconnect to …** when the connection has just dropped
-and the connection list (**Connections…**, to switch or add one), **Send text…** (type a line locally
-and send it to the remote as key presses; characters with no key are skipped and counted),
-**Refresh** (asks for a full picture and flashes the screen), **Ctrl+Alt+Del**, **Lock screen**
-(Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel),
+**The ⋯ menu** holds the rest. Its title is the connection and its state (*name · 1920×1080* while
+connected, *name · connection lost* after a drop). Then **Reconnect to …** when the connection has
+just dropped (a long press tells why), the connection list (**Connections…**, to switch or add one),
+**Refresh** (asks for a full picture and flashes the screen), **Lock screen** (Super+L), **Page
+buttons send** (Page Up/Down keys or Mouse wheel),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
-**Show scroll buttons on toolbar**, **Enable brightness button**, **Enable contrast button**, **Help** and **Leave (keep connection)**. Switches keep the menu open;
-anything else closes it.
+**Toolbar buttons…** (above), **Help** and **Leave (keep connection)**. Rows that switch something
+on or off show ✓ or - and keep the menu open; anything else closes it.
 
 **The key strip** sits right above the on-screen keyboard: **✕** (closes the keyboard, like a tap on
 **⌨**), the **Send keys** icon (two keycaps), which opens the full **Send keys** panel (the keyboard
 and strip make way for it; it sends nothing and leaves armed modifiers armed), then **Ctrl**,
 **Shift**, **Alt**, **Super**, Esc, Tab, the four arrows and Del. A modifier armed there goes with exactly one action, like
 the panel's: the next key on the on-screen keyboard or the strip, or the next tap or drag on the
-screen. A long press on **⌨** also opens the full **Send keys** panel.
+screen.
 
 **Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable) above
 it. Its top row is the key strip's row with two other buttons at the left: **✕** closes the panel and
@@ -341,15 +348,20 @@ return {
         ["match_orientation"] = true,      -- turn the screen to the remote's orientation after connecting
         ["landscape_orientation"] = 1,     -- landscape side last picked by hand (1 = 90° clockwise)
         ["portrait_orientation"] = 0,      -- portrait side last picked by hand (0 = upright)
-        ["keyboard_always_visible"] = false,
+        ["keyboard_shown"] = false,        -- the keyboard's last state: the viewer opens with it shown or not
         ["keep_screen_on"] = true,         -- no auto-suspend, standby or light dimming while the viewer is open
         ["zoom_mode"] = "fit",             -- "fit", "fit_with_keyboard" or 0.25 .. 4
         ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
         ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the Display panel's switch)
         ["pointer_speed"] = "normal",      -- Mouse mode: "slow" (0.75), "normal" (1.25) or "fast" (2.0)
-        ["toolbar_scroll_buttons"] = false, -- show the toolbar's scroll up/down buttons
-        ["toolbar_brightness_button"] = true, -- show the toolbar's frontlight button (devices with a frontlight)
-        ["toolbar_contrast_button"] = false, -- show the toolbar's contrast button
+        ["toolbar_buttons"] = {            -- which toolbar buttons are shown (Close and More always are)
+            ["toggle"] = true, ["display"] = true, ["zoom"] = true, ["mode"] = true, ["keyboard"] = true,
+            ["rotate"] = true, ["scroll_lock"] = true, ["scroll_up"] = false, ["scroll_down"] = false,
+            ["brightness"] = true,         -- (only on devices with a frontlight)
+            ["contrast"] = false,
+        },
+        ["toolbar_collapsed"] = false,     -- the toolbar is folded into its round button
+        ["toolbar_pos"] = { ["x"] = 0.5, ["y"] = 0 }, -- where it sits: fractions of the free space (0.5, 0 = top centre)
         ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
     },
     ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface

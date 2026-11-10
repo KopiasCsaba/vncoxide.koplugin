@@ -1,7 +1,7 @@
 --[[--
 The display panel: zoom, scaling, orientation (icon buttons) and pointer speed.
 
-A ButtonDialog that hangs under the toolbar (or from the top of the screen without one). Built
+A ButtonDialog that hangs under the toolbar (above it when there is no room below; from the top of the screen without one). Built
 fresh on every open and re-opened in place after a choice, so the checkmarks always show the live
 state. Only a rotation closes it: the dialog is laid out for the old orientation.
 

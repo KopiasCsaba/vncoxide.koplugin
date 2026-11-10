@@ -51,13 +51,26 @@ Settings.DEFAULTS = {
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
     scaling = "smooth",              -- viewer scaling: "smooth" (blended) or "sharp" (nearest neighbour)
     pointer_speed = "normal",        -- mouse-mode cursor speed: a key of @{Settings.POINTER_SPEEDS}
-    toolbar_scroll_buttons = false,  -- the toolbar shows scroll up/down buttons
-    toolbar_brightness_button = true, -- the toolbar shows a button for KOReader's frontlight dialog (with a frontlight)
-    toolbar_contrast_button = false, -- the toolbar shows a button for the remote picture's contrast
+    -- which toolbar buttons are shown, by id (Close and More always are): see @{Settings.TOOLBAR_BUTTONS}
+    toolbar_buttons = {},
+    toolbar_collapsed = false,       -- the toolbar is folded into its small round button
+    -- where the toolbar (or, while collapsed, its round button) sits: fractions of the free space
+    -- left and above it, so it keeps its place across rotations; 0.5, 0 is the top centre
+    toolbar_pos = {},
     remote_contrast = 1,             -- contrast of the remote picture as drawn here: one of @{Settings.CONTRAST_LEVELS}
     -- the "Send keys" panel's last combos, most recent first: { mods = {"Ctrl", ...}, keysym, label }
     recent_combos = {},
 }
+
+--- The toolbar buttons that can be hidden, and whether each is shown by default. The scroll pair
+--- is switched together; Brightness also needs a device with a frontlight.
+Settings.TOOLBAR_BUTTONS = {
+    toggle = true, display = true, zoom = true, mode = true, keyboard = true, rotate = true,
+    scroll_lock = true, scroll_up = false, scroll_down = false, brightness = true, contrast = false,
+}
+
+--- Where the toolbar sits by default (see `toolbar_pos`).
+Settings.TOOLBAR_POS = { x = 0.5, y = 0 }
 
 --- Mouse-mode cursor speed presets: remote pixels moved per screen pixel dragged.
 Settings.POINTER_SPEEDS = { slow = 0.75, normal = 1.25, fast = 2.0 }
@@ -131,6 +144,22 @@ local SETTING_CHECKS = {
     pointer_speed = function(value)
         if Settings.POINTER_SPEEDS[value] then return value end
         return Settings.DEFAULTS.pointer_speed
+    end,
+    toolbar_buttons = function(value)
+        local out = {}
+        for id, default in pairs(Settings.TOOLBAR_BUTTONS) do
+            local v = type(value) == "table" and value[id]
+            if type(v) == "boolean" then out[id] = v else out[id] = default end
+        end
+        return out
+    end,
+    toolbar_pos = function(value)
+        local function fraction(v, default)
+            if type(v) == "number" and v >= 0 and v <= 1 then return v end
+            return default
+        end
+        value = type(value) == "table" and value or {}
+        return { x = fraction(value.x, Settings.TOOLBAR_POS.x), y = fraction(value.y, Settings.TOOLBAR_POS.y) }
     end,
     recent_combos = function(value)
         local list = {}
@@ -362,6 +391,18 @@ function Settings:normalise()
     if type(data.settings) == "table" and data.settings.keyboard_shown == nil
         and data.settings.keyboard_always_visible == true then
         data.settings.keyboard_shown = true
+    end
+    -- the toolbar's three button switches (`toolbar_scroll_buttons`, `toolbar_brightness_button`,
+    -- `toolbar_contrast_button`) became entries of `toolbar_buttons`; the old keys are dropped below
+    local old = data.settings
+    if type(old) == "table" and old.toolbar_buttons == nil then
+        local buttons = {}
+        if type(old.toolbar_scroll_buttons) == "boolean" then
+            buttons.scroll_up, buttons.scroll_down = old.toolbar_scroll_buttons, old.toolbar_scroll_buttons
+        end
+        if type(old.toolbar_brightness_button) == "boolean" then buttons.brightness = old.toolbar_brightness_button end
+        if type(old.toolbar_contrast_button) == "boolean" then buttons.contrast = old.toolbar_contrast_button end
+        old.toolbar_buttons = buttons
     end
     normalise_section("settings", Settings.DEFAULTS, SETTING_CHECKS)
     local server = normalise_section("server", Settings.SERVER_DEFAULTS)

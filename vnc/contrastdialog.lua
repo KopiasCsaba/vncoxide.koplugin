@@ -1,5 +1,5 @@
 --[[--
-The contrast dialog: a small box under the toolbar with KOReader's ButtonProgressWidget (the
+The contrast dialog: a small box under the toolbar (above it when the bar sits low) with KOReader's ButtonProgressWidget (the
 stepped bar of its own frontlight dialog), one step per @{vnc.settings.CONTRAST_LEVELS} level, the
 neutral one marked as the default.
 
@@ -99,12 +99,19 @@ function ContrastDialog:init()
         },
     }
     self[1] = self.frame
-    -- under the toolbar when it is up (like the display panel), else near the top edge
+    -- under the toolbar (or its round button) when it is up, centred on it (like the display
+    -- panel), or above it when there is no room below; else at the top centre
     local size = self.frame:getSize()
-    local y = Size.margin.default
+    local m = Size.margin.default
+    local x, y = math.floor((screen.w - size.w) / 2), m
     local bar = app.toolbar
-    if bar and app.toolbar_visible then y = bar.dimen.y + bar.dimen.h + Size.margin.default end
-    self.dimen = Geom:new{ x = math.floor((screen.w - size.w) / 2), y = y, w = size.w, h = size.h }
+    if bar and app.toolbar_visible then
+        local d = bar.dimen
+        x = math.max(0, math.min(d.x + math.floor((d.w - size.w) / 2), screen.w - size.w))
+        y = d.y + d.h + m
+        if y + size.h > screen.h and d.y - m - size.h >= 0 then y = d.y - m - size.h end
+    end
+    self.dimen = Geom:new{ x = x, y = y, w = size.w, h = size.h }
 
     self.ges_events = {
         TapClose = { GestureRange:new{ ges = "tap", range = Geom:new{ x = 0, y = 0, w = screen.w, h = screen.h } } },

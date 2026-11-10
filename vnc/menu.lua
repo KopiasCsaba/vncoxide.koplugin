@@ -1,8 +1,9 @@
 --[[--
 The in-app menu.
 
-Built fresh on every open, so the checkmarks and the status row always reflect the live
-session state.
+Built fresh on every open, so the checkmarks and the title (the connection's name and state)
+always reflect the live session state. Naming: a row that switches something on or off is the plain
+name of that thing, with ✓ or - beside it; a row that does something is a verb.
 
 @module vnc.menu
 ]]
@@ -10,13 +11,14 @@ session state.
 local _ = require("gettext")
 local T = require("ffi/util").template
 
+local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
-local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 
 local Dialogs = require("vnc/dialogs")
 local Keysyms = require("vnc/keysyms")
+local Toolbar = require("vnc/toolbar")
 
 local MenuBuilder = {}
 
@@ -86,40 +88,6 @@ function MenuBuilder.open(app)
         end
         return item
     end
-    -- Types a line of text on the remote; the menu is closed by now, the dialog is the only popup.
-    local function send_text_dialog()
-        local dialog
-        dialog = InputDialog:new{
-            title = _("Send text"),
-            input_hint = _("Text to type on the remote"),
-            buttons = { {
-                {
-                    text = _("Cancel"),
-                    id = "close",
-                    callback = function()
-                        UIManager:close(dialog)
-                        app:reassert_text_input()
-                        app:_sync_keyboard_later()
-                    end,
-                },
-                {
-                    text = _("Send"),
-                    is_enter_default = true,
-                    callback = function()
-                        local text = dialog:getInputValue()
-                        UIManager:close(dialog)
-                        local skipped = app:send_text(text)
-                        if skipped > 0 then
-                            app:show_toast(T(_("%1 character(s) skipped"), skipped))
-                        end
-                        app:reassert_text_input()
-                        app:_sync_keyboard_later()
-                    end,
-                },
-            } },
-        }
-        UIManager:show(dialog)
-    end
     -- A failed attempt must come back to a menu, not leave the user staring at the canvas.
     local function back_into_menu() app:open_menu() end
     -- While the reconnect loop runs, connecting to the session's own profile is the loop's next
@@ -132,23 +100,25 @@ function MenuBuilder.open(app)
         end
     end
 
-    -- ---- status (not selectable)
-    local status
+    -- ---- the title: the connection and its state
+    local title
+    local state = session:get_state()
     if not profile then
-        status = _("No active session")
-    elseif session:get_state() == "error" then
-        status = T(_("Connection lost: %1"), tostring(session:get_error()))
-    elseif session:get_state() == "connected" and remote then
-        status = T(_("Connected to %1 (%2×%3)"), profile.name, remote:get_size())
+        title = _("VNC viewer")
+    elseif state == "error" then
+        title = T(_("%1 · connection lost"), profile.name)
+    elseif state == "connected" and remote then
+        local w, h = remote:get_size()
+        title = T(_("%1 · %2×%3"), profile.name, w, h)
     else
-        status = T(_("Not connected (%1)"), session:get_state())
+        title = T(_("%1 · %2"), profile.name, state)
     end
-    item_table[#item_table + 1] = { text = status, select_enabled = false }
 
     -- ---- a lost / failed connection: offer a retry right at the top
     if profile and session:get_state() == "error" then
         item_table[#item_table + 1] = {
             text = T(_("Reconnect to %1"), profile.name),
+            help_text = session:get_error() and tostring(session:get_error()) or nil,
             callback = action(function() connect_to(profile.name) end),
         }
     end
@@ -171,16 +141,8 @@ function MenuBuilder.open(app)
 
     -- ---- things to send or ask for
     item_table[#item_table + 1] = {
-        text = _("Send text…"),
-        callback = action(function() send_text_dialog() end),
-    }
-    item_table[#item_table + 1] = {
         text = _("Refresh"),
         callback = action(function() app:refresh_remote() end),
-    }
-    item_table[#item_table + 1] = {
-        text = _("Ctrl+Alt+Del"),
-        callback = action(function() app:send_combo{ Keysyms.x11.Control_L, Keysyms.x11.Alt_L, Keysyms.x11.Delete } end),
     }
     item_table[#item_table + 1] = {
         text = _("Lock screen"),
@@ -231,32 +193,54 @@ function MenuBuilder.open(app)
         end,
     }, function(item) item.mandatory = settings.match_orientation and "✓" or "-" end)
 
-    -- ---- the toolbar's scroll buttons: the bar is rebuilt and the area it covered repainted
-    item_table[#item_table + 1] = stays_open({
-        text = _("Show scroll buttons on toolbar"),
-        callback = function()
-            settings.toolbar_scroll_buttons = not settings.toolbar_scroll_buttons
-            plugin.settings:flush()
-            app:_toolbar_changed()
-        end,
-    }, function(item) item.mandatory = settings.toolbar_scroll_buttons and "✓" or "-" end)
-
-    -- ---- the toolbar's brightness and contrast buttons, the same way
-    local function toolbar_switch(text, key, help_text)
-        item_table[#item_table + 1] = stays_open({
+    -- ---- which buttons the toolbar shows: the bar is rebuilt and the area it covered repainted
+    local function toolbar_row(text, ids, extra)
+        local function shown() return Toolbar.is_enabled(settings, ids[1]) end
+        local row = {
             text = text,
-            help_text = help_text,
             callback = function()
-                settings[key] = not settings[key]
+                local on = not shown()
+                -- the round button cannot stay without its way back: the bar opens first
+                if ids[1] == "toggle" and not on then app:set_toolbar_collapsed(false) end
+                local buttons = {}
+                for k, v in pairs(type(settings.toolbar_buttons) == "table" and settings.toolbar_buttons or {}) do
+                    buttons[k] = v
+                end
+                for _i, id in ipairs(ids) do buttons[id] = on end
+                settings.toolbar_buttons = buttons
                 plugin.settings:flush()
                 app:_toolbar_changed()
             end,
-        }, function(item) item.mandatory = settings[key] and "✓" or "-" end)
+        }
+        for k, v in pairs(extra or {}) do row[k] = v end
+        return stays_open(row, function(item) item.mandatory = shown() and "✓" or "-" end)
     end
-    toolbar_switch(_("Enable brightness button"), "toolbar_brightness_button",
-        _("A toolbar button for the frontlight dialog (on devices with a frontlight)."))
-    toolbar_switch(_("Enable contrast button"), "toolbar_contrast_button",
-        _("A toolbar button that adjusts the contrast of the remote picture as it is drawn here."))
+    local has_frontlight = Device:hasFrontlight()
+    item_table[#item_table + 1] = {
+        text = _("Toolbar buttons…"),
+        help_text = _("Which buttons the toolbar shows. Close and More are always there: More is the only way to this menu on a device without keys."),
+        sub_item_table = {
+            toolbar_row(_("Collapse button"), { "toggle" }, {
+                help_text = _("Folds the toolbar into a small round button; a tap on that opens it again."),
+            }),
+            toolbar_row(_("Display"), { "display" }),
+            toolbar_row(_("Zoom"), { "zoom" }),
+            toolbar_row(_("Mode"), { "mode" }),
+            toolbar_row(_("Keyboard"), { "keyboard" }),
+            toolbar_row(_("Rotate"), { "rotate" }),
+            toolbar_row(_("Scroll lock"), { "scroll_lock" }),
+            toolbar_row(_("Scroll up/down"), { "scroll_up", "scroll_down" }),
+            toolbar_row(_("Brightness"), { "brightness" }, {
+                help_text = has_frontlight and _("KOReader's frontlight dialog.")
+                    or _("This device has no frontlight: the button is never shown."),
+                dim = not has_frontlight or nil,
+                select_enabled = has_frontlight,
+            }),
+            toolbar_row(_("Contrast"), { "contrast" }, {
+                help_text = _("The contrast of the remote picture as it is drawn here."),
+            }),
+        },
+    }
 
     -- ---- help, session
     item_table[#item_table + 1] = {
@@ -269,7 +253,7 @@ function MenuBuilder.open(app)
     }
 
     menu = VncMenu:new{
-        title = profile and T(_("VNC — %1"), profile.name) or _("VNC viewer"),
+        title = title,
         item_table = item_table,
         is_borderless = true,
         is_popout = false,
