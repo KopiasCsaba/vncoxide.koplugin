@@ -76,6 +76,14 @@ Session.KEEPALIVE = { idle = 30, interval = 10, count = 3 }
 -- E-ink redraws block the UI thread, so a redraw started mid-burst delays the next key press.
 Session.INPUT_QUIET = 0.3
 
+-- Seconds between an input event and a modifier release right after it. A combo sent in one burst
+-- (Send keys' Alt+Tab) can reach the X server before the window manager has grabbed the keyboard
+-- for the key, which then misses the release: openbox's switcher stayed open behind x11vnc. A few
+-- ms were enough there; this leaves room for Wi-Fi bunching.
+Session.MODIFIER_RELEASE_GAP = 0.03
+local MODIFIER_KEYSYMS = { [0xFFE1] = true, [0xFFE2] = true, [0xFFE3] = true, [0xFFE4] = true,
+    [0xFFE7] = true, [0xFFE8] = true, [0xFFE9] = true, [0xFFEA] = true, [0xFFEB] = true, [0xFFEC] = true }
+
 -- Margin around the visible area that zoomed-in requests also cover, as a fraction of the visible
 -- width/height on each side: a short pan then lands on pixels that are already up to date.
 Session.REQUEST_MARGIN = Remote.REQUEST_MARGIN
@@ -102,6 +110,24 @@ local u8p = ffi.typeof("uint8_t*")
 --- Monotonic seconds; a module field so tests can substitute a clock.
 function Session._now()
     return time.to_s(time.now())
+end
+
+--- Blocks for `d` seconds; a module field so tests can substitute it.
+function Session._sleep(d)
+    require("socket").sleep(d)
+end
+
+--- Before a modifier release: waits out MODIFIER_RELEASE_GAP since the previous input event.
+function Session:_input_gap(keysym, down)
+    local now = Session._now()
+    if not down and MODIFIER_KEYSYMS[keysym] and self._last_input_event then
+        local wait = Session.MODIFIER_RELEASE_GAP - (now - self._last_input_event)
+        if wait > 0 then
+            Session._sleep(wait)
+            now = Session._now()
+        end
+    end
+    self._last_input_event = now
 end
 
 --[[--
@@ -1031,6 +1057,7 @@ end
 --- @tparam number mask RFB pointer button mask
 function Session:send_pointer(x, y, mask)
     if not self:_live() then return end
+    self:_input_gap()
     self.proto:send_pointer(x, y, mask)
     self:_flush_now()
 end
@@ -1040,6 +1067,7 @@ end
 function Session:send_key(keysym, down)
     if not self:_live() then return end
     if down then self:note_input() end
+    self:_input_gap(keysym, down)
     self.proto:send_key(keysym, down)
     self:_flush_now()
 end

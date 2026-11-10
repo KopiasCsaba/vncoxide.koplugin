@@ -1628,6 +1628,44 @@ local function main()
         return done(ok, err)
     end)
 
+    -- A combo sent in one burst (the Send keys panel's Alt+Tab) left openbox's window switcher open
+    -- behind a real x11vnc: the Alt release reached the X server before the WM had grabbed the
+    -- keyboard for the Tab. A modifier release right after another input event waits
+    -- MODIFIER_RELEASE_GAP; nothing else waits.
+    check("session_modifier_release_after_input_waits_a_gap", function()
+        local Session = load_session()
+        local real_now, real_sleep, clock = Session._now, Session._sleep, 100
+        local sent, slept = {}, {}
+        Session._now = function() return clock end
+        Session._sleep = function(d) slept[#slept + 1] = d; clock = clock + d end
+        local s = Session.new{ profile = { host = "h", port = 1, name = "gap" },
+            network_mgr = { isWifiOn = function() return true end } }
+        s._phase = nil
+        s.proto = {
+            send_key = function(_, k, d) sent[#sent + 1] = { t = clock, what = (d and "+" or "-") .. string.format("%X", k) } end,
+            send_pointer = function(_, x, y, m) sent[#sent + 1] = { t = clock, what = "p" .. m } end,
+        }
+        local function restore() Session._now, Session._sleep = real_now, real_sleep end
+        local ok, err = pcall(function()
+            -- Alt+Tab in one burst
+            s:send_key(0xFFE9, true); s:send_key(0xFF09, true); s:send_key(0xFF09, false); s:send_key(0xFFE9, false)
+            assert(#slept == 1, "one gap expected, got " .. #slept)
+            assert(sent[4].what == "-FFE9" and sent[4].t - sent[3].t >= Session.MODIFIER_RELEASE_GAP,
+                "the Alt release must come MODIFIER_RELEASE_GAP after the Tab release")
+            -- plain typing and a modifier released long after: no gap
+            sent, slept = {}, {}
+            s:send_key(0x61, true); s:send_key(0x61, false)
+            s:send_key(0xFFE1, true); clock = clock + 1; s:send_key(0xFFE1, false)
+            assert(#slept == 0, "no gap for plain keys or a late release, got " .. #slept)
+            -- Shift+click: the Shift release after the button release waits too
+            s:send_key(0xFFE1, true); s:send_pointer(5, 5, 1); s:send_pointer(5, 5, 0); s:send_key(0xFFE1, false)
+            assert(#slept == 1, "Shift after a click must wait, got " .. #slept)
+        end)
+        restore()
+        if not ok then return nil, tostring(err) end
+        return true
+    end)
+
     -- 13/14. Input priority: while keys are being pressed the incremental update request that
     -- normally follows every FramebufferUpdate is held, so the server does not start the next
     -- redraw behind a burst of key presses. Exactly one request goes out once input has been
