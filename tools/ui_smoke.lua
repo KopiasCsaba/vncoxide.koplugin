@@ -5430,6 +5430,29 @@ check("mouse_deferred_click_takes_only_the_modifiers_armed_at_its_tap", function
     close_viewer(app, remote)
 end)
 
+--- A connect picked in the viewer's menu that fails comes back to the menu - unless the user left
+--- the viewer while it ran: the menu used to open over the closed viewer, on top of the library.
+check("a_failed_connect_from_the_menu_reopens_it_only_on_a_shown_viewer", function()
+    local app, remote = new_app()
+    app.plugin.settings.profiles = function() return { { name = "slow", host = "10.0.0.1", port = 5900 } } end
+    local on_failure
+    app.plugin.connect_profile = function(_, name, cb) on_failure = cb end
+    local function pick_slow()
+        local menu = app:open_menu()
+        find_item(find_item(menu.item_table, "Connections…").sub_item_table, "slow").callback()
+        assert_true(on_failure ~= nil and app.menu == nil, "the attempt starts, the menu is closed")
+    end
+    pick_slow()
+    on_failure()
+    assert_true(app.menu ~= nil and UIManager:isWidgetShown(app.menu), "a failure on the viewer reopens the menu")
+    app:close_menu()
+    pick_slow()
+    UIManager:close(app)
+    on_failure()
+    assert_true(app.menu == nil, "but not once the viewer is gone")
+    close_viewer(app, remote)
+end)
+
 check("mouse_tap_then_hold_drags_with_the_left_button", function()
     local app, remote, sent = new_app(400, 300, { mode = "mouse" })
     local wire = wire_log(app)

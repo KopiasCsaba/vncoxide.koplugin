@@ -137,8 +137,11 @@ function MenuBuilder.open(app)
         end
         return item
     end
-    -- A failed attempt must come back to a menu, not leave the user staring at the canvas.
-    local function back_into_menu() app:open_menu() end
+    -- A failed attempt must come back to a menu, not leave the user staring at the canvas - while
+    -- the viewer is still up (the user may have left it while the attempt ran).
+    local function back_into_menu()
+        if UIManager:isWidgetShown(app) then app:open_menu() end
+    end
     -- While the reconnect loop runs, connecting to the session's own profile is the loop's next
     -- attempt: a connect beside it would leave the box up over a live link.
     local function connect_to(name)
