@@ -212,11 +212,26 @@ Adapted from KOReader's own HTTP inspector plugin, which does the same thing for
 function Server:_firewall(action)
     if not (Device.isKindle and Device:isKindle()) then return end
     local port = self.settings.port
-    local flag = action == "add" and "-A" or "-D"
-    os.execute(string.format("%s %s %s", "iptables", flag, "INPUT -p tcp --dport " .. port ..
-        " -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"))
-    os.execute(string.format("%s %s %s", "iptables", flag, "OUTPUT -p tcp --sport " .. port ..
-        " -m conntrack --ctstate ESTABLISHED -j ACCEPT"))
+    local rules = {
+        "INPUT -p tcp --dport " .. port .. " -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+        "OUTPUT -p tcp --sport " .. port .. " -m conntrack --ctstate ESTABLISHED -j ACCEPT",
+    }
+    local function iptables(args)
+        local r = os.execute("iptables " .. args .. " 2>/dev/null")
+        return r == 0 or r == true
+    end
+    -- Nothing stops the server when KOReader exits, so a rule added by a run that never reached
+    -- Server:stop is still there: an add that finds its rule (-C) adds no second one, and a remove
+    -- deletes every copy (also those an iptables without -C, or an older version, piled up).
+    for _, rule in ipairs(rules) do
+        if action == "add" then
+            if not iptables("-C " .. rule) then iptables("-A " .. rule) end
+        else
+            for _ = 1, 32 do
+                if not iptables("-D " .. rule) then break end
+            end
+        end
+    end
 end
 
 --- Binds the listener and starts serving. Returns true, or false plus a message.

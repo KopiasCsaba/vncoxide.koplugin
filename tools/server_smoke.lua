@@ -4669,5 +4669,46 @@ check("only_one_client_owns_the_touch_contact_at_a_time", function()
         "a dropped client's contact is released for the others (%d/%d)", downs, lifts))
 end)
 
+check("the_kindle_firewall_rules_do_not_pile_up", function()
+    -- Each start appended its iptables rules (-A) and only a stop deleted one copy; nothing stops
+    -- the server when KOReader exits, so every run left another pair behind.
+    local Server = require("vnc/server")
+    local server = Server.new{ settings = { ip = "127.0.0.1", port = 5900, password = "" } }
+    local table_rules = {}                                  -- rule -> copies
+    local real_execute, real_is_kindle = os.execute, Device.isKindle
+    os.execute = function(cmd)
+        local op, rule = cmd:match("^iptables (%-%u) (.-) 2>/dev/null$")
+        if not op then return real_execute(cmd) end
+        local n = table_rules[rule] or 0
+        if op == "-A" then table_rules[rule] = n + 1 return 0 end
+        if op == "-C" then return n > 0 and 0 or 256 end
+        if op == "-D" then
+            if n == 0 then return 256 end
+            table_rules[rule] = n > 1 and n - 1 or nil
+            return 0
+        end
+        return 256
+    end
+    Device.isKindle = function() return true end
+    local ok, err = pcall(function()
+        local function copies()
+            local total, kinds = 0, 0
+            for _, n in pairs(table_rules) do total, kinds = total + n, kinds + 1 end
+            return total, kinds
+        end
+        server:_firewall("add")
+        server:_firewall("add")
+        local total, kinds = copies()
+        assert_true(kinds == 2 and total == 2, "two adds must leave one INPUT and one OUTPUT rule, got "
+            .. total .. " in " .. kinds)
+        for rule in pairs(table_rules) do table_rules[rule] = 3 end   -- left over by older runs
+        server:_firewall("remove")
+        total = copies()
+        assert_true(total == 0, "a remove must delete every copy, " .. total .. " left")
+    end)
+    os.execute, Device.isKindle = real_execute, real_is_kindle
+    if not ok then error(err, 0) end
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
