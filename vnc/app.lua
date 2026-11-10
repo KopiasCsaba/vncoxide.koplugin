@@ -2190,6 +2190,19 @@ function ViewerApp:_drop_key_panel()
     UIManager:close(panel)
 end
 
+--- The "Send keys" panel's keyboard icon: closes the panel and brings the on-screen keyboard back
+--- with its key strip; the modifiers armed on the panel stay armed on the strip.
+function ViewerApp:switch_to_keyboard()
+    local panel = self.key_panel
+    if not panel then return end
+    local mods = {}
+    for name, state in pairs(panel.mods) do mods[name] = state end
+    self._strip_mods = mods
+    self.vk_wanted = true
+    self:close_key_panel() -- re-evaluates the keyboard, which comes up with the strip
+    self._strip_mods = nil
+end
+
 --- Shows the key strip on top of the keyboard (with it, in `evaluate_keyboard`).
 function ViewerApp:_show_key_strip()
     if self.key_strip then return end
@@ -2197,6 +2210,7 @@ function ViewerApp:_show_key_strip()
         app = self,
         variant = "strip",
         bottom_offset = self.vk:getSize().h or 0,
+        mods = self._strip_mods,
     })
     UIManager:show(self.key_strip, "ui", self.key_strip.dimen)
 end

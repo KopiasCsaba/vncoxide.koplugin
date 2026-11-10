@@ -2,7 +2,8 @@
 The "Send keys" panel: any hotkey for the remote desktop, from a touch screen.
 
 A bottom-anchored panel (full width, as tall as it needs) built from KOReader's own pieces: a
-TitleBar with a close button, rows of borderless Buttons separated by grey lines (the ButtonTable
+TitleBar with ✕ (close) and, right of it, a keyboard icon (back to the on-screen keyboard and its
+strip, armed modifiers included) at the left, rows of borderless Buttons separated by grey lines (the ButtonTable
 look), and the ToggleSwitch of the bottom configuration panel for the tabs. The remote stays
 visible above it and keeps updating; taps there still click the remote (the viewer does not count
 the panel as a popup, c.f. `ViewerApp:_input_target`).
@@ -45,6 +46,7 @@ local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
+local IconButton = require("ui/widget/iconbutton")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local Size = require("ui/size")
@@ -581,6 +583,50 @@ function KeyPanel:_build_strip(screen)
     self.dimen = Geom:new{ x = 0, y = bottom - h, w = screen.w, h = h }
 end
 
+--[[--
+The title bar: ✕ (closes the panel) at the left and, right of it, the keyboard icon (back to the
+on-screen keyboard with its strip, `ViewerApp:switch_to_keyboard`); the title stays centred.
+
+TitleBar has room for one icon per side: the ✕ is its left icon (so height, padding and the bottom
+line are the stock ones) and the keyboard icon is one more IconButton laid over the bar right of
+it. The ✕'s tap zone, which TitleBar stretches over two icon widths to the right, is trimmed back
+to its padding so it does not take the keyboard icon's taps, and the title gets one icon width more
+on both sides so it stays centred and clear of both.
+]]
+function KeyPanel:_build_title_bar(width)
+    local padding = TitleBar.button_padding
+    local icon_size = Screen:scaleBySize(G_defaults:readSetting("DGENERIC_ICON_SIZE") * TitleBar.left_icon_size_ratio)
+    local title_bar = TitleBar:new{
+        width = width,
+        title = _("Send keys"),
+        with_bottom_line = true,
+        bottom_line_color = Blitbuffer.COLOR_DARK_GRAY,
+        title_h_padding = Size.padding.large + icon_size + padding,
+        left_icon = "close",
+        left_icon_tap_callback = function() self:onClose() end,
+        left_icon_allow_flash = false,
+        show_parent = self,
+    }
+    local close = title_bar.left_button
+    close.padding_right = padding
+    close:update()
+    local keyboard = IconButton:new{
+        icon = "icon-not-found",
+        width = icon_size,
+        height = icon_size,
+        padding = padding,
+        padding_left = 0,
+        padding_bottom = icon_size, -- the same taller tap zone as the ✕
+        overlap_offset = { close:getSize().w, 0 },
+        callback = function() self.app:switch_to_keyboard() end,
+        allow_flash = false,
+        show_parent = self,
+    }
+    Icons.set_icon_button_icon(keyboard, Icons.path("keyboard"))
+    table.insert(title_bar, keyboard)
+    self.title_bar, self.close_button, self.keyboard_button = title_bar, close, keyboard
+end
+
 --- (Re)builds the panel for the current state and screen size.
 function KeyPanel:_build()
     if self[1] then self[1]:free() end
@@ -592,14 +638,7 @@ function KeyPanel:_build()
     local row_h = KeyPanel.row_height()
     local line = Size.line.medium
 
-    self.title_bar = TitleBar:new{
-        width = width,
-        title = _("Send keys"),
-        with_bottom_line = true,
-        bottom_line_color = Blitbuffer.COLOR_DARK_GRAY,
-        close_callback = function() self:onClose() end,
-        show_parent = self,
-    }
+    self:_build_title_bar(width)
     local content = VerticalGroup:new{
         align = "center",
         self.title_bar,

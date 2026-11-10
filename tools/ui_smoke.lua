@@ -4109,7 +4109,7 @@ check("key_panel_close_paths_release_everything", function()
     local paths = {
         ["close button"] = function(app, panel)
             UIManager:forceRePaint()
-            local x = panel.title_bar.right_button
+            local x = panel.close_button
             dispatch_gesture{ ges = "tap", pos = centre_of(x.dimen) }
         end,
         ["Back key"] = function(app, panel)
@@ -4528,6 +4528,46 @@ check("key_strip_close_button_hides_the_keyboard", function()
     assert_true(not app.vk_visible and app.key_strip == nil and not keyboard_on_stack(app),
         "keyboard and strip go away")
     assert_true(app.vk_wanted == false and app.key_panel == nil, "like toggling it off, no panel")
+    assert_true(wire() == "", "nothing is sent")
+    close_viewer(app, remote)
+end)
+
+check("key_panel_title_bar_has_close_then_keyboard_at_the_left", function()
+    local app, remote = new_app()
+    local panel = open_key_panel(app)
+    UIManager:forceRePaint()
+    local tb = panel.title_bar
+    local x_close, kbd = panel.close_button, panel.keyboard_button
+    assert_true(x_close ~= nil and kbd ~= nil, "both icons exist")
+    assert_true(tb.right_button == nil, "nothing on the right")
+    assert_true(x_close.icon == "close", "KOReader's close icon")
+    assert_true(kbd.image.file == require("vnc/icons").path("keyboard"), "the plugin keyboard icon, got "
+        .. tostring(kbd.image.file))
+    assert_true(x_close.dimen.x <= panel.dimen.x + 2 * tb.button_padding, "X at the left edge: " .. x_close.dimen.x)
+    assert_true(x_close.dimen.x + x_close.dimen.w <= kbd.dimen.x, "the keyboard icon right of the X, not under its tap zone")
+    -- the title is centred in the bar (TextWidget keeps no position of its own)
+    local title_x = tb.dimen.x + math.floor((tb.dimen.w - tb.title_widget:getSize().w) / 2)
+    assert_true(title_x >= kbd.dimen.x + kbd.dimen.w,
+        "the title stays clear of the icons: " .. title_x .. " vs " .. (kbd.dimen.x + kbd.dimen.w))
+    close_viewer(app, remote)
+end)
+
+check("key_panel_keyboard_icon_switches_back_to_the_keyboard", function()
+    local app, remote = new_app()
+    app:toggle_keyboard()
+    local strip = app.key_strip
+    touch(strip, "panel")
+    UIManager:_checkTasks()
+    local panel = app.key_panel
+    assert_true(panel ~= nil and not app.vk_visible, "the panel replaced the keyboard")
+    touch(panel, "mod:Shift")
+    local wire = wire_log(app)
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "tap", pos = centre_of(panel.keyboard_button.dimen) }
+    UIManager:_checkTasks()
+    assert_true(app.key_panel == nil, "the panel closes")
+    assert_true(app.vk_visible and app.key_strip ~= nil and keyboard_on_stack(app), "keyboard and strip are back")
+    assert_true(app.key_strip:modifier_state("Shift") == "armed", "Shift stays armed on the strip")
     assert_true(wire() == "", "nothing is sent")
     close_viewer(app, remote)
 end)
