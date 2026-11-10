@@ -471,6 +471,15 @@ It comes with **no warranty** of any kind, and the developer may not be able to 
 it. Use it at your own risk, and do not expose a VNC session to a network you do not trust. Bug
 reports and patches are welcome.
 
+## License and origin
+
+This is a modified version of [hwhw/vnc.koplugin](https://github.com/hwhw/vnc.koplugin) by
+Hans-Werner Hilse, changed since 2026-11-06 by Kopiás Csaba (the git history records every change).
+It is free software under the **GNU Affero General Public License v3.0** (`LICENSE`), as the
+original is. The complete source of this version is at
+<https://github.com/KopiasCsaba/vnc.koplugin>; anyone using it, including over the network through
+its VNC server, can get it from there.
+
 ## Serving a PC screen
 
 `tools/vnc-server.py` shares a monitor (or just part of it) of a running X11 session with
