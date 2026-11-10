@@ -952,6 +952,26 @@ local function main()
         return true
     end)
 
+    check("handshake_vnc_without_password_says_so", function()
+        -- x11vnc -rfbauth offers only VNC Authentication: a profile without a password used to be
+        -- told "server offers no supported security type (offered: 2)"
+        local pid, port = start_mock{
+            name = "auth_nopw", encoding = "raw", pattern = "gradient",
+            security = "vnc-only", password = "s3cret",
+        }
+        local ok, err = run_case{
+            port = port, password = nil, want_updates = 1,
+            on_connected = function(c, _, w, h) c.plane = BB.new(w, h, BB.TYPE_BBRGB24) end,
+            body = function(proto, c) proto:request_update(0, 0, 0, c.fw, c.fh) end,
+        }
+        stop_mock(pid)
+        if ok then return nil, "connected without a password" end
+        if not tostring(err):find("password", 1, true) then
+            return nil, "error does not say a password is needed: " .. tostring(err)
+        end
+        return true
+    end)
+
     -- 5. Every encoding, pixel exact against the synthetic pattern.
     check("encodings_raw", function()
         return encoding_case("enc_raw", "raw", "gradient", expect_pattern)

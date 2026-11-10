@@ -14,7 +14,7 @@ The client's SetPixelFormat is honoured: the pattern is converted on the fly to 
 client asks for (32bpp/24/LSB/true colour/255,255,255/0,8,16) keeps its exact legacy bytes.
 
 usage: mock_vnc_server.py [--port 5900] [--width 800] [--height 600]
-                          [--security none|vnc] [--password secret]
+                          [--security none|vnc|vnc-only] [--password secret]
                           [--encoding raw|hextile|rre|copyrect|trle|zrle|tight|mixed]
                           [--pattern quadrants|gradient|checker] [--repaint SECONDS]
                           [--log FILE] [--resize-after N] [--once]
@@ -756,8 +756,9 @@ class MockServer:
             raise ValueError("bad client version %r" % version)
         client_minor = int(version[8:11])
 
-        if self.args.security == "vnc":
-            conn.sock.sendall(bytes([2, 1, 2]))
+        if self.args.security in ("vnc", "vnc-only"):
+            # "vnc" offers None too; "vnc-only" offers VNC Authentication alone (x11vnc -rfbauth)
+            conn.sock.sendall(bytes([2, 1, 2]) if self.args.security == "vnc" else bytes([1, 2]))
             chosen = conn.read_exact(1)[0]
             if chosen == 0:
                 raise ValueError("client refused all security types")
@@ -1009,7 +1010,7 @@ def main():
     ap.add_argument("--port", type=int, default=5900)
     ap.add_argument("--width", type=int, default=800)
     ap.add_argument("--height", type=int, default=600)
-    ap.add_argument("--security", choices=["none", "vnc"], default="none")
+    ap.add_argument("--security", choices=["none", "vnc", "vnc-only"], default="none")
     ap.add_argument("--password", default="secret")
     ap.add_argument("--encoding", default="raw",
                     choices=["raw", "hextile", "rre", "copyrect", "trle", "zrle", "tight", "mixed"])

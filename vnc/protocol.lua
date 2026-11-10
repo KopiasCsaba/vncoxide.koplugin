@@ -182,6 +182,11 @@ function Protocol:_handshake()
             end
         end
         if not sec_type then
+            for _, t in ipairs(offered) do
+                if t == 2 then
+                    error("the server asks for a password (VNC Authentication) and this connection has none", 0)
+                end
+            end
             self.io.write(string.char(0))
             error(string.format("server offers no supported security type (offered: %s)",
                 table.concat(offered, ", ")), 0)
