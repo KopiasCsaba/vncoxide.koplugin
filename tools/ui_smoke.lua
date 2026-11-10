@@ -1705,6 +1705,53 @@ check("text_input_reaches_the_remote", function()
     if not ok then error(err) end
 end)
 
+check("physical_modifiers_reach_the_remote_through_koreader_input", function()
+    -- KOReader's Input swallows Ctrl/Shift/Alt presses (they only become `key.modifiers` of the
+    -- next key) and SDL sends no text for Ctrl/Alt+letter: against x11vnc a physical Ctrl+C, Alt+F
+    -- or Ctrl+Left used to send nothing or the bare key. Driven through Input:handleKeyBoardEv
+    -- with SDL keycodes, as the emulator's event loop does.
+    local app, remote = new_app()
+    local wire = {}
+    app.session.send_key = function(_, k, d) wire[#wire + 1] = string.format("%s%X", d and "+" or "-", k) end
+    local function sdl(code, value)
+        local ev = Device.input:handleKeyBoardEv({ type = 1, code = code, value = value })
+        if type(ev) == "table" then UIManager:sendEvent(ev) end
+    end
+    local CTRL, SHIFT, ALT, LEFT = 0x400000E0, 1073742049, 1073742050, 1073741904
+    local function take() local w = table.concat(wire, " "); wire = {}; return w end
+    -- Ctrl+C
+    sdl(CTRL, 1); sdl(99, 1); sdl(99, 0); sdl(CTRL, 0)
+    local got = take()
+    assert_true(got == "+FFE3 +63 -63 -FFE3", "Ctrl+C, got " .. got)
+    -- Alt+F, and a text event for it (some platforms send one) must not type a second f
+    sdl(ALT, 1); sdl(102, 1)
+    Device.input:handleSdlEv({ code = 0x303, value = "f" })
+    sdl(102, 0); sdl(ALT, 0)
+    got = take()
+    assert_true(got == "+FFE9 +66 -66 -FFE9", "Alt+F, got " .. got)
+    -- Ctrl+Shift+T
+    sdl(CTRL, 1); sdl(SHIFT, 1); sdl(116, 1); sdl(116, 0); sdl(SHIFT, 0); sdl(CTRL, 0)
+    got = take()
+    assert_true(got == "+FFE3 +FFE1 +54 -54 -FFE1 -FFE3", "Ctrl+Shift+T, got " .. got)
+    -- the modifiers let go before the letter (xdotool's order): the letter's release still
+    -- releases what its press sent, nothing stays down on the remote
+    sdl(CTRL, 1); sdl(SHIFT, 1); sdl(116, 1); sdl(SHIFT, 0); sdl(CTRL, 0); sdl(116, 0)
+    got = take()
+    assert_true(got == "+FFE3 +FFE1 +54 -54 -FFE1 -FFE3", "Ctrl+Shift+T released modifiers first, got " .. got)
+    -- Ctrl+Left (a named key; at the rotation the test runs in, Left stays Left)
+    local rota = Screen:getRotationMode()
+    local expect_left = string.format("%X", require("vnc/keysyms").special[Device.input.rotation_map[rota].Left or "Left"])
+    sdl(CTRL, 1); sdl(LEFT, 1); sdl(LEFT, 0); sdl(CTRL, 0)
+    got = take()
+    assert_true(got == "+FFE3 +" .. expect_left .. " -" .. expect_left .. " -FFE3", "Ctrl+Left, got " .. got)
+    -- plain typing still goes through the text event only (Shift+a is the text "A")
+    sdl(SHIFT, 1); sdl(97, 1); Device.input:handleSdlEv({ code = 0x303, value = "A" }); sdl(97, 0); sdl(SHIFT, 0)
+    got = take()
+    assert_true(got == "+41 -41", "Shift+A as text, got " .. got)
+    app:onCloseWidget()
+    remote:free()
+end)
+
 check("page_buttons_scroll_the_wheel_in_wheel_mode", function()
     local Key = require("device/key")
     local app, remote, sent = new_app()

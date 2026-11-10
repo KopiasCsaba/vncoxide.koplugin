@@ -312,6 +312,10 @@ Device:startTextInput() while it is shown (ViewerApp:_ensure_text_input), re-ass
 of its own dialogs (an InputText pairs startTextInput with stopTextInput) and calls
 Device:stopTextInput() when it closes. Named keys go out as X11 keysyms; only the Menu key is kept
 back (it toggles the in-app menu), and Back leaves the viewer only on devices without a keyboard.
+KOReader's Input never reports Ctrl, Shift or Alt as keys (only as the next key's `modifiers`), and
+SDL types no text for Ctrl/Alt+letter: ViewerApp:onKeyPress sends the held ones around a named key,
+and a Ctrl/Alt+printable key itself (its text event, if any, is dropped); the release lets go of
+exactly what the press sent (checked against x11vnc with real SDL key events from xdotool).
 
 Keyboard placement and zoom. The canvas (ViewerApp:_layout) is the whole widget, except when the
 whole remote screen at the current zoom fits in the space the visible on-screen keyboard leaves -

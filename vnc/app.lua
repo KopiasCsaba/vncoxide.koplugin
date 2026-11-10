@@ -625,7 +625,12 @@ function ViewerApp:onCloseWidget()
     -- a click still waiting for a possible second tap is not worth sending any more
     self:_drop_deferred_click()
     -- a physical key still held down on the remote: its release will not reach a closed viewer
-    for keysym in pairs(self._keys_down or {}) do self.session:send_key(keysym, false) end
+    for keysym, mods in pairs(self._keys_down or {}) do
+        self.session:send_key(keysym, false)
+        if type(mods) == "table" then
+            for i = #mods, 1, -1 do self.session:send_key(mods[i], false) end
+        end
+    end
     self._keys_down = nil
     if self._text_input_asserted then
         self._text_input_asserted = false
@@ -1945,6 +1950,23 @@ function ViewerApp:scroll_wheel(direction, notches, horizontal, x, y)
     end
 end
 
+--- Physical modifier keys as KOReader's Input reports them on a key (`key.Ctrl` ...), in the
+--- order they go down.
+local PHYSICAL_MODIFIERS = {
+    { name = "Ctrl", keysym = Keysyms.x11.Control_L },
+    { name = "Shift", keysym = Keysyms.x11.Shift_L },
+    { name = "Alt", keysym = Keysyms.x11.Alt_L },
+}
+
+--- The keysym of a physical printable key (KOReader names letters "A".."Z", the rest by their
+--- character): a letter is lower case unless Shift is held. Nil for anything else.
+local function physical_char_keysym(key)
+    local name = key.key
+    if type(name) ~= "string" or #name ~= 1 then return nil end
+    if name:match("%u") and not key.Shift then name = name:lower() end
+    return Keysyms.from_char(name)
+end
+
 function ViewerApp:onKeyPress(key)
     self:_ensure_text_input()
     -- a new press: whatever release was pending from the key that closed the panel is moot
@@ -1965,10 +1987,26 @@ function ViewerApp:onKeyPress(key)
         return true
     end
     local keysym = Keysyms.special[key.key]
+    -- KOReader's Input keeps Ctrl/Shift/Alt to itself (they only show as the next key's
+    -- modifiers), and SDL types no text for Ctrl/Alt+letter: such a key goes out here, with them
+    local combo = not keysym and (key.Ctrl or key.Alt) and physical_char_keysym(key)
+    if combo then keysym = combo end
     if keysym then
+        local mods = {}
+        for _, m in ipairs(PHYSICAL_MODIFIERS) do
+            if key[m.name] and m.keysym ~= keysym then mods[#mods + 1] = m.keysym end
+        end
+        for _, m in ipairs(mods) do self:send_key(m, true) end
         self:send_key(keysym, true)
         self._keys_down = self._keys_down or {}
-        self._keys_down[keysym] = true
+        self._keys_down[keysym] = mods
+        -- (a text event some platforms add for it would type it a second time; its release is
+        -- matched by name, as Shift may be let go first)
+        if combo then
+            self._combo_text = true
+            self._combo_keys = self._combo_keys or {}
+            self._combo_keys[key.key] = combo
+        end
         return true
     end
     -- printable characters come through onTextInput, exactly once
@@ -1984,15 +2022,27 @@ function ViewerApp:onKeyRelease(key)
     if self:_is_menu_key(key) or self:_back_leaves(key) then return true end
     if self:_wheel_direction(key) then return true end
     local keysym = Keysyms.special[key.key]
+    local down = self._keys_down
+    if not keysym then
+        local combo = self._combo_keys and self._combo_keys[key.key]
+        if combo then
+            self._combo_keys[key.key] = nil
+            if down and down[combo] then keysym = combo end
+        end
+        self._combo_text = nil
+    end
     if keysym then
         -- a key pressed on the remote is always let go there, even if a popup opened meanwhile
-        local down = self._keys_down
-        if down and down[keysym] then
+        local mods = down and down[keysym]
+        if mods then
             down[keysym] = nil
         elseif not self:_input_target() then
             return nil
         end
         self:send_key(keysym, false)
+        if type(mods) == "table" then
+            for i = #mods, 1, -1 do self:send_key(mods[i], false) end
+        end
         return true
     end
     return nil
@@ -2017,6 +2067,8 @@ end
 
 function ViewerApp:onTextInput(text)
     if not self:_input_target() then return nil end
+    -- the text of a Ctrl/Alt combo onKeyPress already sent
+    if self._combo_text then return true end
     for _, ch in ipairs(Util.split_chars(text)) do
         local codepoint = Keysyms.codepoint(ch)
         -- Control characters are what SDL delivers for Ctrl+letter; the modifier keydown
