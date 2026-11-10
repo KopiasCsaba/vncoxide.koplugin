@@ -21,6 +21,11 @@ for a colour-mapped format get the fixed 3-3-2 map in @{Enc.COLOUR_MAP}.
 
 local BB = require("ffi/blitbuffer")
 local ffi = require("ffi")
+local bit = require("bit")
+-- Byte extraction with bit ops: math.floor is a call to lj_vm_floor on 32-bit ARM, `%` floors too,
+-- and `2 ^ n` with a variable n is a call to pow(). bit ops take a value modulo 2^32, so values up to
+-- 0xFFFFFFFF (32bpp formats with a channel at shift 24) come out right.
+local band, bor, lshift, rshift = bit.band, bit.bor, bit.lshift, bit.rshift
 local ZStream = require("vnc/zstream")
 local logger = require("logger")
 
@@ -317,30 +322,30 @@ function Enc:convert(source, rect, need_values)
                 if values then values[pi] = v end   -- 1-based, matching the encoders' loops
                 if bpp == 4 then
                     -- build the little-endian bytes, then reverse for big-endian clients
-                    local b0, b1 = v % 256, math.floor(v / 256) % 256
-                    local b2, b3 = math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256
+                    local b0, b1 = band(v, 255), band(rshift(v, 8), 255)
+                    local b2, b3 = band(rshift(v, 16), 255), rshift(v, 24)
                     if be then
                         out[i] = b3 out[i + 1] = b2 out[i + 2] = b1 out[i + 3] = b0
                     else
                         out[i] = b0 out[i + 1] = b1 out[i + 2] = b2 out[i + 3] = b3
                     end
                 elseif bpp == 3 then
-                    local b0, b1 = v % 256, math.floor(v / 256) % 256
-                    local b2 = math.floor(v / 65536) % 256
+                    local b0, b1 = band(v, 255), band(rshift(v, 8), 255)
+                    local b2 = band(rshift(v, 16), 255)
                     if be then
                         out[i] = b2 out[i + 1] = b1 out[i + 2] = b0
                     else
                         out[i] = b0 out[i + 1] = b1 out[i + 2] = b2
                     end
                 elseif bpp == 2 then
-                    local b0, b1 = v % 256, math.floor(v / 256) % 256
+                    local b0, b1 = band(v, 255), band(rshift(v, 8), 255)
                     if be then
                         out[i] = b1 out[i + 1] = b0
                     else
                         out[i] = b0 out[i + 1] = b1
                     end
                 else
-                    out[i] = v % 256
+                    out[i] = band(v, 255)
                 end
                 i = i + bpp
             end
@@ -387,42 +392,42 @@ local function reserve(self, pos, need)
 end
 
 local function put_u16(buf, pos, v)
-    buf[pos], buf[pos + 1] = math.floor(v / 256) % 256, v % 256
+    buf[pos], buf[pos + 1] = band(rshift(v, 8), 255), band(v, 255)
     return pos + 2
 end
 
 local function put_u32(buf, pos, v)
-    buf[pos], buf[pos + 1] = math.floor(v / 16777216) % 256, math.floor(v / 65536) % 256
-    buf[pos + 2], buf[pos + 3] = math.floor(v / 256) % 256, v % 256
+    buf[pos], buf[pos + 1] = rshift(v, 24), band(rshift(v, 16), 255)
+    buf[pos + 2], buf[pos + 3] = band(rshift(v, 8), 255), band(v, 255)
     return pos + 4
 end
 
 --- One pixel value as it goes on the wire: `bpp` bytes in the client's byte order (`be`).
 local function put_pixel(buf, pos, v, bpp, be)
     if bpp == 4 then
-        local b0, b1 = v % 256, math.floor(v / 256) % 256
-        local b2, b3 = math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256
+        local b0, b1 = band(v, 255), band(rshift(v, 8), 255)
+        local b2, b3 = band(rshift(v, 16), 255), rshift(v, 24)
         if be then
             buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3] = b3, b2, b1, b0
         else
             buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3] = b0, b1, b2, b3
         end
     elseif bpp == 3 then
-        local b0, b1, b2 = v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256
+        local b0, b1, b2 = band(v, 255), band(rshift(v, 8), 255), band(rshift(v, 16), 255)
         if be then
             buf[pos], buf[pos + 1], buf[pos + 2] = b2, b1, b0
         else
             buf[pos], buf[pos + 1], buf[pos + 2] = b0, b1, b2
         end
     elseif bpp == 2 then
-        local b0, b1 = v % 256, math.floor(v / 256) % 256
+        local b0, b1 = band(v, 255), band(rshift(v, 8), 255)
         if be then
             buf[pos], buf[pos + 1] = b1, b0
         else
             buf[pos], buf[pos + 1] = b0, b1
         end
     else
-        buf[pos] = v % 256
+        buf[pos] = band(v, 255)
     end
     return pos + bpp
 end
@@ -431,9 +436,9 @@ end
 local function put_cpixel(self, buf, pos, v, bpp, be)
     local cp = self.cpixel_bytes
     if not cp then return put_pixel(buf, pos, v, bpp, be) end
-    for i = 1, 3 do
-        buf[pos + i - 1] = math.floor(v / 2 ^ (8 * cp[i])) % 256
-    end
+    buf[pos] = band(rshift(v, 8 * cp[1]), 255)
+    buf[pos + 1] = band(rshift(v, 8 * cp[2]), 255)
+    buf[pos + 2] = band(rshift(v, 8 * cp[3]), 255)
     return pos + 3
 end
 
@@ -485,7 +490,14 @@ end
 
 --- The most frequent pixel value of a range, with its count.
 local function dominant(values, from, to, scratch)
-    local counts = scratch.counts
+    -- Uniform ranges (most tiles of a page) need no counting: one compare per pixel instead of a
+    -- hash-table update per pixel.
+    local first = values[from]
+    local i = from + 1
+    while i <= to and values[i] == first do i = i + 1 end
+    if i > to then return first, to - from + 1, 1 end
+    local counts, keys = scratch.counts, scratch.keys
+    if not keys then keys = {} scratch.keys = keys end
     local distinct = 0
     local best, best_count = values[from], 0
     for i = from, to do
@@ -494,13 +506,15 @@ local function dominant(values, from, to, scratch)
         if c == nil then
             c = 0
             distinct = distinct + 1
+            keys[distinct] = v
         end
         c = c + 1
         counts[v] = c
         if c > best_count then best, best_count = v, c end
     end
-    -- clear for the next caller without allocating a new table
-    for i = from, to do counts[values[i]] = nil end
+    -- clear for the next caller without allocating a new table: one store per distinct value
+    -- rather than a hash lookup per pixel
+    for k = 1, distinct do counts[keys[k]] = nil end
     return best, best_count, distinct
 end
 
@@ -530,7 +544,14 @@ function Enc:encode_rre(values, count, w, h)
     end
     local covered = scratch.covered
 
-    local subrects = {}
+    -- subrectangles in reused parallel arrays: a table per subrectangle was ~100 bytes of garbage
+    -- for every one of them (tens of MB for a detailed full screen)
+    local sx, sy, sw, sh, sv = scratch.rre_x, scratch.rre_y, scratch.rre_w, scratch.rre_h, scratch.rre_v
+    if not sx then
+        sx, sy, sw, sh, sv = {}, {}, {}, {}, {}
+        scratch.rre_x, scratch.rre_y, scratch.rre_w, scratch.rre_h, scratch.rre_v = sx, sy, sw, sh, sv
+    end
+    local n = 0
     for y = 0, h - 1 do
         local row = y * w
         local x = 0
@@ -559,14 +580,14 @@ function Enc:encode_rre(values, count, w, h)
                     for dx = 0, run - 1 do covered[base + dx] = 1 end
                     height = height + 1
                 end
-                subrects[#subrects + 1] = { x = x, y = y, w = run, h = height, value = v }
+                n = n + 1
+                sx[n], sy[n], sw[n], sh[n], sv[n] = x, y, run, height, v
                 x = x + run
             end
         end
     end
 
     local bpp, be = wire_layout(self)
-    local n = #subrects
     local size = 4 + bpp + n * (bpp + 8)
     if size >= count * bpp then return nil end
 
@@ -574,12 +595,11 @@ function Enc:encode_rre(values, count, w, h)
     local pos = put_u32(buf, 0, n)
     pos = put_pixel(buf, pos, background, bpp, be)
     for i = 1, n do
-        local r = subrects[i]
-        pos = put_pixel(buf, pos, r.value, bpp, be)
-        pos = put_u16(buf, pos, r.x)
-        pos = put_u16(buf, pos, r.y)
-        pos = put_u16(buf, pos, r.w)
-        pos = put_u16(buf, pos, r.h)
+        pos = put_pixel(buf, pos, sv[i], bpp, be)
+        pos = put_u16(buf, pos, sx[i])
+        pos = put_u16(buf, pos, sy[i])
+        pos = put_u16(buf, pos, sw[i])
+        pos = put_u16(buf, pos, sh[i])
     end
     return ffi.string(buf, pos)
 end
@@ -698,13 +718,13 @@ end
 
 --- Packs palette indices, MSB first, one row at a time, padded to whole bytes.
 local function pack_indices(buf, pos, indices, w, bits)
-    local per_byte = math.floor(8 / bits)
+    local per_byte = 8 / bits                 -- bits is 1, 2 or 4
     local x = 0
     while x < w do
         local byte = 0
         for i = 0, per_byte - 1 do
             local idx = indices[x + i + 1]
-            byte = byte * 2 ^ bits + (idx or 0)
+            byte = bor(lshift(byte, bits), idx or 0)
         end
         buf[pos] = byte
         pos = pos + 1
@@ -824,8 +844,8 @@ function Enc:encode_zrle(values, count, w, h)
         return nil
     end
     local len = #compressed
-    return string.char(math.floor(len / 16777216) % 256, math.floor(len / 65536) % 256,
-        math.floor(len / 256) % 256, len % 256) .. compressed
+    return string.char(rshift(len, 24), band(rshift(len, 16), 255),
+        band(rshift(len, 8), 255), band(len, 255)) .. compressed
 end
 
 return Enc
