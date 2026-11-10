@@ -552,6 +552,12 @@ is left of ZRLE/Tight is mostly zlib itself. One trap seen while doing this: Lua
 `ffi.cast(ptr_type, s) + off` when `s` was a constant (immutable upvalue) string - the load used
 the bare offset as the address and crashed. Keep such strings in a table field (as `self.rx` is).
 
+Compressed payloads are not copied either: ZRLE's and Tight's zlib data and Tight's JPEG go to zlib
+(`ZStream:inflate_ptr(ptr, len, limit)`) and TurboJPEG as pointer + length from `reader:ptr(n)`.
+That pointer is only valid until the reader's next read, and the session may move its receive
+buffer between pump steps, so each decoder uses it up in the same call that took it (inflate and
+tj3Decompress8 neither read nor yield) and decodes the tiles from the stream's own output buffer.
+
 
 TIMING TRACE (finding out where a lag goes)
 -------------------------------------------
