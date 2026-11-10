@@ -624,6 +624,9 @@ function ViewerApp:onCloseWidget()
     self._watched_finger = nil
     -- a click still waiting for a possible second tap is not worth sending any more
     self:_drop_deferred_click()
+    -- a physical key still held down on the remote: its release will not reach a closed viewer
+    for keysym in pairs(self._keys_down or {}) do self.session:send_key(keysym, false) end
+    self._keys_down = nil
     if self._text_input_asserted then
         self._text_input_asserted = false
         Device:stopTextInput()

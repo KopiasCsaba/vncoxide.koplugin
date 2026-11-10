@@ -5453,6 +5453,20 @@ check("a_failed_connect_from_the_menu_reopens_it_only_on_a_shown_viewer", functi
     close_viewer(app, remote)
 end)
 
+--- A physical key held down on the remote when the viewer closes (Leave from the menu, Shift still
+--- held) is let go there: its release will not reach a closed viewer, and it used to stay down.
+check("closing_the_viewer_releases_held_keys", function()
+    local app, remote, sent = new_app()
+    local Key = require("device/key")
+    app:onKeyPress(Key:new("Shift", {}))
+    assert_true(take_keys(sent) == "+0xFFE1", "Shift goes down on the remote")
+    UIManager:close(app)
+    assert_true(take_keys(sent) == "-0xFFE1", "and is let go when the viewer closes")
+    app:onCloseWidget()
+    assert_true(take_keys(sent) == "", "once")
+    remote:free()
+end)
+
 check("mouse_tap_then_hold_drags_with_the_left_button", function()
     local app, remote, sent = new_app(400, 300, { mode = "mouse" })
     local wire = wire_log(app)
