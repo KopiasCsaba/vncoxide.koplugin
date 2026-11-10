@@ -989,6 +989,77 @@ local function main()
         return encoding_case("enc_zrle_pal", "zrle", "quadrants", expect_pattern)
     end)
 
+    -- The zlib streams take a pointer and a length: the decoders hand them memory straight out of
+    -- the receive buffer, which is not a string and not cut to the payload.
+    check("zstream_takes_pointer_and_length", function()
+        local ZStream = require("vnc/zstream")
+        local plain = ("pointer and length, "):rep(40)
+        local src = ffi.new("uint8_t[?]", #plain + 8, 0xEE) -- junk around the input
+        ffi.copy(src + 3, plain, #plain)
+        local d = ZStream.new_deflate()
+        local z = assert(d:deflate(src + 3, #plain))
+        d:free()
+        local buf = ffi.new("uint8_t[?]", #z + 16, 0xEE)
+        ffi.copy(buf + 5, z, #z)
+        local i = ZStream.new()
+        local p, n = i:inflate_ptr(buf + 5, #z)
+        if not p or ffi.string(p, n) ~= plain then return nil, "round trip: " .. tostring(n) end
+        p, n = i:inflate_ptr(nil, 0) -- a bare drain
+        if not p or n ~= 0 then return nil, "drain produced " .. tostring(n) end
+        i:free()
+        i = ZStream.new()
+        p, n = i:inflate_ptr(buf + 5, #z, 10)
+        i:free()
+        if p or not tostring(n):match("exceeds") then return nil, "limit not enforced: " .. tostring(n) end
+        return true
+    end)
+
+    -- ZRLE and Tight (zlib and JPEG) payloads are consumed with reader:ptr, never as a string.
+    check("zrle_and_tight_payloads_never_become_strings", function()
+        local ZStream = require("vnc/zstream")
+        local Util = require("vnc/util")
+        local function deflated(raw)
+            local d = ZStream.new_deflate()
+            local z = assert(d:deflate(raw, #raw))
+            d:free()
+            return z
+        end
+        local function compact(len)
+            if len < 128 then return string.char(len) end
+            return string.char(bit.bor(bit.band(len, 127), 128), bit.rshift(len, 7))
+        end
+        local f = assert(io.open(tools_dir .. "/tight_jpeg.b64"))
+        local b64 = f:read("*a"):gsub("#[^\n]*\n", ""):gsub("%s", "")
+        f:close()
+        local jpeg = require("ffi/sha2").base64_to_bin(b64)
+        local zrle = deflated(string.char(1, 10, 20, 30)) -- one solid tile
+        local copy = deflated(("\100\150\200"):rep(16))
+        local cases = {
+            { "ZRLE", Encodings.ZRLE, 4, 4, Util.writer():u32(#zrle):raw(zrle):tostring(), { 10, 20, 30 } },
+            { "Tight zlib", Encodings.TIGHT, 4, 4, "\0" .. compact(#copy) .. copy, { 100, 150, 200 } },
+            { "Tight JPEG", Encodings.TIGHT, 32, 32, "\144" .. compact(#jpeg) .. jpeg, { 199, 40, 120 } },
+        }
+        for _, c in ipairs(cases) do
+            local plane = BB.new(c[3], c[4], BB.TYPE_BBRGB24)
+            local r = Util.mem_reader(c[5])
+            r.bytes = function() error("reader:bytes() on the " .. c[1] .. " payload") end
+            local streams = Encodings.new_streams()
+            local ok, err = Encodings.decode{ x = 0, y = 0, w = c[3], h = c[4], encoding = c[2], r = r,
+                plane = plane, vp = plane:viewport(0, 0, c[3], c[4]), streams = streams,
+                fmt = PxFmt.for_depth(24) }
+            Encodings.free_streams(streams)
+            if not ok then return nil, c[1] .. ": " .. tostring(err) end
+            local px = ffi.cast("uint8_t*", plane.data)
+            for k = 1, 3 do
+                if math.abs(px[k - 1] - c[6][k]) > 2 then
+                    return nil, string.format("%s: channel %d is %d, want %d", c[1], k, px[k - 1], c[6][k])
+                end
+            end
+            if r:remaining() ~= 0 then return nil, c[1] .. ": " .. r:remaining() .. " bytes left" end
+        end
+        return true
+    end)
+
     check("encodings_copyrect", function()
         -- The mock fills the left part as Raw, then CopyRect-shifts it right by 64 pixels
         -- with an overlapping source. Expected image: pattern(x, y) for x < 64, else

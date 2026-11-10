@@ -595,13 +595,16 @@ function Encodings.decode_zrle(ctx)
         return nil, string.format("ZRLE: %d compressed bytes for a %dx%d rect (at most %d)",
             length, ctx.w, ctx.h, max_length)
     end
-    local data = r:bytes(length)
     local stream = ctx.streams.zrle
     if not stream then
         stream = ZStream.new()
         ctx.streams.zrle = stream
     end
-    local p, n = stream:inflate_ptr(data, limit)
+    -- r:ptr, not r:bytes: zlib reads the payload where the transport holds it (no string copy).
+    -- The pointer is only valid until the reader's next read and the session may move its buffer
+    -- between pump steps; inflate_ptr uses it up in this call (no read, no yield in between) and
+    -- the tiles are then decoded from the stream's own output buffer.
+    local p, n = stream:inflate_ptr(r:ptr(length), length, limit)
     if not p then
         return nil, string.format("ZRLE: %s while inflating %d bytes at rect (%d,%d,%d,%d)",
             n, length, ctx.x, ctx.y, ctx.w, ctx.h)
@@ -796,7 +799,7 @@ end
 Decodes a Tight JPEG rect straight into the plane (TurboJPEG writes RGB rows at the plane's
 stride), with one decompressor handle per connection.
 ]]
-local function tight_jpeg(ctx, data)
+local function tight_jpeg(ctx, src, len)
     local t = load_tj()
     if not t then
         return nil, "Tight: JPEG payload but TurboJPEG is unavailable"
@@ -808,8 +811,7 @@ local function tight_jpeg(ctx, data)
         if handle == nil then return nil, "Tight: no TurboJPEG decompressor" end
         ctx.streams.tj = handle
     end
-    local src = ffi.cast("const unsigned char*", data)
-    if lib.tj3DecompressHeader(handle, src, #data) < 0 then
+    if lib.tj3DecompressHeader(handle, src, len) < 0 then
         return nil, "Tight: unreadable JPEG header"
     end
     local w = lib.tj3Get(handle, lib.TJPARAM_JPEGWIDTH)
@@ -818,7 +820,7 @@ local function tight_jpeg(ctx, data)
         return nil, string.format("Tight: JPEG is %dx%d, rect is %dx%d", w, h, ctx.w, ctx.h)
     end
     local base, stride = vp_base(ctx.vp)
-    if lib.tj3Decompress8(handle, src, #data, base, stride, lib.TJPF_RGB) < 0 then
+    if lib.tj3Decompress8(handle, src, len, base, stride, lib.TJPF_RGB) < 0 then
         return nil, "Tight: JPEG decoding failed"
     end
     return true
@@ -853,7 +855,9 @@ function Encodings.decode_tight(ctx)
         return true
     elseif ctl == Encodings.TIGHT_JPEG then
         local len = read_compact_len(r)
-        return tight_jpeg(ctx, r:bytes(len))
+        -- TurboJPEG takes pointer + length: the payload is decoded where the transport holds it
+        -- (used up in this call, like the zlib input below)
+        return tight_jpeg(ctx, r:ptr(len), len)
     elseif ctl > Encodings.TIGHT_JPEG then
         return nil, string.format("unsupported Tight subencoding 0x%02X",
             uncompressed and bor(ctl, Encodings.TIGHT_NO_ZLIB) or ctl)
@@ -905,8 +909,8 @@ function Encodings.decode_tight(ctx)
         if uncompressed then
             data, len = r:ptr(clen), clen
         else
-            local comp = r:bytes(clen)
-            local p, n = tight_stream(ctx, stream_id):inflate_ptr(comp, raw_size)
+            -- straight from the transport, used up within this call (see decode_zrle)
+            local p, n = tight_stream(ctx, stream_id):inflate_ptr(r:ptr(clen), clen, raw_size)
             if not p then
                 return nil, string.format("Tight: %s while inflating %d bytes at rect (%d,%d,%d,%d)",
                     n, clen, ctx.x, ctx.y, ctx.w, ctx.h)
