@@ -385,6 +385,19 @@ local function load_session()
     return require("vnc/session")
 end
 
+--[[--
+Connects `s` the way the UI loop would, but without one: the stub UIManager runs no tasks, so the
+connect ticks (the TCP connect, then the handshake) are driven here until the attempt is over.
+]]
+local function connect_sync(s, cb)
+    s:connect(cb)
+    local deadline = socket.gettime() + 30
+    while s._phase and socket.gettime() < deadline do
+        s:_connect_tick()
+        socket.sleep(0.002)
+    end
+end
+
 -- ---------------------------------------------------------------- checks
 
 local failures = 0
@@ -1272,7 +1285,7 @@ local function main()
             },
         }
         local connected, cerr
-        s:connect(function(ok, err) connected, cerr = ok, err end)
+        connect_sync(s, function(ok, err) connected, cerr = ok, err end)
         if not connected then
             stop_mock(pid)
             return nil, "connect failed: " .. tostring(cerr)
@@ -1341,7 +1354,7 @@ local function main()
             },
         }
         local connected, cerr
-        s:connect(function(ok, err) connected, cerr = ok, err end)
+        connect_sync(s, function(ok, err) connected, cerr = ok, err end)
         if not connected then
             stop_mock(pid)
             return nil, "connect failed: " .. tostring(cerr)
@@ -1422,7 +1435,7 @@ local function main()
             return ok, err
         end
         local connected, cerr
-        s:connect(function(ok, err) connected, cerr = ok, err end)
+        connect_sync(s, function(ok, err) connected, cerr = ok, err end)
         if not connected then return done(nil, "connect failed: " .. tostring(cerr)) end
         s.app = {
             on_framebuffer_dirty = function() end,
@@ -1524,7 +1537,7 @@ local function main()
             return ok, err
         end
         local connected, cerr
-        s:connect(function(ok, err) connected, cerr = ok, err end)
+        connect_sync(s, function(ok, err) connected, cerr = ok, err end)
         if not connected then return done(nil, "connect failed: " .. tostring(cerr)) end
         s.app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
                   on_bell = function() end }
@@ -1577,7 +1590,7 @@ local function main()
             return ok, err
         end
         local connected, cerr
-        s:connect(function(ok, err) connected, cerr = ok, err end)
+        connect_sync(s, function(ok, err) connected, cerr = ok, err end)
         if not connected then return done(nil, "connect failed: " .. tostring(cerr)) end
         local app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
                       on_bell = function() end }
@@ -2036,6 +2049,7 @@ local function main()
             return nil, "the first attempt's callback took over the second (state " .. tostring(s:get_state()) .. ")"
         end
         pending[2]()                                    -- the current one dials (and is refused)
+        while s._phase == "dial" do s:_connect_tick(); socket.sleep(0.002) end
         if s:get_state() ~= "error" then
             return nil, "the current attempt's callback must dial, state " .. tostring(s:get_state())
         end
@@ -2063,7 +2077,7 @@ local function main()
             profile = { host = "127.0.0.1", port = port, password = "", name = "refused" },
             network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
         }
-        local ok, err = pcall(s.connect, s, function() end)
+        local ok, err = pcall(connect_sync, s, function() end)
         socket.tcp = real_tcp
         if not ok then return nil, err end
         if s:get_state() ~= "error" then return nil, "the connect must fail, state " .. tostring(s:get_state()) end
@@ -2122,7 +2136,7 @@ local function main()
         local bpid, bport = start_mock{ name = "bench_bystander", encoding = "raw", pattern = "gradient" }
         local by = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "by" },
                                 network_mgr = NET }
-        by:connect(function() end)
+        connect_sync(by, function() end)
         by:attach({ on_framebuffer_dirty = function() end, on_remote_resized = function() end,
                     on_bell = function() end })
         local done_called, tiles = false, false
@@ -2283,7 +2297,7 @@ local function main()
                                     network_mgr = NET }
             local idle = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "idle" },
                                       network_mgr = NET }
-            by:connect(function() end)
+            connect_sync(by, function() end)
             local app = { on_framebuffer_dirty = function() end, on_remote_resized = function() end,
                           on_bell = function() end }
             by:attach(app)
@@ -2549,7 +2563,7 @@ local function main()
             return out
         end
         local connected, cerr
-        s:connect(function(ok, err) connected, cerr = ok, err end)
+        connect_sync(s, function(ok, err) connected, cerr = ok, err end)
         if not connected then env.done(); error("connect failed: " .. tostring(cerr)) end
         local write = s.proto.io.write
         s.proto.io.write = function(m) env.wire[#env.wire + 1] = m; return write(m) end
@@ -2761,6 +2775,290 @@ local function main()
         if #out ~= 1 or out[1] ~= "\3\1\0\1\0\2\0\3\0\4" then
             return nil, "release must request the provider's area"
         end
+        return true
+    end)
+
+    -- ------------------------------------------------------------ connect never blocks the UI
+
+    -- A stand-in UIManager on a fake clock (like the benchmark's): runs scheduled tasks in time
+    -- order and moves the clock to each one's due time. `at(t, fn)` runs fn once the clock reaches t.
+    local function clock_env()
+        local Session = load_session()
+        local UIManager = require("ui/uimanager")
+        local real_now, real_si, real_un = Session._now, UIManager.scheduleIn, UIManager.unschedule
+        local env = { clock = 100, tasks = {}, Session = Session }
+        Session._now = function() return env.clock end
+        UIManager.scheduleIn = function(_, delay, fn, ...)
+            env.tasks[#env.tasks + 1] = { t = env.clock + delay, fn = fn, args = { ... }, n = select("#", ...) }
+        end
+        UIManager.unschedule = function(_, fn)
+            for i = #env.tasks, 1, -1 do
+                if env.tasks[i].fn == fn then table.remove(env.tasks, i) end
+            end
+        end
+        function env.run(stop, max_steps)
+            for _ = 1, max_steps or 5000 do
+                if stop and stop() then return true end
+                if #env.tasks == 0 then return false end
+                local best = 1
+                for i = 2, #env.tasks do
+                    if env.tasks[i].t < env.tasks[best].t then best = i end
+                end
+                local task = table.remove(env.tasks, best)
+                env.clock = math.max(env.clock, task.t)
+                task.fn(unpack(task.args, 1, task.n))
+                socket.sleep(0.001)
+            end
+            return false
+        end
+        function env.restore()
+            Session._now, UIManager.scheduleIn, UIManager.unschedule = real_now, real_si, real_un
+        end
+        return env
+    end
+
+    -- Times every connect tick against a peer that never answers: connect() and each tick must
+    -- return at once, and the attempt must end (once) by itself after its deadline.
+    local function time_a_dead_attempt(host, port, what)
+        local Session = load_session()
+        local saved = { Session.CONNECT_TIMEOUT, Session.HANDSHAKE_TIMEOUT, Session.HANDSHAKE_SOCKET_TIMEOUT }
+        Session.CONNECT_TIMEOUT, Session.HANDSHAKE_TIMEOUT, Session.HANDSHAKE_SOCKET_TIMEOUT = 0.5, 1, 0.3
+        local s = Session.new{
+            profile = { host = host, port = port, password = "", name = what },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        }
+        local calls, err = 0, nil
+        local t0 = socket.gettime()
+        s:connect(function(ok, e) calls = calls + 1; if not ok then err = e end end)
+        local longest = socket.gettime() - t0
+        local deadline = t0 + 10
+        while s._phase and socket.gettime() < deadline do
+            local t = socket.gettime()
+            s:_connect_tick()
+            longest = math.max(longest, socket.gettime() - t)
+            socket.sleep(0.01)
+        end
+        local total = socket.gettime() - t0
+        Session.CONNECT_TIMEOUT, Session.HANDSHAKE_TIMEOUT, Session.HANDSHAKE_SOCKET_TIMEOUT = unpack(saved)
+        if s:get_state() == "connecting" then s:disconnect() end
+        if longest > 0.1 then
+            return nil, string.format("%s: the UI thread was held %.2f s in one go", what, longest)
+        end
+        if calls ~= 1 or not err then
+            return nil, string.format("%s: callback ran %d time(s), err %s", what, calls, tostring(err))
+        end
+        if total > 3 then return nil, string.format("%s: took %.1f s to give up", what, total) end
+        return true, err
+    end
+
+    -- A blackholed address (no SYN-ACK, no ICMP): the TCP connect used to block for its 5 s timeout
+    -- (and the reconnect box's Retry froze the UI for that long).
+    check("session_tcp_connect_never_blocks_the_ui_thread", function()
+        local ok, err = time_a_dead_attempt("10.255.255.1", 5900, "blackhole")
+        if not ok then return nil, err end
+        if not (err:find("could not connect", 1, true) or err:find("unreachable", 1, true)) then
+            return nil, "unclear error: " .. err
+        end
+        return true
+    end)
+
+    -- A server that accepts but never speaks: the handshake used to spin the UI thread for 20 s.
+    check("session_handshake_never_blocks_the_ui_thread", function()
+        local listener = assert(socket.bind("127.0.0.1", 0))
+        local _, port = listener:getsockname()
+        local ok, err = time_a_dead_attempt("127.0.0.1", tonumber(port), "silent")
+        listener:close()
+        if not ok then return nil, err end
+        if not err:find("timed out during the RFB handshake", 1, true) then return nil, "unclear error: " .. err end
+        return true
+    end)
+
+    -- A closed port still fails with the refusal, through the ticks.
+    check("session_refused_connect_reports_the_refusal", function()
+        local Session = load_session()
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = free_port(), password = "", name = "refused2" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        }
+        local calls, err = 0, nil
+        connect_sync(s, function(ok, e) calls = calls + 1; err = e end)
+        if s:get_state() ~= "error" or calls ~= 1 then
+            return nil, "state " .. tostring(s:get_state()) .. ", " .. calls .. " callback(s)"
+        end
+        if not tostring(err):find("connection refused", 1, true) then return nil, "unclear error: " .. tostring(err) end
+        return s.sock == nil, "the socket is dropped"
+    end)
+
+    -- PocketBook's isWifiOn is QueryNetwork's NET_CONNECTED, which can hold with no route (KOReader's
+    -- own PocketBook NetworkMgr:init waits for the route separately). Dialling then only fails, and
+    -- every retry dials into the same dead network: such a link is brought up like a missing one.
+    check("session_brings_up_a_wifi_link_that_has_no_route", function()
+        local Session = load_session()
+        local ons, offs = 0, 0
+        local net = {
+            isWifiOn = function() return true end,
+            isConnected = function() return false end,
+            turnOnWifiAndWaitForConnection = function() ons = ons + 1; return {} end,
+            turnOffWifi = function() offs = offs + 1 end,
+        }
+        local s = Session.new{ profile = { host = "127.0.0.1", port = free_port(), password = "", name = "noroute" },
+            network_mgr = net }
+        s:connect(function() end)
+        local state, sock = s:get_state(), s.sock
+        s:disconnect()
+        if ons ~= 1 then return nil, "Wi-Fi was not brought up (" .. ons .. " request(s)), state " .. tostring(state) end
+        if sock then return nil, "it dialled into a network without a route" end
+        if offs ~= 0 then return nil, "Wi-Fi it did not turn on must not be turned off" end
+        return true
+    end)
+
+    -- NetworkMgr answers EBUSY (no return value, and no callback ever) while an earlier attempt of
+    -- its own is pending; that one may well bring the link up. The attempt used to sit out the whole
+    -- 30 s Wi-Fi timeout regardless: it now dials as soon as the link is up.
+    check("session_dials_once_the_link_is_up_even_without_a_wifi_callback", function()
+        local env = clock_env()
+        local Session = env.Session
+        local up_at = env.clock + 3
+        local function up() return env.clock >= up_at end
+        local net = {
+            isWifiOn = function() return up() end,
+            isConnected = function() return up() end,
+            turnOnWifiAndWaitForConnection = function() return nil end, -- EBUSY
+            turnOffWifi = function() end,
+        }
+        local s = Session.new{ profile = { host = "127.0.0.1", port = free_port(), password = "", name = "ebusy" },
+            network_mgr = net }
+        local err, calls = nil, 0
+        local t0 = env.clock
+        s:connect(function(ok, e) calls = calls + 1; err = e end)
+        env.run(function() return calls > 0 end)
+        local took = env.clock - t0
+        env.restore()
+        if calls ~= 1 then return nil, "the attempt never ended (" .. calls .. " callbacks)" end
+        if not tostring(err):find("could not connect", 1, true) then
+            return nil, string.format("it did not dial once the link was up (after %.1f s): %s", took, tostring(err))
+        end
+        if took > 5 then return nil, string.format("it dialled %.1f s after the start, the link was up at 3 s", took) end
+        return true
+    end)
+
+    -- The link comes up before NetworkMgr's connectivity check calls back: the session dials on its
+    -- own, and the late callback must not dial a second time.
+    check("session_ignores_the_wifi_callback_once_it_dialled", function()
+        local env = clock_env()
+        local Session = env.Session
+        local listener = assert(socket.bind("127.0.0.1", 0)) -- accepts, never speaks
+        local _, port = listener:getsockname()
+        local up_at, cb = env.clock + 2, nil
+        local function up() return env.clock >= up_at end
+        local net = {
+            isWifiOn = function() return up() end,
+            isConnected = function() return up() end,
+            turnOnWifiAndWaitForConnection = function(_, f) cb = f; return {} end,
+            turnOffWifi = function() end,
+        }
+        local s = Session.new{ profile = { host = "127.0.0.1", port = tonumber(port), password = "", name = "late2" },
+            network_mgr = net }
+        s:connect(function() end)
+        env.run(function() return s.sock ~= nil end)
+        local sock = s.sock
+        if cb then cb() end
+        local same = s.sock == sock
+        s:disconnect()
+        env.restore()
+        listener:close()
+        if not sock then return nil, "it never dialled" end
+        if not same then return nil, "the late Wi-Fi callback dialled again" end
+        return true
+    end)
+
+    -- Wi-Fi going away under a live connection (KOReader turns it off on suspend) reports nothing:
+    -- the socket just goes quiet. TCP keepalive makes the kernel notice and fail the receive.
+    check("session_turns_on_tcp_keepalive", function()
+        local Session = load_session()
+        local listener = assert(socket.bind("127.0.0.1", 0))
+        local _, port = listener:getsockname()
+        local real_tcp, opts = socket.tcp, {}
+        socket.tcp = function()
+            local sock = real_tcp()
+            return setmetatable({
+                setoption = function(_, k, v) opts[k] = v; return sock:setoption(k, v) end,
+            }, {
+                __index = function(_, k)
+                    local v = sock[k]
+                    if type(v) == "function" then return function(_, ...) return v(sock, ...) end end
+                    return v
+                end,
+            })
+        end
+        local s = Session.new{ profile = { host = "127.0.0.1", port = tonumber(port), password = "", name = "ka" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end } }
+        local ok, err = pcall(s.connect, s, function() end)
+        socket.tcp = real_tcp
+        s:disconnect()
+        listener:close()
+        if not ok then return nil, err end
+        if opts.keepalive ~= true then return nil, "keepalive is off" end
+        if not (opts["tcp-keepidle"] and opts["tcp-keepidle"] <= 60) then
+            return nil, "the idle time before the first probe is the kernel's (2 h): " .. tostring(opts["tcp-keepidle"])
+        end
+        return true
+    end)
+
+    -- The protocol object exists from the dial on, but nothing may be queued before the handshake
+    -- is over (input or a picture request from a timer of the viewer's would go out in the middle
+    -- of the handshake, or on a socket that is not connected yet).
+    check("session_sends_nothing_before_the_handshake_is_over", function()
+        local Session = load_session()
+        local listener = assert(socket.bind("127.0.0.1", 0)) -- accepts, never speaks
+        local _, port = listener:getsockname()
+        local s = Session.new{ profile = { host = "127.0.0.1", port = tonumber(port), password = "", name = "early" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end } }
+        s.remote = require("vnc/framebuffer").new(8, 8) -- the previous connection's picture, kept for the reconnect
+        s:connect(function() end)
+        local written, write = 0, s.proto.io.write
+        s.proto.io.write = function(m) written = written + 1; return write(m) end
+        local phases = {}
+        for _ = 1, 3 do
+            phases[#phases + 1] = tostring(s._phase)
+            s:send_pointer(1, 1, 1); s:send_key(0x61, true); s:send_cut_text("x"); s:request_full_update()
+            s:_connect_tick()
+            socket.sleep(0.01)
+        end
+        local queued, state = written, s:get_state()
+        s:disconnect()
+        listener:close()
+        if queued ~= 0 then
+            return nil, string.format("%d message(s) queued in phases %s", queued, table.concat(phases, ","))
+        end
+        return state == "connecting", "state " .. tostring(state)
+    end)
+
+    -- A drop that a listener answers by retrying (the viewer's reconnect box sets retry mode from
+    -- its error handler) keeps Wi-Fi on: it used to be turned off first, and the very next attempt
+    -- had to bring it up again.
+    check("session_drop_keeps_wifi_for_a_listener_that_retries", function()
+        local Session = load_session()
+        local offs = 0
+        local s
+        s = Session.new{
+            profile = { host = "127.0.0.1", port = 1, password = "", name = "drop" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() offs = offs + 1 end },
+            on_state = function(state) if state == "error" then s:set_keep_wifi(true) end end,
+        }
+        s.state, s.wifi_was_on = "connected", false -- connected over Wi-Fi it turned on
+        s:_fail("connection closed by server")
+        if offs ~= 0 then return nil, "the drop turned Wi-Fi off before the retry loop could keep it" end
+        s:set_keep_wifi(false)
+        if offs ~= 1 then return nil, "the loop ending must hand the duty back, offs " .. offs end
+        -- without a listener that retries, a drop still restores Wi-Fi at once
+        local t = Session.new{
+            profile = { host = "127.0.0.1", port = 1, password = "", name = "drop2" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() offs = offs + 1 end },
+        }
+        t.state, t.wifi_was_on = "connected", false
+        t:_fail("x")
+        if offs ~= 2 then return nil, "a plain drop must restore Wi-Fi" end
         return true
     end)
 

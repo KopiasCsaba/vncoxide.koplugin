@@ -46,14 +46,23 @@ Session.MAX_BYTES_PER_TICK = 1048576
 Session.MAX_CPU_PER_TICK = 0.03
 -- Belt and braces: a pathological peer must not spin forever inside one tick.
 Session.MAX_STEPS_PER_TICK = 1000000
--- Wall-clock budget for the synchronous part of a handshake, and the socket timeout used
--- while it runs.
+-- Connecting never blocks the UI thread: the socket is non-blocking from the start, and the TCP
+-- connect and then the RFB handshake are driven by a task every `CONNECT_TICK` seconds. Each phase
+-- has its own deadline (seconds): a blackholed address or a server that accepts but never speaks
+-- ends in an error instead of a frozen screen.
+Session.CONNECT_TICK = 0.05
+Session.CONNECT_TIMEOUT = 10
 Session.HANDSHAKE_TIMEOUT = 20
-Session.HANDSHAKE_SOCKET_TIMEOUT = 5
 -- Turning Wi-Fi on is asynchronous, and NetworkMgr can be left with a pending attempt of its
--- own (it then just reports EBUSY and never calls us back). Never leave the user staring at a
--- "connecting" that cannot finish.
+-- own (it then just reports EBUSY and never calls us back). While waiting, the link is checked
+-- every `WIFI_POLL` seconds and dialled as soon as it is up; after `WIFI_WAIT_TIMEOUT` the attempt
+-- fails. Never leave the user staring at a "connecting" that cannot finish.
+Session.WIFI_POLL = 1
 Session.WIFI_WAIT_TIMEOUT = 30
+-- TCP keepalive (seconds idle before the first probe, between probes, probes): Wi-Fi going away
+-- under a live connection (KOReader turns it off on suspend) reports nothing by itself, so a quiet
+-- socket would look connected forever. With these the kernel fails it within about a minute.
+Session.KEEPALIVE = { idle = 30, interval = 10, count = 3 }
 
 -- Seconds without key input before the screen update request held during a key burst is sent.
 -- E-ink redraws block the UI thread, so a redraw started mid-burst delays the next key press.
@@ -124,6 +133,9 @@ function Session.new(opts)
     -- shared `Session._poll` would cancel every session's poll (e.g. a benchmark's own connection
     -- tearing down would stop the viewer's).
     self._poll_task = function() self:_poll() end
+    -- The connect phases' tasks, bound the same way.
+    self._connect_task = function() self:_connect_tick() end
+    self._wifi_task = function() self:_wifi_tick() end
     return self
 end
 
@@ -176,11 +188,11 @@ function Session:get_error() return self.err end
 Opens the connection: turns Wi-Fi on when needed, connects the socket and runs the RFB
 handshake.
 
-The handshake itself is driven synchronously (the socket gets a real timeout for that
-phase), so when `callback` reports success the plane exists and the session is usable.
-Turning Wi-Fi on is inherently asynchronous, so `callback(ok, err)` may be invoked later
-than `connect()` returns.
---- @tparam[opt] function callback `(ok, err)`, called exactly once
+Nothing here blocks the UI thread (bar a host name lookup): the TCP connect and the handshake run
+in scheduled ticks, and turning Wi-Fi on is asynchronous, so `callback(ok, err)` is normally
+invoked after `connect()` returns. When it reports success the plane exists and the session is
+usable. A hangup or disconnect meanwhile ends the attempt without calling it.
+--- @tparam[opt] function callback `(ok, err)`, called at most once
 ]]
 function Session:connect(callback)
     if self.state == "connecting" or self.state == "connected" then
@@ -195,23 +207,42 @@ function Session:connect(callback)
     self._attempt = (self._attempt or 0) + 1
     local attempt = self._attempt
 
-    local wifi_on = self:_net():isWifiOn()
+    local net = self:_net()
+    local wifi_on = net:isWifiOn()
     -- While retrying, Wi-Fi we turned on earlier is still on: keep the duty to turn it off.
     local keeps_duty = self.keep_wifi and self.wifi_was_on == false
     if not keeps_duty then self.wifi_was_on = wifi_on end
-    if not wifi_on then
-        local status = self:_net():turnOnWifiAndWaitForConnection(function()
-            self:_do_connect(attempt)
-        end)
-        if status == false then
-            if not keeps_duty then self.wifi_was_on = nil end
-            self:_fail("could not turn on Wi-Fi")
-            return
-        end
-        self:_watch_wifi(attempt)
+    if wifi_on and self:_link_up() then
+        self:_do_connect(attempt)
         return
     end
-    self:_do_connect(attempt)
+    -- Off, or on without a route (on PocketBook "on" is only QueryNetwork's NET_CONNECTED): dialling
+    -- could only fail, so the link is brought up first, as NetworkMgr does for its own users.
+    local status = net:turnOnWifiAndWaitForConnection(function()
+        self:_do_connect(attempt)
+    end)
+    if status == false then
+        if self._attempt == attempt and self.state == "connecting" and not self.sock then
+            if not keeps_duty then self.wifi_was_on = nil end
+            self:_fail("could not turn on Wi-Fi")
+        end
+        return
+    end
+    -- (it may have called back already, when the link came up meanwhile)
+    if self._attempt == attempt and self.state == "connecting" and not self.sock then
+        self._wifi_deadline = Session._now() + Session.WIFI_WAIT_TIMEOUT
+        self._phase = "wifi"
+        UIManager:scheduleIn(Session.WIFI_POLL, self._wifi_task)
+    end
+end
+
+--- @treturn boolean true when the network manager reports a usable link (Wi-Fi up with a route),
+---   the test KOReader's own NetworkMgr uses before it calls anyone back
+function Session:_link_up()
+    local net = self:_net()
+    if not net:isWifiOn() then return false end
+    if net.isConnected then return net:isConnected() and true or false end
+    return true
 end
 
 function Session:_finish_connect(ok, err)
@@ -223,22 +254,44 @@ function Session:_finish_connect(ok, err)
     end
 end
 
---- Fails the attempt if the asynchronous Wi-Fi path never calls us back.
-function Session:_watch_wifi(attempt)
-    UIManager:scheduleIn(Session.WIFI_WAIT_TIMEOUT, function()
-        if self._attempt == attempt and self.state == "connecting" then
-            self:_fail(string.format("timed out after %ds waiting for Wi-Fi", Session.WIFI_WAIT_TIMEOUT))
-        end
-    end)
-end
-
---- Dials and runs the handshake for attempt `attempt`, unless that attempt is no longer the one in
---- progress (it failed, was disconnected, or a newer one started since Wi-Fi was asked for).
-function Session:_do_connect(attempt)
-    if attempt ~= self._attempt or self.state ~= "connecting" then
-        logger.dbg("vnc: ignoring the Wi-Fi callback of an attempt that is over")
+--[[--
+Waiting for Wi-Fi: dials once the link is up, even if NetworkMgr never calls back (EBUSY: it was
+busy with an attempt of its own, which may well bring the link up), and fails the attempt when the
+link is still down after `WIFI_WAIT_TIMEOUT`.
+]]
+function Session:_wifi_tick()
+    if self._phase ~= "wifi" or self.state ~= "connecting" then return end
+    if self:_link_up() then
+        logger.dbg("vnc: the Wi-Fi link is up")
+        self:_do_connect(self._attempt)
         return
     end
+    if Session._now() >= self._wifi_deadline then
+        self:_fail(string.format("timed out after %ds waiting for Wi-Fi", Session.WIFI_WAIT_TIMEOUT))
+        return
+    end
+    UIManager:scheduleIn(Session.WIFI_POLL, self._wifi_task)
+end
+
+--- Asks the kernel to probe an idle connection (see `KEEPALIVE`). Options this LuaSocket or kernel
+--- lacks are skipped: plain keepalive still helps, only later.
+local function set_keepalive(sock)
+    local k = Session.KEEPALIVE
+    for _, o in ipairs{ { "keepalive", true }, { "tcp-keepidle", k.idle },
+                        { "tcp-keepintvl", k.interval }, { "tcp-keepcnt", k.count } } do
+        local ok, res, err = pcall(sock.setoption, sock, o[1], o[2])
+        if not (ok and res) then logger.dbg("vnc: socket option", o[1], "not set:", ok and err or res) end
+    end
+end
+
+--- Starts dialling for attempt `attempt`, unless that attempt is no longer the one in progress (it
+--- failed, was disconnected, or a newer one started since Wi-Fi was asked for) or already dialled.
+function Session:_do_connect(attempt)
+    if attempt ~= self._attempt or self.state ~= "connecting" or self.sock then
+        logger.dbg("vnc: ignoring the Wi-Fi callback of an attempt that is over or dialled")
+        return
+    end
+    UIManager:unschedule(self._wifi_task)
     local p = self.profile
     logger.dbg("vnc: connecting to", p.host, p.port)
     local socket = require("socket")
@@ -246,14 +299,16 @@ function Session:_do_connect(attempt)
     if not sock then
         return self:_fail("could not create a TCP socket")
     end
-    sock:settimeout(Session.HANDSHAKE_SOCKET_TIMEOUT)
+    sock:settimeout(0)
+    -- (with a zero timeout this only starts the connect: "timeout" means it is on its way)
     local ok, err = sock:connect(p.host, p.port)
-    if not ok then
+    if not ok and err ~= "timeout" then
         sock:close()
         self:_fail(string.format("could not connect to %s:%d (%s)", p.host, p.port, tostring(err)))
         return
     end
     sock:setoption("tcp-nodelay", true)
+    set_keepalive(sock)
     self.sock = sock
 
     -- The picture settings come from the profile and are read once per connection: an edit applies
@@ -339,22 +394,61 @@ function Session:_do_connect(attempt)
     }
     self.done = false
     self.need = nil
+    if ok then
+        self:_start_handshake()
+    else
+        self._phase = "dial"
+        self._deadline = Session._now() + Session.CONNECT_TIMEOUT
+    end
+    UIManager:scheduleIn(Session.CONNECT_TICK, self._connect_task)
+end
 
-    local deadline = os.time() + Session.HANDSHAKE_TIMEOUT
-    while true do
-        local status = self:_pump(true)
-        if status == "error" then return end
-        if status == "connected" then break end
-        if os.time() >= deadline then
-            self:_fail("timed out during the RFB handshake")
+function Session:_start_handshake()
+    self._phase = "handshake"
+    self._deadline = Session._now() + Session.HANDSHAKE_TIMEOUT
+end
+
+--[[--
+One connect tick: checks whether the TCP connect completed, or pumps the handshake (each pump is
+bounded like a poll tick), and fails the attempt once the phase's deadline has passed.
+]]
+function Session:_connect_tick()
+    local phase = self._phase
+    if (phase ~= "dial" and phase ~= "handshake") or self.state ~= "connecting" then return end
+    UIManager:unschedule(self._connect_task)
+    local p = self.profile
+    if phase == "dial" then
+        local socket = require("socket")
+        local _, writable = socket.select(nil, { self.sock }, 0)
+        if writable and writable[1] then
+            -- the outcome: a second connect reports success (or "already connected") or the error
+            local ok, err = self.sock:connect(p.host, p.port)
+            if not (ok or err == "already connected") then
+                self:_fail(string.format("could not connect to %s:%d (%s)", p.host, p.port, tostring(err)))
+                return
+            end
+            self:_start_handshake()
+        elseif Session._now() >= self._deadline then
+            self:_fail(string.format("could not connect to %s:%d (timeout)", p.host, p.port))
+            return
+        else
+            UIManager:scheduleIn(Session.CONNECT_TICK, self._connect_task)
             return
         end
     end
-
-    -- Connected: from now on the socket must never block the UI thread.
-    sock:settimeout(0)
-    self.bulk = true
-    self:_finish_connect(true)
+    local status = self:_pump(true)
+    if status == "error" then return end
+    if status == "connected" then
+        self._phase = nil
+        self.bulk = true
+        self:_finish_connect(true)
+        return
+    end
+    if Session._now() >= self._deadline then
+        self:_fail("timed out during the RFB handshake")
+        return
+    end
+    UIManager:scheduleIn(status == "busy" and 0 or Session.CONNECT_TICK, self._connect_task)
 end
 
 -- ---------------------------------------------------------------- transport
@@ -636,6 +730,9 @@ end
 --- Closes the socket and frees the protocol, keeping the plane for display.
 function Session:_teardown_connection()
     UIManager:unschedule(self._poll_task)
+    UIManager:unschedule(self._connect_task)
+    UIManager:unschedule(self._wifi_task)
+    self._phase = nil
     self.attached = false
     if self.sock then
         self.sock:close()
@@ -685,8 +782,10 @@ function Session:_fail(err)
     local msg = tostring(err)
     logger.warn("vnc: session failed:", msg)
     self:_teardown_connection()
-    if not self.keep_wifi then self:_restore_wifi() end
+    -- Listeners hear of it before Wi-Fi is restored: one that retries (the viewer's reconnect box)
+    -- turns retry mode on from here, and Wi-Fi stays on for its first attempt.
     self:_set_state("error", msg)
+    if not self.keep_wifi then self:_restore_wifi() end
     self:_finish_connect(false, msg)
 end
 
@@ -721,10 +820,16 @@ end
 
 -- ---------------------------------------------------------------- requests
 
+--- @treturn boolean true once the handshake is over: before that (the protocol exists from the dial
+---   on) nothing may be queued, or it would go out in the middle of the handshake
+function Session:_live()
+    return self.proto ~= nil and self._phase == nil
+end
+
 --- Queues a non-incremental update request for the whole framebuffer.
 --- Safe to call from protocol callbacks (it never flushes).
 function Session:request_full_update()
-    if not self.proto or not self.remote then return end
+    if not self:_live() or not self.remote then return end
     local w, h = self.remote:get_size()
     self.forced = nil -- covered
     self.proto:request_update(0, 0, 0, w, h)
@@ -833,7 +938,7 @@ end
 --- @tparam number y remote y
 --- @tparam number mask RFB pointer button mask
 function Session:send_pointer(x, y, mask)
-    if not self.proto then return end
+    if not self:_live() then return end
     self.proto:send_pointer(x, y, mask)
     self:_flush_now()
 end
@@ -841,7 +946,7 @@ end
 --- @tparam number keysym X11 keysym
 --- @tparam boolean down
 function Session:send_key(keysym, down)
-    if not self.proto then return end
+    if not self:_live() then return end
     if down then self:note_input() end
     self.proto:send_key(keysym, down)
     self:_flush_now()
@@ -849,7 +954,7 @@ end
 
 --- @tparam string text
 function Session:send_cut_text(text)
-    if not self.proto then return end
+    if not self:_live() then return end
     self.proto:send_cut_text(text)
     self:_flush_now()
 end

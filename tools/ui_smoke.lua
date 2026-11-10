@@ -128,6 +128,15 @@ end
 local function choose(plugin, text)
     find_item(plugin.connection_list.item_table, text).callback()
 end
+--- Runs UIManager's due tasks until no session of `plugin` is connecting (a connect runs in ticks).
+local function settle_connects(plugin)
+    local socket = require("socket")
+    local deadline = socket.gettime() + 10
+    local function busy()
+        for _, s in pairs(plugin.sessions) do if s.state == "connecting" then return true end end
+    end
+    repeat UIManager:_checkTasks(); socket.sleep(0.005) until not busy() or socket.gettime() > deadline
+end
 --- Emulates a ConfirmBox button (its callbacks run before it closes, c.f. confirmbox.lua).
 local function answer_confirm(confirm, yes)
     if yes then confirm.ok_callback() else confirm.cancel_callback() end
@@ -282,6 +291,7 @@ end)
 check("failed_connect_returns_to_list", function()
     plugin:show_connection_list()
     choose(plugin, "dead")                        -- closed port: connection refused
+    settle_connects(plugin)
     expect_top(function(w) return w ~= nil and w.text ~= nil and w.buttons == nil end,
         "the connection error message")
     assert_true(count(is_list) == 1, "the list must be back under the message: " .. stack_desc())
@@ -452,6 +462,7 @@ check("boot_autoconnect_failure_is_reported_like_a_manual_one", function()
     local ok, err = pcall(function()
         plugin:schedule_autoconnect()
         UIManager:_checkTasks()
+        settle_connects(plugin)
     end)
     store:set_autoconnect(nil)
     store:flush()
@@ -2735,9 +2746,11 @@ check("retry_mode_keeps_wifi_on_until_the_loop_ends", function()
     s.wifi_was_on = false; s:set_keep_wifi(true)
     local results = {}
     s:connect(function(ok) results[#results + 1] = ok end)
+    while s._phase == "dial" do s:_connect_tick(); require("socket").sleep(0.002) end
     assert_true(results[1] == false and s:get_state() == "error")
     assert_true(offs == 0 and s.wifi_was_on == false, "failure keeps Wi-Fi and the duty")
     s:connect(function(ok) results[#results + 1] = ok end)
+    while s._phase == "dial" do s:_connect_tick(); require("socket").sleep(0.002) end
     assert_true(offs == 0 and s.wifi_was_on == false)
     s:set_keep_wifi(false)
     assert_true(offs == 1 and s.wifi_was_on == nil, "the loop ending restores it once")
