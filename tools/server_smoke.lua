@@ -4544,5 +4544,34 @@ check("failed_authentications_back_off_per_address", function()
     if not ok then error(err, 0) end
 end)
 
+check("a_stopped_server_left_in_a_wrapped_chain_collects_nothing", function()
+    -- A stop cannot take our hook out of a chain another plugin wrapped around it; that hook kept
+    -- appending every refresh to the stopped server's pending list, forever. And a later start
+    -- replaced the other plugin's wrapper with our hook.
+    local server = hostile_server("")
+    local real_refresh = UIManager._refresh
+    local theirs = function(...) return real_refresh(...) end
+    UIManager._refresh = theirs
+    local ok, err = pcall(function()
+        server:stop()
+        for _ = 1, 200 do
+            UIManager:_refresh("ui", Geom:new{ x = 0, y = 0, w = 1, h = 1 })
+            UIManager._refresh_stack = {}
+        end
+        UIManager:_repaint()
+        assert_true(#server._refresh_pending == 0, "a stopped server must note nothing, it holds "
+            .. #server._refresh_pending)
+        assert_true(server:start(), "restart")
+        assert_true(UIManager._refresh == theirs, "a restart must not clobber the other wrapper")
+        UIManager:_refresh("ui", Geom:new{ x = 0, y = 0, w = 1, h = 1 })
+        UIManager._refresh_stack = {}
+        assert_true(#server._refresh_pending > 0, "the running server must note refreshes again")
+    end)
+    server:stop()
+    -- `real_refresh` is the stopped server's own hook; put the function it wraps back instead
+    UIManager._refresh = server._orig_refresh or real_refresh
+    if not ok then error(err, 0) end
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

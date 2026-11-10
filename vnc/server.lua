@@ -150,8 +150,12 @@ function Server.new(opts)
     -- always the *original* UIManager._refresh - never our own hook - so however the chain around
     -- us is rearranged (a start after a stop somebody else wrapped, an unhook that could not
     -- restore), this can neither call a nil nor call itself.
+    --
+    -- Both hooks only pass through while the server is not running: a stop cannot take them out of
+    -- a chain another plugin has wrapped around them (c.f., Server:_unhook_refresh), and a stopped
+    -- server must not keep collecting notes nobody drains.
     self._refresh_hook = function(mgr, mode, region, dither)
-        self:_note_refresh(mode, region)
+        if self.running then self:_note_refresh(mode, region) end
         local orig = self._orig_refresh
         if orig then return orig(mgr, mode, region, dither) end
     end
@@ -161,6 +165,7 @@ function Server.new(opts)
     self._repaint_hook = function(mgr, ...)
         local orig = self._orig_repaint
         if not orig then return end
+        if not self.running and self._repaint_depth == 0 then return orig(mgr) end
         self._repaint_depth = self._repaint_depth + 1
         -- `UIManager:_repaint` takes no arguments of its own, so there is nothing to forward (and
         -- none of the allocations a vararg-forwarding wrapper would make on every frame).
@@ -304,16 +309,15 @@ cycles, so however the chain around us is rearranged (a start after a stop someb
 unhook that could not restore), neither hook can end up calling itself.
 ]]
 function Server:_hook_refresh()
+    -- An original still kept means our hook is still in the chain - a stop left it there because
+    -- somebody had wrapped it (c.f., Server:_unhook_refresh) - and it is live again now that we
+    -- run. Installing it on top as well would clobber that other plugin's wrapper.
     if not self._orig_refresh then
         self._orig_refresh = UIManager._refresh
+        UIManager._refresh = self._refresh_hook
     end
     if not self._orig_repaint then
         self._orig_repaint = UIManager._repaint
-    end
-    if UIManager._refresh ~= self._refresh_hook then
-        UIManager._refresh = self._refresh_hook
-    end
-    if UIManager._repaint ~= self._repaint_hook then
         UIManager._repaint = self._repaint_hook
     end
 end
