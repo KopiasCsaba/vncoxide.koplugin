@@ -304,6 +304,28 @@ check("failed_connect_returns_to_list", function()
     assert_true(count(is_list) == 1, "no stacked lists: " .. stack_desc())
 end)
 
+--- Every Display panel zoom choice survives a restart: the numeric presets (100%, ...) used to be
+--- dropped on load, the type of the default being a string, so the viewer reopened fitted.
+check("every_zoom_choice_survives_a_restart", function()
+    local Settings = require("vnc/settings")
+    local DisplayPanel = require("vnc/displaypanel")
+    local path = data_dir .. "/ui_smoke_zoom_mode.lua"
+    for _i, choice in ipairs(DisplayPanel.ZOOM_CHOICES) do
+        os.remove(path)
+        local s = Settings.open(path)
+        s.data.settings.zoom_mode = choice.value
+        s:flush()
+        local back = Settings.open(path).data.settings.zoom_mode
+        assert_true(back == choice.value, "zoom " .. tostring(choice.value) .. " came back as " .. tostring(back))
+    end
+    os.remove(path)
+    local s = Settings.open(path)
+    s.data.settings.zoom_mode = 3 -- not a preset
+    s:flush()
+    assert_true(Settings.open(path).data.settings.zoom_mode == "fit", "an unknown zoom must fall back to fit")
+    os.remove(path)
+end)
+
 -- ---------------------------------------------------------------- auto connect on start
 
 check("autoconnect_flag_round_trips", function()

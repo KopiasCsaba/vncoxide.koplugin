@@ -90,6 +90,9 @@ Settings.POINTER_SPEEDS = { slow = 0.75, normal = 1.25, fast = 2.0 }
 --- mid grey, 1 is the picture as the server sends it (see @{vnc.scaler.contrast_lut}).
 Settings.CONTRAST_LEVELS = { 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3 }
 
+--- The numeric zoom modes: the Display panel's scale presets (DisplayPanel.ZOOM_CHOICES), 1 is 1:1.
+Settings.ZOOM_SCALES = { 0.25, 0.5, 0.75, 1, 1.5, 2, 4 }
+
 --- How many combos the "Send keys" panel remembers.
 Settings.RECENT_COMBOS_MAX = 4
 
@@ -151,6 +154,14 @@ local SETTING_CHECKS = {
             if value == level then return value end
         end
         return Settings.DEFAULTS.remote_contrast
+    end,
+    -- (a numeric mode is one of the Display panel's presets, c.f. DisplayPanel.ZOOM_CHOICES)
+    zoom_mode = function(value)
+        if value == "fit" or value == "fit_with_keyboard" then return value end
+        for _, scale in ipairs(Settings.ZOOM_SCALES) do
+            if value == scale then return value end
+        end
+        return Settings.DEFAULTS.zoom_mode
     end,
     pointer_speed = function(value)
         if Settings.POINTER_SPEEDS[value] then return value end
