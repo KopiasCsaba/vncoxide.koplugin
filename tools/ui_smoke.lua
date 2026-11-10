@@ -1267,6 +1267,32 @@ check("later_plugin_instances_do_not_rearm_the_boot_connect", function()
     assert_true(calls == 0, "a later instance must not connect at its init, got " .. calls .. " connects")
 end)
 
+--- `sessions` is shared by all instances; a session made by an instance that KOReader has since
+--- replaced must report its drop to the instance showing the viewer, i.e. to its reconnect box.
+check("a_session_reports_to_the_instance_that_shows_it", function()
+    local Session = require("vnc/session")
+    local session = Session.new{ profile = store:get_profile("good") }
+    local old = setmetatable({ sessions = plugin.sessions }, { __index = plugin_module })
+    session.on_state = function(state, err) old:on_session_state(session, state, err) end
+    local errors = {}
+    local app = { session = session, on_session_error = function(_, m) errors[#errors + 1] = m end }
+    local saved_settings = plugin.server.settings
+    local second = plugin_module:new{ ui = { menu = { registerToMainMenu = function() end } } }
+    plugin.server.settings = saved_settings
+    local real_show = UIManager.show
+    UIManager.show = function() end
+    local ok, err = pcall(function()
+        second.app = app -- (the viewer reopened by the new instance: not connected, so no attach)
+        second:_open_app(session)
+        session:_set_state("error", "connection reset")
+    end)
+    UIManager.show = real_show
+    if not ok then error(err, 0) end
+    assert_true(#errors == 1 and errors[1] == "connection reset",
+        "the drop must reach the viewer of the current instance, got " .. #errors)
+    assert_true(session.plugin == second, "and the session must read that instance's settings")
+end)
+
 --- Connect tapped again while the first attempt is still connecting (waiting for Wi-Fi, typically)
 --- must leave that attempt alone: its "already connecting" answer used to be handled as a failed
 --- connect, which dropped the session from the plugin - and with it the only way to disconnect it.
