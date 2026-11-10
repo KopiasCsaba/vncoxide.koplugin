@@ -1,5 +1,5 @@
 --[[--
-Stateful zlib wrapper: `inflate` for the RFB client, `deflate` for the RFB server.
+Stateful zlib wrapper: `inflate_ptr` for the RFB client, `deflate` for the RFB server.
 
 KOReader's @{ffi.zlib} only exposes the one-shot `uncompress()`, which cannot be used for
 RFB: ZRLE and Tight keep **one zlib stream alive for the whole connection**, and a tile's
@@ -40,6 +40,7 @@ local Z_SYNC_FLUSH = 2
 local Z_DEFAULT_COMPRESSION = -1
 
 local z_stream_p = ffi.typeof("z_stream*")
+local const_u8p = ffi.typeof("const uint8_t*")
 local z_stream_sz = ffi.sizeof("z_stream")
 
 -- zlib only compares the major version ("1"), the minor/patch part is informational.
@@ -109,23 +110,30 @@ local function grow(self, need, keep)
 end
 
 --[[--
-Feeds `data` (may be nil/empty for a bare drain) and inflates everything the stream produces
-into the stream's own output buffer.
+Feeds the `len` bytes at `ptr` (nil/0 for a bare drain) and inflates everything the stream
+produces into the stream's own output buffer.
+
+The input is a pointer, not a string: the decoders pass memory straight out of the receive buffer
+(`reader:ptr(n)`), so a compressed payload is never copied into a Lua string. zlib has consumed it
+by the time this returns (it is not referenced afterwards); a Lua string works too (it converts to
+a pointer), as long as the caller keeps it alive for the call.
 
 The stream is *not* finished: ZRLE/Tight blocks end with a sync flush, not with a stream
 end, so we drain until the input is consumed and no more output can be produced.
 
 The buffer is reused by the next call (no allocation per rect once it has grown), so the bytes
 are only valid until then.
---- @tparam string|nil data
+--- @tparam cdata|string|nil ptr the compressed bytes
+--- @tparam number len how many of them
 --- @tparam[opt] number limit fail rather than produce more than this many bytes
 --- @treturn cdata|nil `const uint8_t*` to the output, or nil plus an error
 --- @treturn number|string the output length, or the error
 ]]
-function ZStream:inflate_ptr(data, limit)
+function ZStream:inflate_ptr(ptr, len, limit)
     local strm = self.strm[0]
-    strm.next_in = data and ffi.cast("const uint8_t*", data) or nil
-    strm.avail_in = data and #data or 0
+    if not ptr then len = 0 end
+    strm.next_in = len > 0 and ffi.cast(const_u8p, ptr) or nil
+    strm.avail_in = len
     -- give back a buffer one big rect grew far beyond what the stream now needs
     if (self.out_cap or 0) > 1048576 and (self.last_total or 0) * 4 < self.out_cap then
         self.out, self.out_cap = nil, nil
@@ -165,27 +173,21 @@ function ZStream:inflate_ptr(data, limit)
     return self.out, total
 end
 
---- Like @{ZStream:inflate_ptr}, but returns the output as a Lua string.
---- @treturn string|nil the inflated bytes, or nil plus an error
-function ZStream:inflate(data, limit)
-    local p, n = self:inflate_ptr(data, limit)
-    if not p then return nil, n end
-    return ffi.string(p, n)
-end
-
 --[[--
-Feeds `data` and returns the bytes zlib produced, ending with a `Z_SYNC_FLUSH` marker.
+Feeds the `len` bytes at `ptr` and returns the bytes zlib produced (a string: they go out on the
+socket), ending with a `Z_SYNC_FLUSH` marker. Like @{ZStream:inflate_ptr}, a Lua string works as
+`ptr`.
 
 That marker is what an RFB zlib stream needs at the end of every ZRLE/Tight block: the stream
 stays open (and keeps its compression history) but everything written so far becomes available to
 the decoder.
 ]]
-function ZStream:deflate(data)
+function ZStream:deflate(ptr, len)
     local strm = self.strm[0]
-    strm.next_in = ffi.cast("const uint8_t*", data)
-    strm.avail_in = #data
+    strm.next_in = ffi.cast(const_u8p, ptr)
+    strm.avail_in = len
     -- deflateBound-ish room: the input plus a little, so one call is the common case
-    grow(self, #data + math.floor(#data / 1000) + 64, 0)
+    grow(self, len + math.floor(len / 1000) + 64, 0)
     local total = 0
     local iterations = 0
     while true do

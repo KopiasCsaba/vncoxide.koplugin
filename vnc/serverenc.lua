@@ -838,7 +838,7 @@ function Enc:encode_zrle(values, count, w, h)
         ty = ty + th
     end
 
-    local compressed, err = self.zstream:deflate(ffi.string(self.wbuf, pos))
+    local compressed, err = self.zstream:deflate(self.wbuf, pos)
     if not compressed then
         logger.warn("vnc: ZRLE compression failed:", err)
         return nil
