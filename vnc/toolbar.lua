@@ -18,6 +18,10 @@ a frontlight), Contrast (the contrast dialog, @{vnc.contrastdialog}), Close (dis
 confirmation) and More (the menu). All but Close and More can be hidden (`toolbar_buttons`, the
 menu's "Toolbar buttons…"); by default the scroll pair and Contrast are.
 
+Buttons can also be pinned to the collapsed toolbar (`toolbar_pinned`, the menu's "Toolbar
+buttons… > Also when collapsed…"): then collapsing leaves a short bar, the expand button followed by
+the pinned ones that the full bar shows, instead of the round button alone.
+
 A long press on any button (and on the round one) shows a one-line tooltip and does nothing else.
 A one-finger drag that starts on the bar (or the round button) moves it, clamped to the screen;
 where it sits is stored as fractions of the free space (`toolbar_pos`), so it keeps its place over
@@ -168,6 +172,18 @@ function Toolbar:visible_ids()
     return ids
 end
 
+--- The buttons that stay beside the round button while collapsed, in bar order: those pinned
+--- (`toolbar_pinned`) that the full bar shows too.
+function Toolbar:pinned_ids()
+    local pinned = self.app.settings.toolbar_pinned
+    local ids = {}
+    if type(pinned) ~= "table" then return ids end
+    for _i, id in ipairs(self:visible_ids()) do
+        if pinned[id] == true and id ~= "toggle" and id ~= "close" then ids[#ids + 1] = id end
+    end
+    return ids
+end
+
 --- Whether the bar is folded into its round button: stored (`toolbar_collapsed`), and only while
 --- the Collapse button is switched on (it is the only way back from the menu's side).
 function Toolbar:wants_collapsed()
@@ -250,7 +266,19 @@ function Toolbar:relayout(at)
     end
     self.collapsed = self:wants_collapsed()
     local border = Size.border.window
+    -- the view state the zoom button shows, for `ViewerApp:_zoom_state_changed`
+    self.zoom_state = app:view_state()
+    local ids = self:visible_ids()
+    local expand
     if self.collapsed then
+        ids = self:pinned_ids()
+        if #ids > 0 then
+            -- a short bar: the expand button where Collapse was, then the pinned buttons
+            table.insert(ids, 1, "toggle")
+            expand = { icon_file = Icons.path("toolbar"), callback = function() app:set_toolbar_collapsed(false) end }
+        end
+    end
+    if self.collapsed and not expand then
         local button = make_button({ icon_file = Icons.path("toolbar"),
             callback = function() app:set_toolbar_collapsed(false) end }, Toolbar.TIPS.expand)
         self.button_by_id.toggle = button
@@ -266,11 +294,14 @@ function Toolbar:relayout(at)
         }
     else
         local all = specs(app)
-        -- the view state the zoom button shows, for `ViewerApp:_zoom_state_changed`
-        self.zoom_state = app:view_state()
         local group = HorizontalGroup:new{}
-        for _i, id in ipairs(self:visible_ids()) do
-            local button = make_button(all[id], Toolbar.TIPS[id])
+        for _i, id in ipairs(ids) do
+            local button
+            if expand and id == "toggle" then
+                button = make_button(expand, Toolbar.TIPS.expand)
+            else
+                button = make_button(all[id], Toolbar.TIPS[id])
+            end
             self.button_by_id[id] = button
             group[#group + 1] = CenterContainer:new{ dimen = Geom:new{ w = cell, h = cell }, button }
         end

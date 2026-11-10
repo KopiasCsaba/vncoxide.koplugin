@@ -210,30 +210,77 @@ function MenuBuilder.open(app)
         for k, v in pairs(extra or {}) do row[k] = v end
         return stays_open(row, function(item) item.mandatory = shown() and "✓" or "-" end)
     end
+    -- ---- which of them stay on the collapsed toolbar: only those the full bar shows
+    local function pinned_row(text, ids)
+        local function on_bar() return Toolbar.is_enabled(settings, ids[1]) end
+        local function pinned()
+            return type(settings.toolbar_pinned) == "table" and settings.toolbar_pinned[ids[1]] == true
+        end
+        return stays_open({
+            text = text,
+            select_enabled_func = on_bar,
+            callback = function()
+                local on = not pinned()
+                local list = {}
+                for k, v in pairs(type(settings.toolbar_pinned) == "table" and settings.toolbar_pinned or {}) do
+                    list[k] = v
+                end
+                for _i, id in ipairs(ids) do list[id] = on end
+                settings.toolbar_pinned = list
+                plugin.settings:flush()
+                app:_toolbar_changed()
+            end,
+        }, function(item)
+            item.mandatory = pinned() and "✓" or "-"
+            item.dim = not on_bar() or nil
+        end)
+    end
     local has_frontlight = Device:hasFrontlight()
+    local collapsed_rows = {
+        pinned_row(_("Display"), { "display" }),
+        pinned_row(_("Zoom"), { "zoom" }),
+        pinned_row(_("Mode"), { "mode" }),
+        pinned_row(_("Keyboard"), { "keyboard" }),
+        pinned_row(_("Rotate"), { "rotate" }),
+        pinned_row(_("Scroll lock"), { "scroll_lock" }),
+        pinned_row(_("Scroll up/down"), { "scroll_up", "scroll_down" }),
+    }
+    if has_frontlight then collapsed_rows[#collapsed_rows + 1] = pinned_row(_("Brightness"), { "brightness" }) end
+    collapsed_rows[#collapsed_rows + 1] = pinned_row(_("Contrast"), { "contrast" })
+    collapsed_rows[#collapsed_rows + 1] = pinned_row(_("More"), { "more" })
     item_table[#item_table + 1] = {
         text = _("Toolbar buttons…"),
-        help_text = _("Which buttons the toolbar shows. Close and More are always there: More is the only way to this menu on a device without keys."),
         sub_item_table = {
-            toolbar_row(_("Collapse button"), { "toggle" }, {
-                help_text = _("Folds the toolbar into a small round button; a tap on that opens it again."),
-            }),
-            toolbar_row(_("Display"), { "display" }),
-            toolbar_row(_("Zoom"), { "zoom" }),
-            toolbar_row(_("Mode"), { "mode" }),
-            toolbar_row(_("Keyboard"), { "keyboard" }),
-            toolbar_row(_("Rotate"), { "rotate" }),
-            toolbar_row(_("Scroll lock"), { "scroll_lock" }),
-            toolbar_row(_("Scroll up/down"), { "scroll_up", "scroll_down" }),
-            toolbar_row(_("Brightness"), { "brightness" }, {
-                help_text = has_frontlight and _("KOReader's frontlight dialog.")
-                    or _("This device has no frontlight: the button is never shown."),
-                dim = not has_frontlight or nil,
-                select_enabled = has_frontlight,
-            }),
-            toolbar_row(_("Contrast"), { "contrast" }, {
-                help_text = _("The contrast of the remote picture as it is drawn here."),
-            }),
+            {
+                text = _("On the toolbar…"),
+                help_text = _("Which buttons the toolbar shows. Close and More are always there: More is the only way to this menu on a device without keys."),
+                sub_item_table = {
+                    toolbar_row(_("Collapse button"), { "toggle" }, {
+                        help_text = _("Folds the toolbar into a small round button; a tap on that opens it again."),
+                    }),
+                    toolbar_row(_("Display"), { "display" }),
+                    toolbar_row(_("Zoom"), { "zoom" }),
+                    toolbar_row(_("Mode"), { "mode" }),
+                    toolbar_row(_("Keyboard"), { "keyboard" }),
+                    toolbar_row(_("Rotate"), { "rotate" }),
+                    toolbar_row(_("Scroll lock"), { "scroll_lock" }),
+                    toolbar_row(_("Scroll up/down"), { "scroll_up", "scroll_down" }),
+                    toolbar_row(_("Brightness"), { "brightness" }, {
+                        help_text = has_frontlight and _("KOReader's frontlight dialog.")
+                            or _("This device has no frontlight: the button is never shown."),
+                        dim = not has_frontlight or nil,
+                        select_enabled = has_frontlight,
+                    }),
+                    toolbar_row(_("Contrast"), { "contrast" }, {
+                        help_text = _("The contrast of the remote picture as it is drawn here."),
+                    }),
+                },
+            },
+            {
+                text = _("Also when collapsed…"),
+                help_text = _("Buttons that stay next to the round button when the toolbar is collapsed. Only buttons the toolbar shows can stay (the others are greyed out)."),
+                sub_item_table = collapsed_rows,
+            },
         },
     }
 

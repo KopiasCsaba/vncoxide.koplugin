@@ -73,7 +73,7 @@ function Help.text(mode)
             "  " .. _("Contrast: the contrast of the remote picture as drawn here (50% to 300%), remembered (hidden by default)."),
             "  " .. _("Close: disconnect, after a confirmation."),
             "  " .. _("More (\u{22EF}): the menu (below)."),
-            "  " .. _("Menu > Toolbar buttons\u{2026} picks which buttons are shown; Close and More always are."),
+            "  " .. _("Menu > Toolbar buttons\u{2026} > On the toolbar\u{2026} picks which buttons are shown; Close and More always are. Also when collapsed\u{2026} picks buttons that stay next to the round button when the toolbar is collapsed."),
         }, "\n"),
 
         _("KEY STRIP"),
@@ -97,7 +97,7 @@ function Help.text(mode)
             "  " .. _("Page buttons send: Page Up/Down keys or mouse-wheel notches."),
             "  " .. _("Keep screen on: stop the device from going to sleep or dimming the light while the viewer is open."),
             "  " .. _("Match orientation to the remote screen: after connecting (or when the remote switches between landscape and portrait), turn this screen the same way, to the side you last picked by hand. A rotation you pick yourself stays until the remote's orientation changes."),
-            "  " .. _("Toolbar buttons\u{2026}: which toolbar buttons are shown (the scroll up / down pair is one row)."),
+            "  " .. _("Toolbar buttons\u{2026}: On the toolbar\u{2026} (which buttons are shown; the scroll up / down pair is one row) and Also when collapsed\u{2026} (which stay next to the round button)."),
             "  " .. _("Help: this page."),
             "  " .. _("Leave (keep connection): close the viewer, the connection stays up."),
         }, "\n"),

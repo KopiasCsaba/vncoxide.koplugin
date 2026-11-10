@@ -245,7 +245,10 @@ the free space (toolbar_pos, Size.margin.default kept on every side), so it is r
 relayout (rotation, resize) and keeps its relative place. While collapsed toolbar_pos is the round
 button's; collapsing puts the round button at the bar's top left (where the Collapse button is),
 expanding puts the bar's top left at the round button, each clamped and stored again
-(Toolbar:relayout(at)). The toast (ViewerApp:show_toast) is pushed below the bar only when the bar
+(Toolbar:relayout(at)). Buttons pinned to the collapsed toolbar (toolbar_pinned, only ids the full
+bar shows, never Collapse or Close: Toolbar:pinned_ids) turn the round button into a short bar of the
+same shape as the full one, the expand button first; with none pinned it stays the round button.
+The toast (ViewerApp:show_toast) is pushed below the bar only when the bar
 is where the toast would be drawn; the contrast box goes under the bar, or above it when there is
 no room; the Display panel's anchor is the bar's rectangle (MovableContainer pops it down, or up).
 

@@ -104,8 +104,12 @@ after a rotation) for the next time. Its buttons, left to right:
 11. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
 12. **⋯** opens the menu (below).
 
-**⋯ › Toolbar buttons…** switches each button but Close and **⋯** on or off (one row for the scroll
-pair); **⋯** always stays, as on a device without keys it is the only way to the menu.
+**⋯ › Toolbar buttons… › On the toolbar…** switches each button but Close and **⋯** on or off (one
+row for the scroll pair); **⋯** always stays, as on a device without keys it is the only way to the
+menu. **⋯ › Toolbar buttons… › Also when collapsed…** picks buttons that stay next to the round button
+when the toolbar is collapsed (none by default): with e.g. Keyboard ticked, collapsing leaves a short
+bar of the expand button and the keyboard button. Only buttons the toolbar shows can stay (the others
+are greyed out there).
 
 | Gesture | Touch mode | Mouse mode |
 | --- | --- | --- |
@@ -363,6 +367,7 @@ return {
             ["contrast"] = false,
         },
         ["toolbar_collapsed"] = false,     -- the toolbar is folded into its round button
+        ["toolbar_pinned"] = { ["keyboard"] = true }, -- buttons kept beside it while collapsed (default: none)
         ["toolbar_pos"] = { ["x"] = 0.5, ["y"] = 0 }, -- where it sits: fractions of the free space (0.5, 0 = top centre)
         ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
     },

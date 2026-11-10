@@ -3818,7 +3818,11 @@ check("menu_toolbar_buttons_submenu", function()
         Device.hasFrontlight = function() return true end
         app.toolbar:relayout()
         local menu = app:open_menu()
-        local parent = find_item(menu.item_table, "Toolbar buttons…")
+        local top_row = find_item(menu.item_table, "Toolbar buttons…")
+        local subs = {}
+        for _, r in ipairs(top_row.sub_item_table) do subs[#subs + 1] = r.text end
+        assert_true(table.concat(subs, "|") == "On the toolbar…|Also when collapsed…", table.concat(subs, "|"))
+        local parent = find_item(top_row.sub_item_table, "On the toolbar…")
         assert_true(parent.help_text and parent.help_text:find("More", 1, true), "its help says why More stays")
         local rows = parent.sub_item_table
         local texts = {}
@@ -3867,7 +3871,8 @@ check("menu_toolbar_buttons_submenu", function()
         -- no frontlight: the Brightness row is dimmed and says why
         Device.hasFrontlight = function() return false end
         menu = app:open_menu()
-        local bright = find_item(find_item(menu.item_table, "Toolbar buttons…").sub_item_table, "Brightness")
+        local bright = find_item(find_item(find_item(menu.item_table, "Toolbar buttons…").sub_item_table,
+            "On the toolbar…").sub_item_table, "Brightness")
         assert_true(bright.dim and bright.select_enabled == false and bright.help_text, "dimmed with a help text")
         app:close_menu()
     end)
@@ -7481,6 +7486,74 @@ check("key_panel_hotkeys_send_exactly_their_combo", function()
     assert_true(take_keys(sent) == "+0xFFE3,+0x63,-0x63,-0xFFE3" and panel:modifier_state("Shift") == nil,
         "sent exactly, Shift cleared")
     assert_true(panel.button_by_id["recent:1"].text == "Ctrl+C", "remembered as Ctrl+C")
+    close_viewer(app, remote)
+end)
+
+check("toolbar_pinned_buttons_stay_when_collapsed", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local has = Device.hasFrontlight
+    local ok, err = pcall(function()
+        Device.hasFrontlight = function() return true end
+        app.toolbar:relayout()
+        local function collapsed_rows(menu)
+            return find_item(find_item(menu.item_table, "Toolbar buttons…").sub_item_table,
+                "Also when collapsed…").sub_item_table
+        end
+        local menu = app:open_menu()
+        local rows = collapsed_rows(menu)
+        local texts = {}
+        for _, r in ipairs(rows) do texts[#texts + 1] = r.text end
+        assert_true(table.concat(texts, "|") == "Display|Zoom|Mode|Keyboard|Rotate|Scroll lock|Scroll up/down|"
+            .. "Brightness|Contrast|More", table.concat(texts, "|"))
+        for _, r in ipairs(rows) do assert_true(r.mandatory == "-", r.text .. ": off by default") end
+        -- nothing pinned: collapsing leaves the round button alone
+        app:close_menu()
+        app:set_toolbar_collapsed(true)
+        local round = app.toolbar.dimen
+        assert_true(round.w == round.h and app.toolbar.button_by_id.keyboard == nil, "the round button alone")
+        -- pin Keyboard: the collapsed toolbar is the expand button and the keyboard button
+        menu = app:open_menu()
+        local kb = find_item(collapsed_rows(menu), "Keyboard")
+        menu:onMenuSelect(kb)
+        UIManager:_checkTasks()
+        assert_true(app.menu == menu and kb.mandatory == "\u{2713}", "the row stays open and is checked")
+        assert_true(app.settings.toolbar_pinned.keyboard == true, "stored")
+        app:close_menu()
+        local bar = app.toolbar
+        assert_true(bar.collapsed and bar.button_by_id.toggle and bar.button_by_id.keyboard
+            and bar.button_by_id.display == nil and bar.button_by_id.more == nil, "expand + keyboard")
+        assert_true(bar.dimen.w > bar.dimen.h, "a short bar now")
+        -- its keyboard button works, sends nothing to the remote; its first button expands
+        UIManager:forceRePaint()
+        local before = #sent.pointer
+        dispatch_gesture{ ges = "tap", pos = centre_of(bar.button_by_id.keyboard.dimen) }
+        UIManager:_checkTasks()
+        assert_true(app.vk_visible and #sent.pointer == before, "the keyboard came up, nothing sent")
+        app:toggle_keyboard()
+        UIManager:_checkTasks()
+        UIManager:forceRePaint()
+        dispatch_gesture{ ges = "tap", pos = centre_of(app.toolbar.button_by_id.toggle.dimen) }
+        UIManager:_checkTasks()
+        assert_true(not app.toolbar.collapsed and app.toolbar.button_by_id.more ~= nil, "expanded")
+        -- a pinned button hidden from the toolbar is not on the collapsed one either, and its row is grey
+        app.settings.toolbar_buttons = { keyboard = false }
+        app:set_toolbar_collapsed(true)
+        app:_toolbar_changed()
+        assert_true(app.toolbar.button_by_id.keyboard == nil and app.toolbar.dimen.w == app.toolbar.dimen.h,
+            "hidden from the bar: back to the round button")
+        menu = app:open_menu()
+        kb = find_item(collapsed_rows(menu), "Keyboard")
+        assert_true(kb.dim and kb.select_enabled_func() == false, "greyed out while off on the toolbar")
+        app:close_menu()
+        app.settings.toolbar_buttons = nil
+        app.settings.toolbar_pinned = nil
+        app:set_toolbar_collapsed(false)
+        -- the setting only keeps known ids, all false unless true
+        local Settings = require("vnc/settings")
+        assert_true(Settings.TOOLBAR_PINNABLE[#Settings.TOOLBAR_PINNABLE] == "more", "More can be pinned")
+    end)
+    Device.hasFrontlight = has
+    assert_true(ok, tostring(err))
     close_viewer(app, remote)
 end)
 

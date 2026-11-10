@@ -54,6 +54,9 @@ Settings.DEFAULTS = {
     -- which toolbar buttons are shown, by id (Close and More always are): see @{Settings.TOOLBAR_BUTTONS}
     toolbar_buttons = {},
     toolbar_collapsed = false,       -- the toolbar is folded into its small round button
+    -- buttons that stay beside the round button while collapsed, by id (all off by default): see
+    -- @{Settings.TOOLBAR_PINNABLE}
+    toolbar_pinned = {},
     -- where the toolbar (or, while collapsed, its round button) sits: fractions of the free space
     -- left and above it, so it keeps its place across rotations; 0.5, 0 is the top centre
     toolbar_pos = {},
@@ -68,6 +71,11 @@ Settings.TOOLBAR_BUTTONS = {
     toggle = true, display = true, zoom = true, mode = true, keyboard = true, rotate = true,
     scroll_lock = true, scroll_up = false, scroll_down = false, brightness = true, contrast = false,
 }
+
+--- The buttons that can stay on the collapsed toolbar (`toolbar_pinned`), in bar order: all but
+--- Collapse (it is the round button itself) and Close.
+Settings.TOOLBAR_PINNABLE = { "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up",
+    "scroll_down", "brightness", "contrast", "more" }
 
 --- Where the toolbar sits by default (see `toolbar_pos`).
 Settings.TOOLBAR_POS = { x = 0.5, y = 0 }
@@ -150,6 +158,13 @@ local SETTING_CHECKS = {
         for id, default in pairs(Settings.TOOLBAR_BUTTONS) do
             local v = type(value) == "table" and value[id]
             if type(v) == "boolean" then out[id] = v else out[id] = default end
+        end
+        return out
+    end,
+    toolbar_pinned = function(value)
+        local out = {}
+        for _i, id in ipairs(Settings.TOOLBAR_PINNABLE) do
+            out[id] = type(value) == "table" and value[id] == true or false
         end
         return out
     end,
