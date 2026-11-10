@@ -451,6 +451,7 @@ end
 
 --- Appends `r` to `out`, cut into tiles of at most `limit` a side (`limit` nil/0 = whole).
 local function emit_rect(out, r, limit)
+    if r.w <= 0 or r.h <= 0 then return end     -- nothing to encode (and nothing an encoder sizes)
     if not limit or limit <= 0 or (r.w <= limit and r.h <= limit) then
         out[#out + 1] = { x = r.x, y = r.y, w = r.w, h = r.h }
         return
@@ -484,6 +485,8 @@ function Server:_get_rects(client, region, full)
     else
         region = { x = x, y = y, w = math.min(region.w, sw - x), h = math.min(region.h, sh - y) }
     end
+    -- A zero-area request names no pixels: nothing to send, and nothing to mark as sent.
+    if region.w <= 0 or region.h <= 0 then return {} end
     local out = {}
     -- A Raw client pays nothing for a big rectangle and would pay a header for each tile, so it is
     -- left alone; the encoders that walk every pixel in Lua are the ones that get tiles.

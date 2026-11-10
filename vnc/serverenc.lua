@@ -536,7 +536,7 @@ function Enc:encode_rre(values, count, w, h)
     local background = dominant(values, 1, count, scratch)
 
     -- 1-based like `values`; cleared per rectangle, grown only when a bigger one arrives
-    if (scratch.covered_size or 0) < count then
+    if not scratch.covered or scratch.covered_size < count then
         scratch.covered = ffi.new("uint8_t[?]", count + 1)
         scratch.covered_size = count
     else

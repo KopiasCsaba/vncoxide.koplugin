@@ -388,8 +388,9 @@ function Server:_collect_rects(x, y, w, h, full)
     for _, rect in ipairs(self.get_rects(client, { x = x, y = y, w = w, h = h }, full) or {}) do
         rects[#rects + 1] = rect
     end
-    if #rects == 0 and full then
-        -- A non-incremental request must be answered, even if we think nothing changed.
+    if #rects == 0 and full and w > 0 and h > 0 then
+        -- A non-incremental request must be answered, even if we think nothing changed. (A
+        -- zero-area one is answered with an empty update by the caller.)
         local sw, sh = self.get_size()
         rects[1] = { x = 0, y = 0, w = sw, h = sh }
     end

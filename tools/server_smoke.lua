@@ -4310,5 +4310,73 @@ check("a_second_key_repaint_reaches_a_client_too", function()
     if not ok then error(err, 0) end
 end)
 
+-- ---------------------------------------------------------------- hostile and broken clients
+
+--- A running server on a free test port: `server, port`.
+local function hostile_server(password)
+    local Server = require("vnc/server")
+    for candidate = 5931, 5999 do
+        local s = Server.new{ settings = { ip = "127.0.0.1", port = candidate, password = password or "" } }
+        if s:start() then return s, candidate end
+    end
+    error("could not bind a test port", 0)
+end
+
+--- A raw socket connected to `port`, with Nagle off.
+local function hostile_connect(port)
+    local socket = require("socket")
+    local cli = assert(socket.tcp())
+    cli:settimeout(2)
+    assert(cli:connect("127.0.0.1", port))
+    cli:setoption("tcp-nodelay", true)
+    return cli
+end
+
+--- Runs the No-security handshake on `cli` up to (and including) the ServerInit.
+local function hostile_handshake(cli, server)
+    recv_exact(cli, 12, server)
+    cli:send("RFB 003.008\n")
+    recv_exact(cli, 2, server)
+    cli:send("\1")
+    recv_exact(cli, 4, server)
+    cli:send("\1")
+    local init = recv_exact(cli, 24, server)
+    recv_exact(cli, init:byte(21) * 16777216 + init:byte(22) * 65536 + init:byte(23) * 256
+        + init:byte(24), server)
+end
+
+--- `fn(server, port)` against a fresh server, which is stopped afterwards whatever happens.
+local function with_hostile_server(password, fn)
+    local server, port = hostile_server(password)
+    local ok, err = pcall(fn, server, port)
+    server:stop()
+    if not ok then error(err, 0) end
+end
+
+check("a_zero_area_request_is_answered_without_crashing_an_encoder", function()
+    -- RRE once cleared its scratch with ffi.fill(nil) for a rectangle of no pixels: a segfault.
+    for _, enc in ipairs({ 2, 0, 5, 16 }) do
+        with_hostile_server("", function(server, port)
+            local cli = hostile_connect(port)
+            hostile_handshake(cli, server)
+            cli:send(string.char(2, 0, 0, 1, 0, 0, 0, enc))
+            cli:send(string.char(3, 0, 0, 0, 0, 0, 0, 0, 0, 0))   -- non-incremental, 0x0
+            local head = recv_exact(cli, 4, server)
+            assert_true(head == "\0\0\0\0", string.format(
+                "encoding %d: a 0x0 request must get an empty update, got %q", enc, head))
+            cli:send(string.char(3, 0, 0, 0, 0, 0, 0, 0, 0, 10))  -- 0 wide, 10 high
+            head = recv_exact(cli, 4, server)
+            assert_true(head == "\0\0\0\0", "encoding " .. enc .. ": 0xN too")
+            assert_true(server:client_count() == 1, "the client must still be connected")
+            cli:close()
+        end)
+    end
+    -- and the encoder itself, handed an empty rectangle first
+    for _, encoding in ipairs({ 2, 5, 16 }) do
+        local _, _, enc = encode(encoding, pattern_plane(8, 8), nil, { x = 0, y = 0, w = 0, h = 0 })
+        enc:free()
+    end
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
