@@ -45,6 +45,7 @@ Server.SUPPORTED_ENCODINGS = {
 
 Server.PSEUDO_DESKTOP_SIZE = -223
 Server.PSEUDO_LAST_RECT = -224
+Server.PSEUDO_CONTINUOUS_UPDATES = -313
 
 --- Longest ClientCutText accepted. Its length is the client's to choose and the text has to be
 --- read whole before it can be handed on, so a longer one fails the connection instead of having
@@ -339,6 +340,13 @@ function Server:_read_encodings()
             self.client.desktop_size_supported = true
         elseif enc == Server.PSEUDO_LAST_RECT then
             self.client.last_rect_supported = true
+        elseif enc == Server.PSEUDO_CONTINUOUS_UPDATES and not self.client.continuous_announced then
+            -- rfbproto.rst: the server "must send a EndOfContinuousUpdates message the first time
+            -- it sees a SetEncodings message with the ContinuousUpdates pseudo-encoding" - that is
+            -- how the client learns the extension is there (TigerVNC sends message 150 only then).
+            -- The message is the type alone, one byte (c.f., the disable branch of message 150).
+            self.client.continuous_announced = true
+            self:_write(string.char(Server.CLIENT_ENABLE_CONTINUOUS_UPDATES))
         elseif Server.SUPPORTED_ENCODINGS[enc] then
             encodings[#encodings + 1] = enc
         end

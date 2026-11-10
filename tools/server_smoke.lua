@@ -4610,5 +4610,26 @@ check("pixel_formats_rfb_does_not_allow_are_refused", function()
     end
 end)
 
+check("the_continuous_updates_pseudo_encoding_is_acknowledged_once", function()
+    -- A viewer announcing -313 waits for EndOfContinuousUpdates before it uses message 150; it was
+    -- never sent, so TigerVNC never enabled continuous updates.
+    with_hostile_server("", function(server, port)
+        local cli = hostile_connect(port)
+        hostile_handshake(cli, server)
+        local set = string.char(2, 0, 0, 2, 0, 0, 0, 0, 0xFF, 0xFF, 0xFE, 0xC7)   -- Raw, -313
+        cli:send(set)
+        assert_true(recv_exact(cli, 1, server) == string.char(150),
+            "the first SetEncodings with -313 must be answered with EndOfContinuousUpdates")
+        cli:send(set)
+        local again = drain_socket(cli, 0.3, server)
+        assert_true(again == "", string.format("only the first time, got %q", again))
+        cli:send(string.char(150, 1, 0, 0, 0, 0, 0, 4, 0, 1))                    -- enable
+        server:_record_dirty("full", nil)
+        local head = recv_exact(cli, 4, server)
+        assert_true(head:byte(1) == 0, "a change must then be pushed")
+        cli:close()
+    end)
+end)
+
 print(string.format("%d check(s), %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
