@@ -3339,9 +3339,12 @@ local function main()
             got.peer:close()
             return true
         end)
-        check("session_rx_close_mid_update_fails_as_closed_by_server", function()
+        for _, how in ipairs({ "fin", "rst" }) do
+        check("session_rx_close_mid_update_fails_as_closed_by_server_" .. how, function()
             local Session = load_session()
             local s, peer = rig(Session)
+            -- (a zero linger time makes close() reset the connection, as a killed server does)
+            if how == "rst" then assert(peer:setoption("linger", { on = true, timeout = 0 })) end
             -- the handshake and half of the first update's pixels
             assert(peer:send(stream:sub(1, 1000)))
             drive(s, peer, true)
@@ -3359,6 +3362,7 @@ local function main()
             if s.rbuf ~= nil or s.rcap ~= 0 then return nil, "receive buffer not freed on teardown" end
             return true
         end)
+        end
         check("session_rx_large_read_grows_then_shrinks_the_buffer", function()
             local Session = load_session()
             local big = rnd_bytes(Session.RX_BUFFER * 5 + 123, 5)
@@ -3385,10 +3389,10 @@ local function main()
         end)
         check("session_rx_rejects_a_read_over_the_cap", function()
             local Session = load_session()
-            local saved = Session.MAX_RX_BUFFER
-            Session.MAX_RX_BUFFER = 4096
+            local saved, saved_buf = Session.MAX_RX_BUFFER, Session.RX_BUFFER
+            Session.MAX_RX_BUFFER, Session.RX_BUFFER = 4096, 1024
             local r = run_split(script(rnd_bytes(5000, 3)), {})
-            Session.MAX_RX_BUFFER = saved
+            Session.MAX_RX_BUFFER, Session.RX_BUFFER = saved, saved_buf
             if r.state ~= "error" or not tostring(r.err):find("4096", 1, true) then
                 return nil, "state " .. tostring(r.state) .. " err " .. tostring(r.err)
             end

@@ -11,6 +11,8 @@ buffered by the kernel until we resume.
 ]]
 
 local ffi = require("ffi")
+require("ffi/posix_h")
+local C = ffi.C
 local Encodings = require("vnc/encodings")
 local Protocol = require("vnc/protocol")
 local PxFmt = require("vnc/pxfmt")
@@ -36,6 +38,12 @@ Session.POLL_INTERVAL_BUSY = 0.01
 -- Bytes asked of the socket per receive once connected; whatever has arrived is taken, so one
 -- receive serves many small protocol reads.
 Session.RECV_CHUNK = 65536
+-- The receive buffer (bytes): its usual size, and the cap on how far a single protocol read may
+-- grow it (a whole ZRLE rectangle or a cut text is one read). Past the cap the connection fails
+-- instead of having the device allocate whatever the server claimed; once the large read has been
+-- consumed the buffer shrinks back to `RX_BUFFER`.
+Session.RX_BUFFER = 2 * Session.RECV_CHUNK
+Session.MAX_RX_BUFFER = 64 * 1024 * 1024
 -- Protocol reads served straight from the receive buffer between two budget checks.
 Session.FAST_READS = 256
 -- Caps so a single tick can never monopolise the UI thread. The CPU budget is the one that
@@ -72,6 +80,25 @@ Session.INPUT_QUIET = 0.3
 -- width/height on each side: a short pan then lands on pixels that are already up to date.
 Session.REQUEST_MARGIN = Remote.REQUEST_MARGIN
 
+-- The receive path is `recv` into a C buffer, declared by KOReader's ffi/posix_h. There is no
+-- second path: without these declarations the plugin cannot receive at all, so say so now.
+local recv, EAGAIN, EINTR
+do
+    local ok, err = pcall(function()
+        recv, EAGAIN, EINTR = C.recv, tonumber(C.EAGAIN), tonumber(C.EINTR)
+        local _ = C.memmove, C.realloc, C.free, C.strerror
+    end)
+    if not ok then
+        error("vnc.session: ffi/posix_h lacks recv/EAGAIN/EINTR/memmove/realloc/free: " .. tostring(err), 0)
+    end
+end
+-- EWOULDBLOCK is EAGAIN on every platform posix_h supports (Linux, Android, macOS). posix_h has
+-- no ECONNRESET: a peer that closes with unread data resets the connection, which LuaSocket also
+-- reported as "closed", so it is the same "closed by server" failure.
+local EWOULDBLOCK = EAGAIN
+local ECONNRESET = ffi.os == "OSX" and 54 or 104
+local u8p = ffi.typeof("uint8_t*")
+
 --- Monotonic seconds; a module field so tests can substitute a clock.
 function Session._now()
     return time.to_s(time.now())
@@ -101,12 +128,15 @@ function Session.new(opts)
         proto = nil,
         remote = nil,
         tx = {},           -- pending outgoing bytes (array of strings)
-        rx = "",           -- received bytes; the unconsumed ones start at `rx_pos`
-        rx_pos = 1,
-        rx_parts = {},     -- pieces received towards a read larger than `rx` holds, joined once
-        rx_parts_len = 0,  -- complete (appending each piece to `rx` would copy it over and over)
-        bulk = false,      -- true once the socket is non-blocking: receive whatever has arrived
-        fast_reads = 0,    -- reads the protocol may still take from `rx` without yielding
+        fd = nil,          -- the socket's descriptor, for `recv`
+        -- Received bytes: one linear C buffer of `rcap` bytes (malloc'ed, nil when unconnected);
+        -- the unread ones are [rhead, rtail). `_rx_reserve` moves them to the front (compaction).
+        rbuf = nil,
+        rcap = 0,
+        rhead = 0,
+        rtail = 0,
+        bulk = false,      -- true once connected: receive whatever has arrived, not just what is needed
+        fast_reads = 0,    -- reads the protocol may still take from the buffer without yielding
         fast_budget = 0,   -- bytes it may still take that way in this tick
         in_update = false, -- a FramebufferUpdate is being received
         need = nil,        -- bytes the protocol is waiting for
@@ -309,7 +339,14 @@ function Session:_do_connect(attempt)
     end
     sock:setoption("tcp-nodelay", true)
     set_keepalive(sock)
-    self.sock = sock
+    local fd = sock:getfd()
+    if type(fd) ~= "number" or fd < 0 then
+        sock:close()
+        self:_fail(string.format("LuaSocket gave no descriptor for the socket (getfd: %s)", tostring(fd)))
+        return
+    end
+    self.sock, self.fd = sock, fd
+    self:_rx_alloc(Session.RX_BUFFER)
 
     -- The picture settings come from the profile and are read once per connection: an edit applies
     -- on the next connection only, since a live SetPixelFormat would race updates already in flight
@@ -489,10 +526,9 @@ end
 
 --- Resumes the protocol, remembering what it asked for.
 --- @treturn boolean false when the session failed
-function Session:_resume(data)
+function Session:_resume()
     local c0 = os.clock()
-    if self.tm and data then self.tm.bytes = self.tm.bytes + #data end
-    local a, b = self.proto:step(data)
+    local a, b = self.proto:step()
     local tm = self.tm
     if tm then
         -- A tick may end mid-update, so the CPU time of every tick that touched it is summed.
@@ -522,49 +558,102 @@ function Session:_resume(data)
 end
 
 --[[--
-The protocol's transport read (runs inside the protocol coroutine).
+The protocol's transport reads (they run inside the protocol coroutine).
 
-While the receive buffer already holds the `n` bytes they are returned directly: a coroutine
-switch per read is slow (LuaJIT does not compile yields) and the decoders read a few bytes at a
-time. After `FAST_READS` such reads, or when the tick's byte budget is spent, or once an update
-has finished, it yields like a plain read, so `_pump` still slices the work and reports updates.
-]]
-function Session:_read(n)
-    local pos = self.rx_pos
-    if self.fast_reads > 0 and n <= self.fast_budget and #self.rx - pos + 1 >= n then
-        local tm = self.tm
-        if not (tm and tm.finished) then
-            self.fast_reads = self.fast_reads - 1
-            self.fast_budget = self.fast_budget - n
-            self.rx_pos = pos + n
-            if tm then tm.bytes = tm.bytes + n end
-            return self.rx:sub(pos, pos + n - 1)
-        end
-    end
-    return coroutine.yield("need", n)
-end
+`_read_ptr(n)` consumes `n` bytes and returns a `const uint8_t*` to them in the receive buffer
+(plus the buffer, as the reader's anchor). It never returns nil: while the buffer holds the `n`
+bytes they are served directly, since a coroutine switch per read is slow (LuaJIT does not
+compile yields) and the decoders read a few bytes at a time. After `FAST_READS` such reads, or
+when the tick's byte budget is spent, or once an update has finished, or when the bytes have not
+arrived yet, it yields `("need", n)`; `_pump` resumes it only once the buffer holds them, so it
+then serves them without any further check.
 
-local const_u8p = ffi.typeof("const uint8_t*")
+Pointer lifetime: the buffer is compacted, grown or shrunk (`_rx_reserve`) and freed only by
+`_pump` and `_teardown_connection`, i.e. only while the coroutine is suspended in such a yield. A
+pointer is therefore valid until the next read that yields, and the reader contract
+(@{vnc.util.Reader:ptr}) is stricter still: valid until the next read from the reader. Every
+decoder in @{vnc.encodings} uses a pointer before its next read (checked when this path was
+written; no decoder holds one across reads).
 
---[[--
-Like @{Session:_read} for bytes the receive buffer already holds, but without making a string:
-returns a pointer into the buffer plus the buffer string (which keeps it alive), or nil when
-`_read` would have yielded, so the reader falls back to it.
+`_read(n)` is the same as a Lua string, for the few text fields (versions, names, reasons, cut
+text); numbers and pixels go through `_read_ptr`.
 ]]
 function Session:_read_ptr(n)
-    local pos = self.rx_pos
-    if self.fast_reads > 0 and n <= self.fast_budget and #self.rx - pos + 1 >= n then
+    local head = self.rhead
+    if self.fast_reads > 0 and n <= self.fast_budget and self.rtail - head >= n then
         local tm = self.tm
         if not (tm and tm.finished) then
             self.fast_reads = self.fast_reads - 1
             self.fast_budget = self.fast_budget - n
-            self.rx_pos = pos + n
+            self.rhead = head + n
             if tm then tm.bytes = tm.bytes + n end
-            local rx = self.rx
-            return ffi.cast(const_u8p, rx) + (pos - 1), rx
+            return self.rbuf + head, self.rbuf
         end
     end
-    return nil
+    coroutine.yield("need", n)
+    -- `_pump` resumes only once the buffer holds `n` bytes (and has charged them to its budget)
+    head = self.rhead
+    if self.rtail - head < n then
+        error(string.format("receive buffer holds %d bytes, the read wanted %d", self.rtail - head, n), 0)
+    end
+    self.rhead = head + n
+    if self.tm then self.tm.bytes = self.tm.bytes + n end
+    return self.rbuf + head, self.rbuf
+end
+
+function Session:_read(n)
+    return ffi.string(self:_read_ptr(n), n)
+end
+
+--- (Re)allocates the receive buffer to `cap` bytes, keeping its contents up to `cap`.
+function Session:_rx_alloc(cap)
+    local old = self.rbuf
+    if old ~= nil then ffi.gc(old, nil) end
+    local p = C.realloc(old, cap)
+    if p == nil then
+        if old ~= nil then ffi.gc(old, C.free) end
+        return nil
+    end
+    self.rbuf, self.rcap = ffi.gc(ffi.cast(u8p, p), C.free), cap
+    return true
+end
+
+--- Frees the receive buffer.
+function Session:_rx_free()
+    local p = self.rbuf
+    if p ~= nil then
+        ffi.gc(p, nil)
+        C.free(p)
+    end
+    self.rbuf, self.rcap, self.rhead, self.rtail = nil, 0, 0, 0
+end
+
+--[[--
+Makes room for a read of `need` bytes (more than the buffer holds unread): moves the unread bytes
+to the front, then grows the buffer when `need` does not fit, or shrinks it back to `RX_BUFFER`
+once a large read is over. Only called from `_pump`, with the coroutine suspended (see `_read_ptr`).
+--- @treturn boolean|nil, string|nil nil plus an error when `need` is over `MAX_RX_BUFFER` or memory ran out
+]]
+function Session:_rx_reserve(need)
+    if need > Session.MAX_RX_BUFFER then
+        return nil, string.format("server message needs a %d-byte read (more than %d)", need, Session.MAX_RX_BUFFER)
+    end
+    local head, avail = self.rhead, self.rtail - self.rhead
+    if head > 0 then
+        if avail > 0 then C.memmove(self.rbuf, self.rbuf + head, avail) end
+        self.rhead, self.rtail = 0, avail
+    end
+    local cap = self.rcap
+    local want = cap
+    if need > cap then
+        want = math.min(math.max(need, 2 * cap), Session.MAX_RX_BUFFER)
+    elseif cap > Session.RX_BUFFER and need <= Session.RX_BUFFER then
+        want = Session.RX_BUFFER -- (avail < need, so the unread bytes fit)
+    end
+    if want ~= cap and not self:_rx_alloc(want) then
+        return nil, string.format("out of memory for a %d-byte receive buffer", want)
+    end
+    return true
 end
 
 --[[--
@@ -588,42 +677,41 @@ function Session:_pump(stop_connected)
         steps = steps - 1
         if self.done then return "done" end
         if stop_connected and self.state == "connected" then return "connected" end
-        local resume, chunk = false, nil
-        if self.need then
-            local pos, need = self.rx_pos, self.need
-            if #self.rx - pos + 1 >= need then
-                chunk = self.rx:sub(pos, pos + need - 1)
-                self.rx_pos = pos + need
+        local resume = false
+        local need = self.need
+        if need then
+            if self.rtail - self.rhead >= need then
+                -- the protocol's pending read is served from the buffer once resumed
                 self.need = nil
                 budget = budget - need
                 resume = true
             else
-                -- drop the consumed bytes first, so the buffer never grows unbounded
-                if pos > 1 then
-                    self.rx, self.rx_pos = self.rx:sub(pos), 1
+                local rok, rerr = self:_rx_reserve(need)
+                if not rok then
+                    self:_fail(rerr)
+                    return "error"
                 end
-                local want = need - #self.rx - self.rx_parts_len
-                if self.bulk and want < Session.RECV_CHUNK then want = Session.RECV_CHUNK end
-                local got, rerr, partial = self.sock:receive(want)
-                got = got or partial
-                if got and #got > 0 then
-                    local parts = self.rx_parts
-                    parts[#parts + 1] = got
-                    self.rx_parts_len = self.rx_parts_len + #got
-                    budget = budget - #got
-                    if #self.rx + self.rx_parts_len >= need then
-                        self.rx = self.rx .. table.concat(parts)
-                        self.rx_parts, self.rx_parts_len = {}, 0
+                local tail = self.rtail
+                local want = need - tail
+                if self.bulk then
+                    local room = self.rcap - tail
+                    if want < Session.RECV_CHUNK then want = math.min(Session.RECV_CHUNK, room) end
+                end
+                local got = tonumber(recv(self.fd, self.rbuf + tail, want, 0))
+                if got > 0 then
+                    self.rtail = tail + got
+                    budget = budget - got
+                else
+                    local e = got < 0 and ffi.errno()
+                    if e == EAGAIN or e == EWOULDBLOCK then
+                        return "again"
+                    elseif got == 0 or e == ECONNRESET then
+                        self:_fail("connection closed by server")
+                        return "error"
+                    elseif e ~= EINTR then -- (interrupted: just receive again)
+                        self:_fail(string.format("socket receive failed (%s)", ffi.string(C.strerror(e))))
+                        return "error"
                     end
-                end
-                if rerr == "closed" then
-                    self:_fail("connection closed by server")
-                    return "error"
-                elseif rerr and rerr ~= "timeout" then
-                    self:_fail(string.format("socket receive failed (%s)", tostring(rerr)))
-                    return "error"
-                elseif rerr == "timeout" and #self.rx < need then
-                    return "again"
                 end
             end
         else
@@ -631,7 +719,7 @@ function Session:_pump(stop_connected)
         end
         if resume then
             self.fast_reads, self.fast_budget = Session.FAST_READS, budget
-            local resumed = self:_resume(chunk)
+            local resumed = self:_resume()
             budget, self.fast_reads, self.fast_budget = self.fast_budget, 0, 0
             if not resumed then return "error" end
             local ok2, err2 = self:_flush_tx()
@@ -742,8 +830,8 @@ function Session:_teardown_connection()
         self.proto:free()
         self.proto = nil
     end
-    self.tx, self.rx, self.rx_pos, self.need, self.done = {}, "", 1, nil, false
-    self.rx_parts, self.rx_parts_len = {}, 0
+    self.tx, self.need, self.done, self.fd = {}, nil, false, nil
+    self:_rx_free()
     self.bulk, self.in_update, self.fast_reads, self.fast_budget = false, false, 0, 0
     -- An update cut short by the teardown must not leave its timing state for the next connection.
     self.tm = nil
