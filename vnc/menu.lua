@@ -211,16 +211,6 @@ function MenuBuilder.open(app)
         item.mandatory = settings.page_buttons == "wheel" and _("Mouse wheel") or _("Page Up/Down keys")
     end)
 
-    -- ---- keyboard
-    item_table[#item_table + 1] = stays_open({
-        text = _("Keyboard always visible"),
-        callback = function()
-            settings.keyboard_always_visible = not settings.keyboard_always_visible
-            plugin.settings:flush()
-            app:evaluate_keyboard()
-        end,
-    }, function(item) item.mandatory = settings.keyboard_always_visible and "✓" or "-" end)
-
     -- ---- keep the device awake while the viewer is up
     item_table[#item_table + 1] = stays_open({
         text = _("Keep screen on"),

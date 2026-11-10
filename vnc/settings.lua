@@ -4,9 +4,9 @@ Settings store for the vnc plugin.
 Thin wrapper over @{luasettings|LuaSettings}, holding connection profiles and global
 application settings in `~/.config/koreader/settings/vnc.lua`.
 
-There is no schema version and no migration: there is no released file format to stay compatible
-with. The file is just kept in shape instead - missing keys get their defaults, unknown keys are
-dropped, and profiles that cannot be used are dropped - so a hand-edited file still loads.
+There is no schema version. The file is kept in shape instead - missing keys get their defaults,
+unknown keys are dropped, and profiles that cannot be used are dropped - so a hand-edited file still
+loads. A renamed key is read once in its old form (`Settings:normalise`) and written in the new one.
 
 @module vnc.settings
 ]]
@@ -45,7 +45,7 @@ Settings.DEFAULTS = {
     match_orientation = true,        -- after connecting, turn the screen to the remote's orientation (landscape/portrait)
     landscape_orientation = 1,       -- the landscape side last picked by hand (1 = Screen.DEVICE_ROTATED_CLOCKWISE)
     portrait_orientation = 0,        -- the portrait side last picked by hand (0 = Screen.DEVICE_ROTATED_UPRIGHT)
-    keyboard_always_visible = false,
+    keyboard_shown = false,          -- the on-screen keyboard's last state: the viewer opens with it shown or not
     keep_screen_on = true,           -- hold off the device's auto-suspend, standby and light dimming while the viewer is shown
     zoom_mode = "fit",               -- "fit", "fit_with_keyboard", or a numeric scale factor
     page_buttons = "keys",           -- device page buttons send "keys" (Page Up/Down) or the "wheel"
@@ -357,6 +357,12 @@ function Settings:normalise()
     -- keeps it, as the value of every profile that has no choice of its own. The global itself is
     -- dropped with the other unknown settings below.
     local legacy_tight = type(data.settings) == "table" and data.settings.enable_tight == true
+    -- `keyboard_always_visible` (a menu switch) became `keyboard_shown` (the keyboard button's last
+    -- state): an old "always" means the keyboard was up. The old key is dropped below.
+    if type(data.settings) == "table" and data.settings.keyboard_shown == nil
+        and data.settings.keyboard_always_visible == true then
+        data.settings.keyboard_shown = true
+    end
     normalise_section("settings", Settings.DEFAULTS, SETTING_CHECKS)
     local server = normalise_section("server", Settings.SERVER_DEFAULTS)
     server.port = math.max(1, math.min(65535, math.floor(server.port)))

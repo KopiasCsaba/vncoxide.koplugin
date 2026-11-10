@@ -330,6 +330,12 @@ Its modifiers arm and are taken like the panel's; what it sends is not added to 
 while a modifier is armed the viewer hands it the on-screen keyboard's keys too
 (ViewerApp:send_osk_key). It has no Release all and no Back/Menu handling: it is part of the keyboard.
 
+The keyboard's wish (ViewerApp.vk_wanted) is saved as `keyboard_shown` whenever the user changes it
+(ViewerApp:_set_keyboard_wish: the toolbar button, the strip's close, the panel's keyboard icon and
+its close), and the viewer starts from it; popups that hide the keyboard and leaving the viewer do
+not touch it. It replaced the `keyboard_always_visible` menu switch: Settings:normalise turns an old
+`keyboard_always_visible = true` into `keyboard_shown = true` once, the old key is then dropped.
+
 Long-press popups of the on-screen keyboard's keys (accented letters) are KOReader's VirtualKeyPopup.
 Its centre key, the plain letter, reuses the parent key's callback, which closes only its
 close_after_callback_widget - nil on a key of the main keyboard - so picking the plain letter typed

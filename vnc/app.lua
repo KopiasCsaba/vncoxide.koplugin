@@ -69,7 +69,8 @@ function ViewerApp:init()
     self.remote = self.session:get_remote()
     self.canvas = nil
     self.vk_visible = false
-    self.vk_wanted = false           -- the user's wish, independent of what is on top of us
+    -- the user's wish, independent of what is on top of us; saved as `keyboard_shown`
+    self.vk_wanted = self.settings.keyboard_shown == true
     self._needs_flash = false        -- the next remote frame must be flashed, not blitted region by region
     self._keyboard_sync_pending = false
     self._keyboard_watch_pending = false
@@ -594,7 +595,7 @@ function ViewerApp:onCloseWidget()
     if self.vk then
         self.vk:hideKeyboard()
         self.vk_visible = false
-        self.vk_wanted = false
+        self.vk_wanted = false -- (not saved: the next viewer opens with the keyboard as it was)
     end
     Keyboard.restore_layout()
     self.canvas = nil
@@ -1907,9 +1908,20 @@ end
 
 -- ---------------------------------------------------------------- keyboard
 
---- What the user asked for: the "keyboard always visible" setting, or their last manual choice.
+--- What the user asked for: their last choice (the keyboard button, the strip's ✕, the "Send keys"
+--- panel's keyboard icon or ✕), also that of an earlier viewer (`keyboard_shown`).
 function ViewerApp:is_keyboard_wanted()
-    return self.settings.keyboard_always_visible or self.vk_wanted or false
+    return self.vk_wanted
+end
+
+--- Records the user's wish and saves it (`keyboard_shown`), so the next viewer opens the same way.
+function ViewerApp:_set_keyboard_wish(want)
+    want = want and true or false
+    self.vk_wanted = want
+    if self.settings.keyboard_shown ~= want then
+        self.settings.keyboard_shown = want
+        self.plugin.settings:flush()
+    end
 end
 
 --- The keyboard is only up while the framebuffer view owns the screen; a menu or dialog above it
@@ -1921,7 +1933,7 @@ function ViewerApp:_wanted_keyboard_visible()
     return self:is_keyboard_wanted()
 end
 
---- Applies the state implied by the setting, the user's wish and the window stack.
+--- Applies the state implied by the user's wish and the window stack.
 function ViewerApp:evaluate_keyboard()
     local want = self:_wanted_keyboard_visible()
     if want == self.vk_visible then
@@ -1946,30 +1958,23 @@ function ViewerApp:evaluate_keyboard()
     self:_wholesale_change()
 end
 
---- Asks for a keyboard state for as long as the framebuffer view is the topmost window.
+--- Asks for a keyboard state for as long as the framebuffer view is the topmost window, and saves
+--- it as the state the next viewer opens with.
 function ViewerApp:set_keyboard_visible(want)
-    self.vk_wanted = want and true or false
+    self:_set_keyboard_wish(want)
     self:evaluate_keyboard()
 end
 
 --[[--
-The toolbar's keyboard button: shows the keyboard (with the key strip) when nothing is up, hides
-it when it is up, and closes the "Send keys" panel when that is up, leaving nothing in its place.
-Keeps the "always visible" setting in sync: that setting wins over the wish, so asking for the
-keyboard to go away while it is on would silently do nothing.
+The toolbar's keyboard button (and the strip's ✕): shows the keyboard (with the key strip) when
+nothing is up, hides it when it is up, and closes the "Send keys" panel when that is up, leaving
+nothing in its place. The choice is saved (`_set_keyboard_wish`).
 ]]
 function ViewerApp:toggle_keyboard()
-    local panel_open = self.key_panel ~= nil
-    local want = not panel_open and not self:is_keyboard_wanted()
-    if not want and self.settings.keyboard_always_visible then
-        self.settings.keyboard_always_visible = false
-        self.plugin.settings:flush()
-    end
-    if panel_open then
-        self.vk_wanted = false
-        self:close_key_panel() -- re-evaluates the keyboard, which stays down
+    if self.key_panel then
+        self:close_key_panel() -- saves "no keyboard" and re-evaluates it, so it stays down
     else
-        self:set_keyboard_visible(want)
+        self:set_keyboard_visible(not self:is_keyboard_wanted())
     end
 end
 
@@ -2360,10 +2365,18 @@ function ViewerApp:open_key_panel()
     return self.key_panel
 end
 
---- Closes the key panel; a drag still under way lets go of the modifiers it took from it.
+--- Closes the key panel (its ✕, Back, Menu, the toolbar's keyboard button), leaving nothing in its
+--- place: the keyboard stays down, and that is saved (`_set_keyboard_wish`). A drag still under way
+--- lets go of the modifiers it took from it.
 --- @tparam[opt] string key_name the KOReader key that closed it: its release is not forwarded
 function ViewerApp:close_key_panel(key_name)
     if not self.key_panel then return end
+    self:_set_keyboard_wish(false)
+    self:_end_key_panel(key_name)
+end
+
+--- Takes the key panel down and lets the keyboard follow the wish as it is.
+function ViewerApp:_end_key_panel(key_name)
     self:_drop_key_panel()
     self:_release_action_mods()
     self._swallow_release = key_name
@@ -2385,8 +2398,8 @@ function ViewerApp:switch_to_keyboard()
     local mods = {}
     for name, state in pairs(panel.mods) do mods[name] = state end
     self._strip_mods = mods
-    self.vk_wanted = true
-    self:close_key_panel() -- re-evaluates the keyboard, which comes up with the strip
+    self:_set_keyboard_wish(true)
+    self:_end_key_panel() -- re-evaluates the keyboard, which comes up with the strip
     self._strip_mods = nil
 end
 

@@ -632,7 +632,7 @@ local function new_app(plane_w, plane_h, opts)
     local app = ViewerApp:new{
         plugin = {
             settings = {
-                data = { settings = { orientation = 0, keyboard_always_visible = false,
+                data = { settings = { orientation = 0, keyboard_shown = false,
                                       keep_screen_on = true, zoom_mode = "fit" } },
                 profiles = function() return {} end,
                 get_profile = function() return stored end,
@@ -1460,9 +1460,11 @@ check("keyboard_yields_to_popups", function()
     -- The keyboard belongs to the framebuffer view: a menu or dialog above it takes it out of the
     -- way, and it comes back when that popup is gone.
     local app, remote = new_app()
-    app.settings.keyboard_always_visible = true
+    local flushes = 0
+    app.plugin.settings.flush = function() flushes = flushes + 1 end
     app:set_keyboard_visible(true)
-    assert_true(app.vk_visible, "with the setting on the keyboard covers the framebuffer")
+    assert_true(app.vk_visible, "the keyboard covers the framebuffer")
+    assert_true(app.settings.keyboard_shown == true and flushes == 1, "and the wish is saved")
 
     app:open_menu()
     assert_true(not app.vk_visible, "opening the menu must hide the keyboard")
@@ -1470,13 +1472,12 @@ check("keyboard_yields_to_popups", function()
     UIManager:_checkTasks()
     assert_true(not app.vk_visible, "and it must stay hidden while the menu is open")
 
-    -- the menu's own keyboard item reports the setting, and there is no Show/Hide entry any more
-    local on
+    -- there is no keyboard entry in the menu any more (the toolbar button remembers)
     for _, item in ipairs(app.menu.item_table) do
-        assert_true(item.text ~= "Hide keyboard" and item.text ~= "Show keyboard", "no Show/Hide keyboard entry")
-        if item.text == "Keyboard always visible" then on = item.mandatory end
+        assert_true(item.text ~= "Hide keyboard" and item.text ~= "Show keyboard"
+            and item.text ~= "Keyboard always visible", "no keyboard entry: " .. tostring(item.text))
     end
-    assert_true(on == "✓", "the always-visible item must show the setting, got " .. tostring(on))
+    assert_true(app.settings.keyboard_shown == true and flushes == 1, "the menu leaves the saved wish alone")
 
     app:close_menu()
     UIManager:_checkTasks()
@@ -1494,11 +1495,12 @@ check("keyboard_yields_to_popups", function()
     app:_sync_keyboard_later()
     UIManager:_checkTasks()
     assert_true(app.vk_visible, "and closing it must bring the keyboard back")
+    assert_true(app.settings.keyboard_shown == true and flushes == 1, "popups leave the saved wish alone")
 
-    -- "Hide keyboard" has to work even with the setting on, or the item would lie
+    -- the toolbar button hides it even while a popup has taken it away
     app:open_menu()
     app:toggle_keyboard()
-    assert_true(not app.settings.keyboard_always_visible, "the setting must follow the user's wish")
+    assert_true(app.settings.keyboard_shown == false, "the saved wish follows the user's")
     assert_true(not app:is_keyboard_wanted(), "and the wish is recorded")
     assert_true(not app.vk_visible, "still hidden while the menu is open")
     app:close_menu()
@@ -1506,9 +1508,8 @@ check("keyboard_yields_to_popups", function()
     assert_true(not app.vk_visible, "and hidden after the menu closes")
 
     -- leaving the viewer never resurrects the keyboard over whatever comes next
-    app.settings.keyboard_always_visible = true
-    app:evaluate_keyboard()
-    assert_true(app.vk_visible, "the setting on again")
+    app:set_keyboard_visible(true)
+    assert_true(app.vk_visible, "the keyboard on again")
     local popup = InfoMessage:new{ text = "after the viewer" }
     app:onCloseWidget()
     UIManager:show(popup)
@@ -1520,11 +1521,33 @@ check("keyboard_yields_to_popups", function()
     remote:free()
 end)
 
-check("menu_keyboard_items_work", function()
+check("keyboard_always_visible_migrates_to_keyboard_shown", function()
+    local Settings = require("vnc/settings")
+    local writeToFile = require("util").writeToFile
+    for _, case in ipairs({ { "true", true }, { "false", false }, { nil, false } }) do
+        local path = data_dir .. "/ui_smoke_keyboard_shown.lua"
+        local line = case[1] and ("        [\"keyboard_always_visible\"] = " .. case[1] .. ",\n") or ""
+        os.remove(path); os.remove(path .. ".old")
+        writeToFile("{\n    [\"settings\"] = {\n" .. line .. "    },\n}\n", path, true, true)
+        local s = Settings.open(path)
+        assert_true(s.data.settings.keyboard_shown == case[2],
+            tostring(case[1]) .. ": keyboard_shown " .. tostring(s.data.settings.keyboard_shown))
+        assert_true(s.data.settings.keyboard_always_visible == nil, "the old key is gone")
+        -- a new file keeps the new key, whatever an old one would have said
+        s.data.settings.keyboard_shown = not case[2]
+        s:flush()
+        s = Settings.open(path)
+        assert_true(s.data.settings.keyboard_shown == not case[2], "the saved new key wins after the migration")
+        os.remove(path); os.remove(path .. ".old")
+    end
+end)
+
+check("menu_toggles_leave_the_keyboard_alone", function()
     -- A real tap goes through Menu:onMenuSelect, which runs the item callback *and* the menu's
-    -- close callback; the latter used to switch the keyboard off again right after the item
-    -- had switched it on.
+    -- close callback; the latter once switched the keyboard off again right after the item had
+    -- switched it on.
     local app, remote = new_app()
+    app.plugin.settings.flush = function() end
     local function choose_menu_item(text)
         app:open_menu()
         local menu = app.menu
@@ -1541,29 +1564,22 @@ check("menu_keyboard_items_work", function()
     end
 
     assert_true(not app.vk_visible, "the keyboard starts hidden")
-    choose_menu_item("Keyboard always visible")
+    choose_menu_item("Keep screen on")
     assert_true(app.menu ~= nil, "the toggle keeps the menu open")
     app:close_menu()
     UIManager:_checkTasks()
-    assert_true(app.vk_visible, "the setting must leave the keyboard shown once the menu is gone")
+    assert_true(not app.vk_visible, "a menu toggle does not bring the keyboard up")
 
-    choose_menu_item("Keyboard always visible")
-    app:close_menu()
-    UIManager:_checkTasks()
-    assert_true(not app.vk_visible, "and switching it off hides it")
-
-    -- with the setting on, the keyboard survives a menu round trip. 
-    app.settings.keyboard_always_visible = true
+    -- with the keyboard wanted, it survives a menu round trip and a toggle in it
     app:set_keyboard_visible(true)
-    app:open_menu()
+    choose_menu_item("Keep screen on")
     assert_true(not app.vk_visible, "the menu hides the keyboard while it is open")
     app:close_menu()
     UIManager:_checkTasks()
-    assert_true(app.vk_visible, "the setting must bring it back when the menu closes")
+    assert_true(app.vk_visible and app.settings.keyboard_shown == true, "the wish brings it back when the menu closes")
 
-    app.settings.keyboard_always_visible = false
     app:set_keyboard_visible(false)
-    assert_true(not app.vk_visible, "and it can be hidden again once the setting is off")
+    assert_true(not app.vk_visible, "and it can be hidden again")
 
     app:onCloseWidget()
     remote:free()
@@ -1903,7 +1919,7 @@ end)
 check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
     local app, remote = new_app()
     local s = app.plugin.settings.data.settings
-    s.page_buttons, s.keyboard_always_visible = "keys", false
+    s.page_buttons, s.keep_screen_on = "keys", false
     app.plugin.settings.flush = function() end
     local menu = app:open_menu()
     local function entry(text) return find_item(menu.item_table, text) end
@@ -1913,9 +1929,9 @@ check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
     end
     local function on_top() return top() == menu end
 
-    tap(entry("Keyboard always visible"))
-    assert_true(s.keyboard_always_visible == true and app.menu == menu and on_top(), "keyboard toggle keeps the menu")
-    assert_true(entry("Keyboard always visible").mandatory == "✓", "and shows the new state")
+    tap(entry("Keep screen on"))
+    assert_true(s.keep_screen_on == true and app.menu == menu and on_top(), "a toggle keeps the menu")
+    assert_true(entry("Keep screen on").mandatory == "✓", "and shows the new state")
 
     -- a submenu choice: stays in the submenu, checkmarks and the parent's label follow
     tap(entry("Page buttons send"))
@@ -2001,9 +2017,9 @@ check("every_menu_close_path_repaints_the_viewer_after_a_toggle", function()
     for name, close in pairs(paths) do
         local app, remote = new_app()
         app.plugin.settings.flush = function() end
-        app.settings.keyboard_always_visible = false
+        app.settings.keep_screen_on = false
         local menu = app:open_menu()
-        menu:onMenuSelect(find_item(menu.item_table, "Keyboard always visible"))
+        menu:onMenuSelect(find_item(menu.item_table, "Keep screen on"))
         UIManager:_checkTasks()
         local modes = {}
         local real_dirty, real_refresh = UIManager.setDirty, UIManager._refresh
@@ -3730,7 +3746,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text:gsub("^Connected to.*", "status") end
     assert_true(table.concat(order, "|") == "status|Connections…|Send text…|Refresh|Ctrl+Alt+Del|Lock screen|"
-        .. "Page buttons send|Keyboard always visible|Keep screen on|Match orientation to the remote screen|Show scroll buttons on toolbar|Enable brightness button|Enable contrast button|Help|Leave (keep connection)",
+        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Show scroll buttons on toolbar|Enable brightness button|Enable contrast button|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app:send_text("a\nb\1") == 1)
@@ -4581,19 +4597,15 @@ check("keyboard_button_shows_then_hides_and_closes_the_panel", function()
     tap_toolbar(app, "keyboard")
     UIManager:_checkTasks()
     assert_true(app.vk_visible and app.key_strip ~= nil, "then a tap shows the keyboard again")
-    tap_toolbar(app, "keyboard")
-    UIManager:_checkTasks()
-    -- with "keyboard always visible" on: the panel's close also turns the setting off
-    app.settings.keyboard_always_visible = true
-    app:evaluate_keyboard()
+    -- the panel's close also saves "no keyboard"
     hold_toolbar(app, "keyboard")
     UIManager:_checkTasks()
-    assert_true(app.key_panel ~= nil, "panel open")
+    assert_true(app.key_panel ~= nil and app.settings.keyboard_shown == true, "panel open, keyboard still wished")
     tap_toolbar(app, "keyboard")
     UIManager:_checkTasks()
     assert_true(app.key_panel == nil and not app.vk_visible and not keyboard_on_stack(app),
-        "always visible: the tap still leaves nothing shown")
-    assert_true(app.settings.keyboard_always_visible == false, "and turns the setting off")
+        "the tap leaves nothing shown")
+    assert_true(app.settings.keyboard_shown == false, "and saves that")
     close_viewer(app, remote)
 end)
 
@@ -4643,6 +4655,51 @@ check("key_strip_close_button_hides_the_keyboard", function()
         "keyboard and strip go away")
     assert_true(app.vk_wanted == false and app.key_panel == nil, "like toggling it off, no panel")
     assert_true(wire() == "", "nothing is sent")
+    close_viewer(app, remote)
+end)
+
+check("keyboard_shown_is_remembered_across_viewers", function()
+    local ViewerApp = require("vnc/app")
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local flushes = 0
+    app.plugin.settings.flush = function() flushes = flushes + 1 end
+    --- Closes the viewer the way leaving it does and opens a new one on the same settings.
+    local function reopen()
+        UIManager:close(app)
+        UIManager:_checkTasks()
+        app = ViewerApp:new{ plugin = app.plugin, session = app.session }
+        UIManager:show(app, "full")
+        UIManager:_checkTasks()
+    end
+    assert_true(not app.vk_visible and app.settings.keyboard_shown == false, "starts without the keyboard")
+    tap_toolbar(app, "keyboard")
+    assert_true(app.vk_visible and app.settings.keyboard_shown == true and flushes == 1, "on, and saved")
+    reopen()
+    assert_true(app.vk_visible and app.key_strip ~= nil, "the next viewer opens with the keyboard")
+    assert_true(app.settings.keyboard_shown == true, "leaving the viewer does not change the saved wish")
+    tap_toolbar(app, "keyboard")
+    assert_true(not app.vk_visible and app.settings.keyboard_shown == false, "off, and saved")
+    reopen()
+    assert_true(not app.vk_visible and app.key_strip == nil, "the next viewer opens without it")
+
+    -- the strip's X, the panel's keyboard icon and its X save the wish too
+    app:set_keyboard_visible(true)
+    touch(app.key_strip, "close")
+    assert_true(not app.vk_visible and app.settings.keyboard_shown == false, "strip X: off, saved")
+    app:set_keyboard_visible(true)
+    touch(app.key_strip, "panel")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel ~= nil and app.settings.keyboard_shown == true, "the panel keeps the wish")
+    app.settings.keyboard_shown = false -- (as if it had been changed elsewhere)
+    touch(app.key_panel, "keyboard")
+    UIManager:_checkTasks()
+    assert_true(app.vk_visible and app.settings.keyboard_shown == true, "panel keyboard icon: on, saved")
+    touch(app.key_strip, "panel")
+    UIManager:_checkTasks()
+    touch(app.key_panel, "close")
+    UIManager:_checkTasks()
+    assert_true(app.key_panel == nil and not app.vk_visible and app.settings.keyboard_shown == false,
+        "panel X: nothing shown, saved")
     close_viewer(app, remote)
 end)
 

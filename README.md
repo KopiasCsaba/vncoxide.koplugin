@@ -82,6 +82,8 @@ hides it. A tap on the bar never reaches the remote. Its buttons, left to right:
    (also under **⋯**). The mode is remembered per connection.
 5. **⌨ Keyboard**: a tap shows or hides the on-screen keyboard together with the key strip (and
    closes the **Send keys** panel if it is open); a long press opens the full **Send keys** panel.
+   The viewer opens with the keyboard as you last left it (shown or hidden; the strip's **✕** and the
+   panel's **✕** and keyboard icon count too; a menu or dialog hides it only while it is open).
 6. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
    Display panel: a pinch never turns the screen.) The viewer remembers the orientation you last
    used and opens in it, unless **Match orientation to the remote screen** (see below) turns it.
@@ -180,7 +182,7 @@ before it opened.
 and the connection list (**Connections…**, to switch or add one), **Send text…** (type a line locally
 and send it to the remote as key presses; characters with no key are skipped and counted),
 **Refresh** (asks for a full picture and flashes the screen), **Ctrl+Alt+Del**, **Lock screen**
-(Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel), **Keyboard always visible**,
+(Super+L), **Page buttons send** (Page Up/Down keys or Mouse wheel),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
 **Show scroll buttons on toolbar**, **Enable brightness button**, **Enable contrast button**, **Help** and **Leave (keep connection)**. Switches keep the menu open;
