@@ -413,6 +413,16 @@ class Protocol(unittest.TestCase):
         self.assertTrue(srv.allowed("10.9.1.2"))
         self.assertFalse(srv.allowed("10.90.1.2"))
 
+    def test_allow_match(self):
+        self.assertTrue(vz.allow_match("192.168.1.1", "192.168.1.1"))
+        self.assertFalse(vz.allow_match("192.168.1.17", "192.168.1.1"))  # was a string prefix
+        self.assertTrue(vz.allow_match("192.168.1.17", "192.168.1."))
+        self.assertFalse(vz.allow_match("192.168.10.1", "192.168.1."))
+        self.assertTrue(vz.allow_match("10.0.5.9", "10.0.0.0/16"))
+        self.assertFalse(vz.allow_match("10.1.5.9", "10.0.0.0/16"))
+        self.assertFalse(vz.allow_match("10.1.5.9", "not/a-net"))
+        self.assertTrue(vz.allow_match("::1", "::1"))
+
 
 if __name__ == "__main__":
     unittest.main()

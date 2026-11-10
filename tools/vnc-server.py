@@ -243,7 +243,7 @@ def make_parser():
                    help="batch screen updates (-wait 50 -defer 100): less CPU on the PC, about 145 ms slower "
                         "updates (x11vnc only, not with -z)")
     p.add_argument("-p", metavar="PORT", type=int, default=5900, help="TCP port (default: 5900)")
-    p.add_argument("-a", metavar="IPS", help="comma list of allowed client IPs/prefixes (default: any)")
+    p.add_argument("-a", metavar="IPS", help="comma list of allowed client IPs and prefixes ending in '.' (-z also takes CIDRs; default: any)")
     p.add_argument("-n", action="store_true", help="no password (otherwise uses/creates the -P file)")
     p.add_argument("-P", metavar="FILE", default="vnc.passwd", help="password file (default: ./vnc.passwd)")
     p.add_argument("-d", metavar="DISPLAY", help="X display (default: $DISPLAY, else :0)")

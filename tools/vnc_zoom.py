@@ -8,6 +8,7 @@ only diffs 64x64 tiles, encodes them (ZRLE or Raw) and injects input with XTest.
 Python 3 standard library only (+ ctypes to libX11/libXtst); external program: ffmpeg.
 """
 import ctypes
+import ipaddress
 import os
 import secrets
 import selectors
@@ -673,6 +674,19 @@ class Client:
             pass
 
 
+def allow_match(ip, entry):
+    """One -a entry: an exact address, a prefix ending in '.' or ':' (x11vnc's -allow form), or a
+    CIDR network. A bare address is never a prefix: 192.168.1.1 must not admit 192.168.1.17."""
+    if "/" in entry:
+        try:
+            return ipaddress.ip_address(ip) in ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            return False
+    if entry.endswith((".", ":")):
+        return ip.startswith(entry)
+    return ip == entry
+
+
 class ZoomServer:
     def __init__(self, display, area, factor, sharp=False, port=5900, allow=None, password=None, fps=10,
                  xinput=True):
@@ -698,7 +712,7 @@ class ZoomServer:
         return Capture(cmd, w * h * pf["bpp"] // 8, cond)
 
     def allowed(self, ip):
-        return self.allow is None or any(ip.startswith(a) for a in self.allow)
+        return self.allow is None or any(allow_match(ip, a) for a in self.allow)
 
     def forget(self, c):
         with self.lock:
