@@ -3617,6 +3617,24 @@ local function main()
             end
             return true
         end)
+        check("shared_memory_is_shared_across_fork", function()
+            local SharedMem = require("vnc/sharedmem")
+            local ffiutil = require("ffi/util")
+            local bytes = 64 * 32 * 3
+            local ptr = SharedMem.alloc(bytes)
+            local bb = SharedMem.bb(ptr, 64, 32, BB.TYPE_BBRGB24)
+            bb:fill(BB.COLOR_BLACK)
+            local pid = ffiutil.runInSubProcess(function()
+                bb:setPixel(5, 7, BB.ColorRGB24(1, 2, 3))
+                return 0
+            end)
+            ffiutil.isSubProcessDone(pid, true)
+            local c = bb:getPixel(5, 7):getColorRGB24()
+            local ok = c.r == 1 and c.g == 2 and c.b == 3
+            SharedMem.free(ptr, bytes)
+            if not ok then return nil, string.format("got %d,%d,%d", c.r, c.g, c.b) end
+            return true
+        end)
     end
 
     stop_all_mocks()
