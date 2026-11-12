@@ -3678,6 +3678,7 @@ local function main()
                         ctx.send(string.format("FD %d %d", ctx.read_fd, ctx.write_fd))
                     elseif l:match("^T ") then
                         i = i + 1
+                        if not lines[i] then error("a payload header came without its payload") end
                         ctx.send(l, lines[i])
                     else
                         ctx.send(l)
@@ -3704,6 +3705,155 @@ local function main()
             if not w then error("spawn failed: " .. tostring(err)) end
             return w, Worker
         end
+
+        -- stop() with the plugin's scheduler on the real clock; returns the scheduled tasks.
+        local function stop_on_real_clock(w)
+            load_session()
+            local UIManager = require("ui/uimanager")
+            local real_si = UIManager.scheduleIn
+            local tasks = {}
+            UIManager.scheduleIn = function(_, delay, fn, ...)
+                tasks[#tasks + 1] = { t = socket.gettime() + delay, fn = fn, args = { ... } }
+            end
+            local ok, err = pcall(w.stop, w)
+            UIManager.scheduleIn = real_si
+            if not ok then error(err) end
+            return tasks
+        end
+        -- Runs due tasks until `pid` is gone or `deadline`; true when gone.
+        local function run_tasks_until_gone(tasks, pid, deadline)
+            while socket.gettime() < deadline do
+                for i = #tasks, 1, -1 do
+                    if tasks[i].t <= socket.gettime() then
+                        local task = table.remove(tasks, i)
+                        task.fn(unpack(task.args))
+                    end
+                end
+                if not alive(pid) then return true end
+                socket.sleep(0.01)
+            end
+            return not alive(pid)
+        end
+        -- Bytes 0-255 repeated (newlines included) up to `n`.
+        local function big_payload(n)
+            local t = {}
+            for i = 0, 255 do t[#t + 1] = string.char(i) end
+            local block = table.concat(t)
+            return block:rep(math.ceil(n / 256)):sub(1, n)
+        end
+
+        check("worker_codec_holds_a_header_until_its_payload", function()
+            local Worker = require("vnc/worker")
+            local stream = "H 12\nT 5\na\nb cX 1 2\nT 0\nT 3\nT 1Y\nQ\n"
+            local want = { "H 12", "T 5", "a\nb c", "X 1 2", "T 0", "", "T 3", "T 1", "Y", "Q" }
+            local r = Worker.Reader.new()
+            local got = {}
+            for i = 1, #stream do
+                r:feed(stream:sub(i, i))
+                local out = r:take()
+                local j = 1
+                while j <= #out do
+                    got[#got + 1] = out[j]
+                    if out[j]:match("^T %d+$") then
+                        if out[j + 1] == nil then
+                            return nil, "header " .. out[j] .. " returned without its payload"
+                        end
+                        got[#got + 1] = out[j + 1]
+                        j = j + 1
+                    end
+                    j = j + 1
+                end
+            end
+            if table.concat(got, "|") ~= table.concat(want, "|") then
+                return nil, "got " .. table.concat(got, "|")
+            end
+            if not r.quit then return nil, "Q not seen" end
+            -- A payload spanning reads: nothing until all of it arrived.
+            r = Worker.Reader.new()
+            r:feed("T 3\nab")
+            if #r:take() ~= 0 then return nil, "partial payload delivered" end
+            r:feed("cX\n")
+            local out = r:take()
+            if table.concat(out, "|") ~= "T 3|abc|X" then return nil, "split: " .. table.concat(out, "|") end
+            return true
+        end)
+
+        check("worker_large_payloads_round_trip", function()
+            local w = spawn_echo()
+            local ok, res, err = pcall(function()
+                poll_until(w, has_hello, 2)
+                if not w.pid then return nil, "no hello" end
+                local payload = big_payload(200 * 1024 + 7)
+                local t0 = socket.gettime()
+                w:send("T " .. #payload, payload)
+                w:send("X 9")
+                local dt = socket.gettime() - t0
+                if dt > 0.1 then return nil, string.format("send blocked %.3f s", dt) end
+                local msgs = poll_until(w, function(m) return #m >= 3 end, 5, {})
+                if msgs[1] ~= "T " .. #payload or msgs[2] ~= payload or msgs[3] ~= "X 9" then
+                    return nil, string.format("got %d messages, first %s, payload %s", #msgs,
+                        tostring(msgs[1]), tostring(msgs[2] == payload))
+                end
+                return true
+            end)
+            kill_worker(w)
+            if not ok then return nil, res end
+            return res, err
+        end)
+
+        check("worker_send_never_blocks_the_ui", function()
+            local Worker = require("vnc/worker")
+            -- Reads nothing for 0.5 s, then answers each payload with its length.
+            local w = assert(Worker.spawn("slow", function(ctx)
+                socket.sleep(0.5)
+                while true do
+                    local lines = ctx.recv(1)
+                    if not lines then return end
+                    for i, l in ipairs(lines) do
+                        if l:match("^T %d+$") then ctx.send("LEN " .. #lines[i + 1]) end
+                    end
+                end
+            end))
+            local ok, res, err = pcall(function()
+                poll_until(w, has_hello, 2)
+                if not w.pid then return nil, "no hello" end
+                local n = 300 * 1024
+                local t0 = socket.gettime()
+                w:send("T " .. n, big_payload(n))
+                local dt = socket.gettime() - t0
+                if dt > 0.1 then return nil, string.format("send blocked %.3f s", dt) end
+                if w:pending() == 0 then return nil, "nothing queued: the pipe took 300 KiB?" end
+                local msgs = poll_until(w, function(m) return m[1] ~= nil end, 5, {})
+                if msgs[1] ~= "LEN " .. n then return nil, "answer " .. tostring(msgs[1]) end
+                if w:pending() ~= 0 then return nil, "still queued " .. w:pending() end
+                return true
+            end)
+            kill_worker(w)
+            if not ok then return nil, res end
+            return res, err
+        end)
+
+        check("stop_never_blocks_on_a_full_pipe", function()
+            local Worker = require("vnc/worker")
+            Worker._test_ignore_quit = true
+            local w = assert(Worker.spawn("deaf", function()
+                while true do socket.sleep(1) end
+            end))
+            Worker._test_ignore_quit = nil
+            poll_until(w, has_hello, 2)
+            local pid = w.pid
+            if not pid then kill_worker(w); return nil, "no hello" end
+            w:send("T " .. 1024 * 1024, big_payload(1024 * 1024))
+            local t0 = socket.gettime()
+            local tasks = stop_on_real_clock(w)
+            local dt = socket.gettime() - t0
+            local gone = run_tasks_until_gone(tasks, pid, t0 + Worker.KILL_AFTER + 1)
+            if not gone then ffi.C.kill(pid, 9); wait_gone(pid, 2) end
+            if dt > 0.1 then return nil, string.format("stop blocked %.3f s", dt) end
+            if #tasks > 0 and not gone then return nil, "kill never ran" end
+            if not gone then return nil, "worker still running after KILL_AFTER + 1 s" end
+            return true
+        end)
 
         check("worker_round_trip", function()
             local w = spawn_echo()
@@ -3747,33 +3897,13 @@ local function main()
             poll_until(w, has_hello, 2)
             local pid = w.pid
             if not pid then kill_worker(w); return nil, "no hello" end
-            -- The plugin's scheduler, on the real clock: due tasks run while we wait.
-            load_session()
-            local UIManager = require("ui/uimanager")
-            local real_si = UIManager.scheduleIn
-            local tasks = {}
-            UIManager.scheduleIn = function(_, delay, fn, ...)
-                tasks[#tasks + 1] = { t = socket.gettime() + delay, fn = fn, args = { ... } }
-            end
             local t0 = socket.gettime()
-            w:stop()
-            UIManager.scheduleIn = real_si
+            local tasks = stop_on_real_clock(w)
             local still_after_quit = (function()
                 socket.sleep(0.3)
                 return alive(pid)
             end)()
-            local deadline = t0 + Worker.KILL_AFTER + 1
-            local gone = false
-            while socket.gettime() < deadline do
-                for i = #tasks, 1, -1 do
-                    if tasks[i].t <= socket.gettime() then
-                        local task = table.remove(tasks, i)
-                        task.fn(unpack(task.args))
-                    end
-                end
-                if not alive(pid) then gone = true; break end
-                socket.sleep(0.01)
-            end
+            local gone = run_tasks_until_gone(tasks, pid, t0 + Worker.KILL_AFTER + 1)
             if not gone then ffi.C.kill(pid, 9); wait_gone(pid, 2) end
             if not still_after_quit then return nil, "the stuck worker obeyed Q (test hook not honoured)" end
             if not gone then return nil, "worker still running after KILL_AFTER + 1 s" end

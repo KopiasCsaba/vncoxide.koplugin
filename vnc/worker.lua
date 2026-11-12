@@ -37,41 +37,55 @@ local SIGKILL = 9
 -- ------------------------------------------------------------------ codec
 
 --[[--
-Splits a byte stream into messages. `feed(data)` appends what was read; complete messages
-collect in `out` (a `T <len>` line, then its payload once all of it arrived); `quit` is set when
-a `Q` line arrives.
+Splits a byte stream into messages. `feed(data)` takes what was read; complete messages collect
+in `out`. A `T <len>` line is held back until its payload is complete, then both enter `out`
+together, so `take()` never returns a header without its payload. `quit` is set when a `Q` line
+arrives. Partial lines and payloads are kept as lists of pieces (no re-copying per read).
 ]]
 local Reader = {}
 Reader.__index = Reader
 
 function Reader.new()
-    return setmetatable({ buf = "", need = nil, out = {}, quit = false }, Reader)
+    return setmetatable({ line = {}, header = nil, need = 0, chunks = {}, out = {}, quit = false }, Reader)
 end
 
 function Reader:feed(data)
-    local buf = self.buf .. data
-    local pos = 1
-    while true do
-        if self.need then
-            if #buf - pos + 1 < self.need then break end
-            self.out[#self.out + 1] = buf:sub(pos, pos + self.need - 1)
-            pos = pos + self.need
-            self.need = nil
+    local pos, len = 1, #data
+    while pos <= len do
+        if self.header then
+            local take = math.min(self.need, len - pos + 1)
+            self.chunks[#self.chunks + 1] = data:sub(pos, pos + take - 1)
+            pos = pos + take
+            self.need = self.need - take
+            if self.need > 0 then break end
         else
-            local nl = buf:find("\n", pos, true)
-            if not nl then break end
-            local line = buf:sub(pos, nl - 1)
+            local nl = data:find("\n", pos, true)
+            if not nl then
+                self.line[#self.line + 1] = data:sub(pos)
+                break
+            end
+            local piece = data:sub(pos, nl - 1)
             pos = nl + 1
-            self.out[#self.out + 1] = line
-            local len = line:match("^T (%d+)$")
-            if len then
-                self.need = tonumber(len)
-            elseif line == "Q" then
-                self.quit = true
+            local line = piece
+            if #self.line > 0 then
+                self.line[#self.line + 1] = piece
+                line = table.concat(self.line)
+                self.line = {}
+            end
+            local n = line:match("^T (%d+)$")
+            if n then
+                self.header, self.need = line, tonumber(n)
+            else
+                self.out[#self.out + 1] = line
+                if line == "Q" then self.quit = true end
             end
         end
+        if self.header and self.need == 0 then
+            self.out[#self.out + 1] = self.header
+            self.out[#self.out + 1] = table.concat(self.chunks)
+            self.header, self.chunks = nil, {}
+        end
     end
-    self.buf = buf:sub(pos)
 end
 
 --- The complete messages so far, emptying the list.
@@ -207,28 +221,74 @@ function Worker.spawn(name, main_fn, keep_fds)
     if not pid then
         return nil, read_fd
     end
-    -- The intermediate process of the double fork; already reaped, this returns at once.
-    ffiutil.isSubProcessDone(pid, true)
+    -- runInSubProcess already reaped the double fork's intermediate process. The UI never
+    -- blocks on the worker: its end of the command pipe is non-blocking, unsent bytes queue.
+    -- (fcntl is variadic: the flags go as a C int, not a Lua number's double.)
+    local flags = C.fcntl(write_fd, C.F_GETFL)
+    C.fcntl(write_fd, C.F_SETFL, ffi.cast("int", bit.bor(flags, C.O_NONBLOCK)))
     return setmetatable({
         name = name,
         read_fd = read_fd,
         write_fd = write_fd,
         reader = Reader.new(),
         eof = false,
+        queue = {}, -- unsent strings, oldest first
+        sent = 0,   -- bytes of queue[1] already written
     }, Handle)
 end
 
---- Sends one message (and a `T` message's payload). False when the worker is gone.
-function Handle:send(line, payload)
-    if not self.write_fd then return false end
-    return write_all(self.write_fd, Worker.encode(line, payload))
+--[[--
+Writes as much of the queue as the pipe takes now. False once the worker's end is gone (the
+queue is dropped then).
+]]
+function Handle:_flush()
+    local q, fd = self.queue, self.write_fd
+    if not fd then return false end
+    while q[1] do
+        local s = q[1]
+        local n = tonumber(C.write(fd, ffi.cast("const char *", s) + self.sent, #s - self.sent))
+        if n < 0 then
+            local e = ffi.errno()
+            if e == C.EAGAIN then return true end
+            if e ~= C.EINTR then
+                self.queue, self.sent, self.broken = {}, 0, true
+                return false
+            end
+        else
+            self.sent = self.sent + n
+            if self.sent == #s then
+                table.remove(q, 1)
+                self.sent = 0
+            end
+        end
+    end
+    return true
 end
 
 --[[--
-Never blocks. Returns the complete messages that arrived (a list, maybe empty) and true once the
+Queues one message (and a `T` message's payload) and writes what the pipe takes now; never
+blocks. The rest goes out on later send()/poll() calls. False when the worker is gone.
+]]
+function Handle:send(line, payload)
+    if not self.write_fd or self.broken then return false end
+    self.queue[#self.queue + 1] = Worker.encode(line, payload)
+    return self:_flush()
+end
+
+--- Bytes queued for the worker and not yet written to the pipe.
+function Handle:pending()
+    local n = -self.sent
+    for _, s in ipairs(self.queue) do n = n + #s end
+    return n
+end
+
+--[[--
+Never blocks. Writes queued bytes the pipe now takes, then returns the complete messages that
+arrived (a list, maybe empty; a `T` header always with its payload after it) and true once the
 worker's end closed (it exited or died). `H <pid>` is passed on too, and sets `self.pid`.
 ]]
 function Handle:poll()
+    if self.queue[1] then self:_flush() end
     local fd = self.read_fd
     if not fd or self.eof then return self.reader:take(), true end
     local avail = ffiutil.getNonBlockingReadSize(fd)
@@ -246,12 +306,15 @@ function Handle:poll()
     end
     local lines = self.reader:take()
     if not self.pid then
-        for _, l in ipairs(lines) do
+        local i = 1
+        while i <= #lines do
+            local l = lines[i]
             local pid = l:match("^H (%d+)$")
             if pid then
                 self.pid = tonumber(pid)
                 break
             end
+            i = i + (l:match("^T %d+$") and 2 or 1) -- skip a payload
         end
     end
     return lines, self.eof
@@ -265,16 +328,14 @@ local function close_fd(self, key)
 end
 
 --[[--
-Asks the worker to quit (`Q`), closes the pipes and schedules a SIGKILL `Worker.KILL_AFTER`
-seconds later, for a worker still running then. Before the worker's `H` was polled the read end
-stays open until that moment, to learn the pid.
+Never blocks. Schedules a SIGKILL of the worker's process group `Worker.KILL_AFTER` seconds
+later (for a worker still running then), asks it to quit (`Q`, written only if the pipe takes it
+now; queued bytes the pipe does not take are dropped) and closes the pipes. Before the worker's
+`H` was polled the read end stays open until the kill, to learn the pid.
 ]]
 function Handle:stop()
     if self.stopped then return end
     self.stopped = true
-    self:send("Q")
-    close_fd(self, "write_fd")
-    if self.pid then close_fd(self, "read_fd") end
     local UIManager = require("ui/uimanager")
     UIManager:scheduleIn(Worker.KILL_AFTER, function()
         if not self.pid and self.read_fd then
@@ -283,10 +344,14 @@ function Handle:stop()
         end
         close_fd(self, "read_fd")
         local pid = self.pid
-        if pid and pid > 1 and C.kill(pid, 0) == 0 then
-            C.kill(pid, SIGKILL)
+        if pid and pid > 1 then
+            C.kill(-pid, SIGKILL) -- the worker leads its own process group (runInSubProcess)
         end
     end)
+    self:send("Q")
+    close_fd(self, "write_fd")
+    self.queue, self.sent = {}, 0
+    if self.pid then close_fd(self, "read_fd") end
 end
 
 return Worker
