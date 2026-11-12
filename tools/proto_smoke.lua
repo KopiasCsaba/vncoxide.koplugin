@@ -828,7 +828,7 @@ local function contrast_checks()
         r:set_contrast(1)
         r:draw_to(out, 0, 0, CW, CH)
         Scaler.render(ref, r.plane, r:_render_view(), { x = 0, y = 0, w = CW, h = CH }, r.scaling)
-        if r._lut ~= nil or bb_diff(ref, out) then return nil, "back to neutral: the plain picture" end
+        if r.renderer._lut ~= nil or bb_diff(ref, out) then return nil, "back to neutral: the plain picture" end
         out:free(); ref:free(); r:free()
         return true
     end)

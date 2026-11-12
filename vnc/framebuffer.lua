@@ -16,6 +16,7 @@ remote pixels as sent.
 ]]
 
 local BB = require("ffi/blitbuffer")
+local Renderer = require("vnc/renderer")
 local Scaler = require("vnc/scaler")
 local Util = require("vnc/util")
 local time = require("ui/time")
@@ -50,11 +51,7 @@ function Remote.new(width, height)
         scaling = "smooth",
         contrast = 1,       -- contrast factor of the picture as drawn (@{Remote:set_contrast})
         invert = false,     -- the picture is drawn inverted (@{Remote:set_invert})
-        _lut = nil,         -- its tone curve for the scaler, nil at neutral
-        _canvas_bb = nil,   -- persistent canvas-sized buffer holding the scaled view
-        _dither_bb = nil,   -- the canvas buffer dithered (only while painting dithered)
-        _dither_ok = false, -- _dither_bb matches _canvas_bb
-        _filled = nil,      -- what _canvas_bb was last fully computed for (view, size, mode)
+        renderer = Renderer.new(), -- scales the plane into the canvas buffer, tone curve, dither
         _stale = {},        -- remote rects changed since _canvas_bb was last updated
         _all_stale = true,  -- the whole buffer must be recomputed
         _unplaced = true,   -- not yet placed in a canvas: the first one centres it
@@ -126,7 +123,7 @@ next paint, exactly like after a scaling-mode change. At neutral there is no cur
 function Remote:set_contrast(f)
     if f == self.contrast then return false end
     self.contrast = f
-    self._lut = Scaler.contrast_lut(f, self.invert)
+    self.renderer:set_tone(f, self.invert)
     self._all_stale = true
     return true
 end
@@ -141,7 +138,7 @@ function Remote:set_invert(on)
     on = on and true or false
     if on == self.invert then return false end
     self.invert = on
-    self._lut = Scaler.contrast_lut(self.contrast, on)
+    self.renderer:set_tone(self.contrast, on)
     self._all_stale = true
     return true
 end
@@ -159,19 +156,6 @@ end
 --- Zero-copy sub-window of the plane (shares its stride). The caller must not free it.
 function Remote:viewport(x, y, w, h)
     return self:get_plane():viewport(x, y, w, h)
-end
-
-local function drop_canvas(self)
-    if self._canvas_bb then
-        self._canvas_bb:free()
-        self._canvas_bb = nil
-    end
-    if self._dither_bb then
-        self._dither_bb:free()
-        self._dither_bb = nil
-    end
-    self._dither_ok = false
-    self._filled = nil
 end
 
 --[[--
@@ -221,7 +205,7 @@ end
 
 --- Frees the plane and the canvas buffer.
 function Remote:free()
-    drop_canvas(self)
+    self.renderer:free()
     if self.plane then
         self.plane:free()
         self.plane = nil
@@ -400,62 +384,19 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
 
     local btype = bb:getType()
     if not CANVAS_TYPES[btype] then btype = BB.TYPE_BBRGB24 end
-    local canvas = self._canvas_bb
-    if not (canvas and canvas:getWidth() == cw and canvas:getHeight() == ch and canvas:getType() == btype) then
-        drop_canvas(self)
-        canvas = BB.new(cw, ch, btype)
-        self._canvas_bb = canvas
-    end
-
-    local view = self:_render_view()
-    local s, vx, vy = view.scale, view.x, view.y
-    local mode = self.scaling
-    local f = self._filled
-    local full, rects = false, nil
-    if self._all_stale or not f or f.x ~= vx or f.y ~= vy or f.scale ~= s or f.mode ~= mode
-            or f.plane ~= self.plane then
-        Scaler.render(canvas, self.plane, view, { x = 0, y = 0, w = cw, h = ch }, mode, self._lut)
-        self._filled = { x = vx, y = vy, scale = s, mode = mode, plane = self.plane }
-        self.last_recomputed_px = cw * ch
-        full = true
-    elseif #self._stale > 0 then
-        rects = {}
-        for _i, r in ipairs(self._stale) do
-            local d = self:canvas_rect_for(r)
-            if d then rects = Util.add_rect(rects, d) end
-        end
-        local px = 0
-        for _i, d in ipairs(rects) do
-            Scaler.render(canvas, self.plane, view, d, mode, self._lut)
-            px = px + d.w * d.h
-        end
-        self.last_recomputed_px = px
-    end
+    local renderer = self.renderer
+    renderer:render(self.plane, self:_render_view(), self.scaling, cw, ch, btype, dither,
+        self._stale, self._all_stale)
+    self.last_recomputed_px = renderer.last_recomputed_px
     self._all_stale = false
     if #self._stale > 0 then self._stale = {} end
 
     if dither then
         local t0 = Util.timing_enabled() and time.now()
-        local dbb = self._dither_bb
-        if not dbb then
-            dbb = BB.new(cw, ch, btype)
-            self._dither_bb = dbb
-            self._dither_ok = false
-        end
-        if full or not self._dither_ok then
-            dbb:ditherblitFrom(canvas, 0, 0, 0, 0, cw, ch)
-        elseif rects then
-            for _i, d in ipairs(rects) do
-                dbb:ditherblitFrom(canvas, d.x, d.y, d.x, d.y, d.w, d.h)
-            end
-        end
-        self._dither_ok = true
-        bb:blitFrom(dbb, cx, cy, 0, 0, cw, ch)
-        if t0 then self.last_blit_ms = time.to_ms(time.now() - t0) end
+        bb:blitFrom(renderer:canvas(), cx, cy, 0, 0, cw, ch)
+        if t0 then self.last_blit_ms = time.to_ms(time.now() - t0) + (renderer.last_dither_ms or 0) end
     else
-        -- the canvas changes from here on without the dithered copy following it
-        if full or rects then self._dither_ok = false end
-        bb:blitFrom(canvas, cx, cy, 0, 0, cw, ch)
+        bb:blitFrom(renderer:canvas(), cx, cy, 0, 0, cw, ch)
     end
     return true
 end

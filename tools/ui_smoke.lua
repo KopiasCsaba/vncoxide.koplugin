@@ -3398,16 +3398,16 @@ for _, t in ipairs(CB_TYPES) do
     check("canvas_buffer_is_kept_across_updates_" .. t[1], function()
         local remote, target, cx, cy, cw, ch = canvas_fixture(btype)
         remote:draw_to(target, cx, cy, cw, ch)
-        local buf = remote._canvas_bb
+        local buf = remote.renderer._canvas_bb
         assert_true(buf ~= nil, "a canvas buffer must exist after a paint")
         for i = 1, 3 do
             remote:get_plane():paintRect(i * 10, i * 5, 6, 6, require("ffi/blitbuffer").COLOR_BLACK)
             remote:mark_dirty(i * 10, i * 5, 6, 6)
             remote:draw_to(target, cx, cy, cw, ch)
-            assert_true(remote._canvas_bb == buf, "update " .. i .. " must reuse the canvas buffer")
+            assert_true(remote.renderer._canvas_bb == buf, "update " .. i .. " must reuse the canvas buffer")
         end
         remote:draw_to(target, cx, cy, cw - 10, ch - 6)
-        assert_true(remote._canvas_bb ~= buf, "a resized canvas needs a new buffer")
+        assert_true(remote.renderer._canvas_bb ~= buf, "a resized canvas needs a new buffer")
         assert_true(canvas_mismatch(remote, target, cx, cy, cw - 10, ch - 6) == 0,
             "and the resized canvas shows a full render")
         target:free(); remote:free()
@@ -3558,7 +3558,7 @@ check("canvas_dithered_partial_paint_matches_a_full_dither", function()
     local ref = bb.new(cw + 20, ch + 12, bb.TYPE_BB8)
     local function same(what)
         ref:fill(bb.COLOR_WHITE)
-        ref:ditherblitFrom(remote._canvas_bb, cx, cy, 0, 0, cw, ch)
+        ref:ditherblitFrom(remote.renderer._canvas_bb, cx, cy, 0, 0, cw, ch)
         for y = cy, cy + ch - 1 do
             for x = cx, cx + cw - 1 do
                 assert_true(target:getPixel(x, y):getColor8().a == ref:getPixel(x, y):getColor8().a,
@@ -6449,7 +6449,7 @@ check("contrast_dialog_steps_through_the_levels", function()
     dispatch_gesture{ ges = "tap", pos = centre_of(progress.buttonprogress_content[target].dimen) }
     UIManager.setDirty = real_dirty
     assert_true(app.settings.remote_contrast == levels[target], "stored: " .. tostring(app.settings.remote_contrast))
-    assert_true(remote.contrast == levels[target] and remote._lut ~= nil, "the picture takes it")
+    assert_true(remote.contrast == levels[target] and remote.renderer._lut ~= nil, "the picture takes it")
     local whole = false
     for _, d in ipairs(dirty) do
         local r = d[2]
@@ -6465,7 +6465,7 @@ check("contrast_dialog_steps_through_the_levels", function()
     assert_true(top() == dlg, "the dialog stays up")
     -- back to neutral: no curve at all
     dispatch_gesture{ ges = "tap", pos = centre_of(progress.buttonprogress_content[neutral].dimen) }
-    assert_true(app.settings.remote_contrast == 1 and remote._lut == nil, "neutral: no curve")
+    assert_true(app.settings.remote_contrast == 1 and remote.renderer._lut == nil, "neutral: no curve")
     close_viewer(app, remote)
 end)
 
