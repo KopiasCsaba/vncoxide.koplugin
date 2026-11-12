@@ -786,6 +786,38 @@ function Session:detach()
     self.dirty = nil
 end
 
+--- One tick's work, free of UIManager and the app: pumps the connection, releases a
+--- forced or held update (flushing what that sends) and takes the dirty rects.
+--- Returns `status, rects`: status is `_pump`'s ("error"/"done" end the session's use; the
+--- caller does the teardown), or "failed" after `_fail` ran on a flush error; `rects` is
+--- the list of dirty rects or nil.
+function Session:_service()
+    local status = self:_pump()
+    if status == "error" or status == "done" then return status end
+    if self.forced and not self:_holding() then
+        self:_send_forced()
+        local ok, err = self:_flush_tx()
+        if not ok then
+            self:_fail(err)
+            return "failed"
+        end
+    end
+    if self.proto and self.proto.update_pending and not self:_holding() then
+        self.proto:release_update()
+        local ok, err = self:_flush_tx()
+        if not ok then
+            self:_fail(err)
+            return "failed"
+        end
+    end
+    local rects
+    if self.dirty and self.dirty[1] then
+        rects = self.dirty
+        self.dirty = nil
+    end
+    return status, rects
+end
+
 --- The poll task (scheduled as `_poll_task`, which `UIManager:unschedule` can cancel).
 function Session:_poll()
     if not self.attached then return end
@@ -798,32 +830,19 @@ function Session:_poll()
     else
         self.last_poll = nil
     end
-    local status = self:_pump()
+    local status, rects = self:_service()
     if status == "error" or status == "done" then
         UIManager:unschedule(self._poll_task)
         self.attached = false
         return
     end
-    if self.forced and not self:_holding() then
-        self:_send_forced()
-        local ok, err = self:_flush_tx()
-        if not ok then
-            self:_fail(err)
-            return
+    if status == "failed" then return end
+    if rects then
+        if self.app then
+            self.app:on_framebuffer_dirty(rects)
+        else
+            self.dirty = rects -- nobody to hand them to: keep them for the next tick
         end
-    end
-    if self.proto and self.proto.update_pending and not self:_holding() then
-        self.proto:release_update()
-        local ok, err = self:_flush_tx()
-        if not ok then
-            self:_fail(err)
-            return
-        end
-    end
-    if self.dirty and self.dirty[1] and self.app then
-        local rects = self.dirty
-        self.dirty = nil
-        self.app:on_framebuffer_dirty(rects)
     end
     -- the app callback may have rescheduled the task (see `poll_soon`): keep exactly one
     UIManager:unschedule(self._poll_task)
