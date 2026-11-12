@@ -3637,6 +3637,209 @@ local function main()
         end)
     end
 
+    -- Worker processes (vnc/worker.lua): forked over a line protocol, descriptor hygiene, nice.
+    do
+        local ESRCH = 3
+        local function alive(pid)
+            if ffi.C.kill(pid, 0) == 0 then return true end
+            return ffi.errno() ~= ESRCH
+        end
+        local function wait_gone(pid, timeout)
+            local deadline = socket.gettime() + timeout
+            while socket.gettime() < deadline do
+                if not alive(pid) then return true end
+                socket.sleep(0.01)
+            end
+            return not alive(pid)
+        end
+        -- Collects polled messages until `want(msgs)` holds or `timeout` passes.
+        local function poll_until(w, want, timeout, msgs)
+            msgs = msgs or {}
+            local deadline = socket.gettime() + timeout
+            repeat
+                local lines, eof = w:poll()
+                for _, l in ipairs(lines) do msgs[#msgs + 1] = l end
+                if want(msgs) then return msgs end
+                if eof then break end
+                socket.sleep(0.005)
+            until socket.gettime() > deadline
+            return msgs
+        end
+        local function has_hello(msgs) return msgs[1] ~= nil end
+        -- Echoes every message (a payload message with its payload); "FD" answers its pipe fds.
+        local function echo_main(ctx)
+            while true do
+                local lines = ctx.recv(1)
+                if not lines then return end
+                local i = 1
+                while i <= #lines do
+                    local l = lines[i]
+                    if l == "FD" then
+                        ctx.send(string.format("FD %d %d", ctx.read_fd, ctx.write_fd))
+                    elseif l:match("^T ") then
+                        i = i + 1
+                        ctx.send(l, lines[i])
+                    else
+                        ctx.send(l)
+                    end
+                    i = i + 1
+                end
+            end
+        end
+        -- Stops `w` with the SIGKILL task run at once, so no worker outlives its check.
+        local function kill_worker(w)
+            load_session()
+            local UIManager = require("ui/uimanager")
+            local real_si = UIManager.scheduleIn
+            local tasks = {}
+            UIManager.scheduleIn = function(_, _, fn, ...) tasks[#tasks + 1] = { fn, ... } end
+            pcall(w.stop, w)
+            UIManager.scheduleIn = real_si
+            for _, t in ipairs(tasks) do t[1](unpack(t, 2)) end
+            if w.pid then wait_gone(w.pid, 2) end
+        end
+        local function spawn_echo(keep_fds)
+            local Worker = require("vnc/worker")
+            local w, err = Worker.spawn("echo", echo_main, keep_fds)
+            if not w then error("spawn failed: " .. tostring(err)) end
+            return w, Worker
+        end
+
+        check("worker_round_trip", function()
+            local w = spawn_echo()
+            local ok, res, err = pcall(function()
+                local msgs = poll_until(w, has_hello, 2)
+                local pid = tonumber((msgs[1] or ""):match("^H (%d+)$"))
+                if not pid then return nil, "first message: " .. tostring(msgs[1]) end
+                if w.pid ~= pid or not alive(pid) then return nil, "pid " .. pid .. " not live / not w.pid" end
+                local t0 = socket.gettime()
+                w:send("X 1 2")
+                w:send("T 5", "a\nb c")
+                msgs = poll_until(w, function(m) return #m >= 3 end, 1, {})
+                if socket.gettime() - t0 > 1 then return nil, "echo took over 1 s" end
+                if msgs[1] ~= "X 1 2" or msgs[2] ~= "T 5" or msgs[3] ~= "a\nb c" then
+                    return nil, "echoed: " .. table.concat(msgs, "|")
+                end
+                return true
+            end)
+            kill_worker(w)
+            if not ok then return nil, res end
+            return res, err
+        end)
+
+        check("workers_exit_when_the_ui_pipe_closes", function()
+            local w = spawn_echo()
+            local msgs = poll_until(w, has_hello, 2)
+            local pid = w.pid
+            if not pid then kill_worker(w); return nil, "no hello: " .. tostring(msgs[1]) end
+            ffi.C.close(w.write_fd)
+            ffi.C.close(w.read_fd)
+            local gone = wait_gone(pid, 2)
+            if not gone then ffi.C.kill(pid, 9); wait_gone(pid, 2); return nil, "worker still running" end
+            return true
+        end)
+
+        check("hangup_kills_a_stuck_worker", function()
+            local Worker = require("vnc/worker")
+            Worker._test_ignore_quit = true
+            local w = spawn_echo()
+            Worker._test_ignore_quit = nil
+            poll_until(w, has_hello, 2)
+            local pid = w.pid
+            if not pid then kill_worker(w); return nil, "no hello" end
+            -- The plugin's scheduler, on the real clock: due tasks run while we wait.
+            load_session()
+            local UIManager = require("ui/uimanager")
+            local real_si = UIManager.scheduleIn
+            local tasks = {}
+            UIManager.scheduleIn = function(_, delay, fn, ...)
+                tasks[#tasks + 1] = { t = socket.gettime() + delay, fn = fn, args = { ... } }
+            end
+            local t0 = socket.gettime()
+            w:stop()
+            UIManager.scheduleIn = real_si
+            local still_after_quit = (function()
+                socket.sleep(0.3)
+                return alive(pid)
+            end)()
+            local deadline = t0 + Worker.KILL_AFTER + 1
+            local gone = false
+            while socket.gettime() < deadline do
+                for i = #tasks, 1, -1 do
+                    if tasks[i].t <= socket.gettime() then
+                        local task = table.remove(tasks, i)
+                        task.fn(unpack(task.args))
+                    end
+                end
+                if not alive(pid) then gone = true; break end
+                socket.sleep(0.01)
+            end
+            if not gone then ffi.C.kill(pid, 9); wait_gone(pid, 2) end
+            if not still_after_quit then return nil, "the stuck worker obeyed Q (test hook not honoured)" end
+            if not gone then return nil, "worker still running after KILL_AFTER + 1 s" end
+            return true
+        end)
+
+        check("workers_keep_only_their_own_descriptors", function()
+            local lfs = require("libs/libkoreader-lfs")
+            local listener = assert(socket.bind("127.0.0.1", 0))
+            local p = ffi.new("int[2]")
+            assert(ffi.C.pipe(p) == 0)
+            local keep = p[0]
+            local w = spawn_echo({ keep })
+            local ok, res, err = pcall(function()
+                poll_until(w, has_hello, 2)
+                if not w.pid then return nil, "no hello" end
+                w:send("FD")
+                local msgs = poll_until(w, function(m) return #m >= 1 end, 2, {})
+                local r, wr = (msgs[1] or ""):match("^FD (%d+) (%d+)$")
+                if not r then return nil, "FD answer: " .. tostring(msgs[1]) end
+                local expect = { [tonumber(r)] = true, [tonumber(wr)] = true, [keep] = true }
+                for fd = 0, 2 do
+                    if lfs.attributes("/proc/self/fd/" .. fd) then expect[fd] = true end
+                end
+                local got = {}
+                for e in lfs.dir("/proc/" .. w.pid .. "/fd") do
+                    if e ~= "." and e ~= ".." then got[tonumber(e)] = true end
+                end
+                local function keys(t)
+                    local k = {}
+                    for fd in pairs(t) do k[#k + 1] = fd end
+                    table.sort(k)
+                    return table.concat(k, ",")
+                end
+                if keys(got) ~= keys(expect) then
+                    return nil, "worker fds " .. keys(got) .. ", expected " .. keys(expect)
+                        .. " (listener fd " .. tostring(listener:getfd()) .. ")"
+                end
+                return true
+            end)
+            kill_worker(w)
+            listener:close()
+            ffi.C.close(p[0])
+            ffi.C.close(p[1])
+            if not ok then return nil, res end
+            return res, err
+        end)
+
+        check("workers_run_at_lower_priority", function()
+            local w, Worker = spawn_echo()
+            poll_until(w, has_hello, 2)
+            local stat = w.pid and read_file("/proc/" .. w.pid .. "/stat")
+            kill_worker(w)
+            if not stat then return nil, "no worker stat" end
+            -- Fields after the parenthesised command: state is field 3, nice is field 19.
+            local rest = stat:match("%) (.*)$")
+            local f = {}
+            for x in rest:gmatch("%S+") do f[#f + 1] = x end
+            local nice = tonumber(f[17])
+            if nice ~= Worker.NICE or Worker.NICE ~= 5 then
+                return nil, "nice " .. tostring(nice) .. ", NICE " .. tostring(Worker.NICE)
+            end
+            return true
+        end)
+    end
+
     stop_all_mocks()
     if failures > 0 then
         print(string.format("%d check(s) failed", failures))
