@@ -108,8 +108,11 @@ after a rotation) for the next time. Its buttons, left to right:
     It changes the contrast of the remote picture as it is drawn on this screen (a stretch around
     mid grey; the remote desktop is not touched), at once and without a new picture from the
     server, and is remembered. ✕, Back, a tap outside or the button close it. Shown by default.
-11. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
-12. **⋯** opens the menu (below).
+11. **Invert** (a circle, left half black) draws the remote picture inverted, light for dark. It is a
+    toggle, drawn inverted while on, and is remembered. Only the picture is inverted (not the toolbar,
+    keyboard or dialogs), as a tone curve on this screen: the remote desktop is not touched. Shown by default.
+12. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
+13. **⋯** opens the menu (below).
 
 **⋯ › Toolbar buttons… › On the toolbar…** switches each button but Close and **⋯** on or off (one
 row for the scroll pair); **⋯** always stays, as on a device without keys it is the only way to the
@@ -377,6 +380,7 @@ return {
         ["toolbar_pinned"] = { ["rotate"] = true }, -- buttons kept beside it while collapsed, only those switched (default: Keyboard, Scroll lock)
         ["toolbar_pos"] = { ["x"] = 0.5, ["y"] = 0 }, -- where it sits: fractions of the free space (0.5, 0 = top centre)
         ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
+        ["remote_invert"] = false,         -- the remote picture drawn inverted (the toolbar's Invert button)
     },
     ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface
         ["ip"] = "0.0.0.0",

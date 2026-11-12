@@ -488,7 +488,10 @@ function ViewerApp:paintTo(bb, x, y)
     end
     if not self._view_moving then self:_sync_view_area() end
     -- the stored contrast (a no-op unless it changed: the remote may be a new one)
-    if self.remote then self.remote:set_contrast(self.settings.remote_contrast or 1) end
+    if self.remote then
+        self.remote:set_contrast(self.settings.remote_contrast or 1)
+        self.remote:set_invert(self.settings.remote_invert)
+    end
     local c = self.canvas
     if self.remote and self.remote:draw_to(bb, c.x, c.y, c.w, c.h, dither) then
         -- the canvas buffer covers its whole rect: black only around it
@@ -2530,6 +2533,19 @@ function ViewerApp:set_contrast(value)
         local area = Geom:new{ x = c.x, y = c.y, w = c.w, h = c.h }
         UIManager:setDirty(self, function() return "ui", area end)
     end
+end
+
+--- The toolbar's Invert button: draws the remote picture inverted, or as it is; kept as
+--- `remote_invert`. Like the contrast, a recompute of the canvas from the plane, no server update.
+function ViewerApp:toggle_invert()
+    self.settings.remote_invert = not self.settings.remote_invert
+    self.plugin.settings:flush()
+    if self.remote and self.remote:set_invert(self.settings.remote_invert) then
+        local c = self:canvas_geom()
+        local area = Geom:new{ x = c.x, y = c.y, w = c.w, h = c.h }
+        UIManager:setDirty(self, function() return "ui", area end)
+    end
+    self:_toolbar_changed()
 end
 
 function ViewerApp:toggle_display_panel()

@@ -300,6 +300,7 @@ function MenuBuilder.open(app)
     }
     if has_frontlight then collapsed_rows[#collapsed_rows + 1] = pinned_row(_("Brightness"), { "brightness" }) end
     collapsed_rows[#collapsed_rows + 1] = pinned_row(_("Contrast"), { "contrast" })
+    collapsed_rows[#collapsed_rows + 1] = pinned_row(_("Invert"), { "invert" })
     collapsed_rows[#collapsed_rows + 1] = pinned_row(_("More"), { "more" })
     item_table[#item_table + 1] = {
         text = _("Toolbar buttons…"),
@@ -326,6 +327,9 @@ function MenuBuilder.open(app)
                     }),
                     toolbar_row(_("Contrast"), { "contrast" }, {
                         help_text = _("The contrast of the remote picture as it is drawn here."),
+                    }),
+                    toolbar_row(_("Invert"), { "invert" }, {
+                        help_text = _("Draws the remote picture inverted (light on dark and the other way round)."),
                     }),
                 },
             },

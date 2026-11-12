@@ -541,20 +541,24 @@ end
 --[[--
 The tone curve for contrast factor `f`: `y = clamp(round(127.5 + f * (x - 127.5)))`, i.e. a
 stretch (f > 1) or squeeze (f < 1) around mid grey. Returns nil for `f == 1`: no curve, and the
-kernels take their plain paths.
+kernels take their plain paths. With `invert` the curve is flipped (`255 - y`), so inversion alone
+is a curve too (nil only for `f == 1` and no inversion).
 
 The curve is folded into the conversion each kernel already does per source pixel: on the grey
 value (`g`, for `TYPE_BB8`; the bilinear and box paths, which work on x256 grey, take the same
 curve x256 from `w`) or on each channel (into RGB). A source pixel costs one table load more, and
 nothing else changes: the result is exactly the picture of a plane whose pixels went through the
 curve first.
+--- @tparam number f
+--- @tparam[opt] boolean invert
 --- @treturn table|nil `{ g = uint8_t[256], w = int32_t[256] }`
 ]]
-function Scaler.contrast_lut(f)
-    if f == 1 then return nil end
+function Scaler.contrast_lut(f, invert)
+    if f == 1 and not invert then return nil end
     local g, w = ffi.new("uint8_t[256]"), ffi.new("int32_t[256]")
     for x = 0, 255 do
         local y = max(0, min(255, floor(127.5 + f * (x - 127.5) + 0.5)))
+        if invert then y = 255 - y end
         g[x], w[x] = y, y * 256
     end
     return { g = g, w = w }

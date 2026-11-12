@@ -14,7 +14,8 @@ state: `zoom.page`, the plugin's `zoom-1to1`, `zoom.manual`), Mode (Touch/Mouse,
 current one), Keyboard (shows or hides the on-screen keyboard with the key strip, or closes the
 "Send keys" panel), Rotate, Scroll lock (a toggle, drawn inverted while on: a two-finger drag
 scrolls the remote), Scroll up/down, Brightness (KOReader's frontlight dialog; only on a device with
-a frontlight), Contrast (the contrast dialog, @{vnc.contrastdialog}), Close (disconnect, after a
+a frontlight), Contrast (the contrast dialog, @{vnc.contrastdialog}), Invert (a toggle, drawn inverted
+while on: the remote picture drawn inverted), Close (disconnect, after a
 confirmation) and More (the menu). All but Close and More can be hidden (`toolbar_buttons`, the
 menu's "Toolbar buttons…"); by default only the scroll pair is.
 
@@ -58,7 +59,7 @@ local Toolbar = InputContainer:extend{
 }
 
 Toolbar.IDS = { "toggle", "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up", "scroll_down",
-    "brightness", "contrast", "close", "more" }
+    "brightness", "contrast", "invert", "close", "more" }
 
 --- The long-press tooltip of each button; `expand` is the round button's.
 Toolbar.TIPS = {
@@ -74,6 +75,7 @@ Toolbar.TIPS = {
     scroll_down = _("Scroll down"),
     brightness = _("Frontlight"),
     contrast = _("Contrast of the remote picture"),
+    invert = _("Invert the remote picture"),
     close = _("Disconnect"),
     more = _("Menu"),
 }
@@ -139,6 +141,11 @@ local function specs(app)
         scroll_down = { icon = "move.down", callback = function() app:scroll_wheel(1, 1) end },
         brightness = { icon_file = Icons.path("brightness"), callback = function() app:open_frontlight_dialog() end },
         contrast = { icon = "appbar.contrast", callback = function() app:toggle_contrast_dialog() end },
+        invert = {
+            icon_file = Icons.path("invert"),
+            selected = app.settings.remote_invert,
+            callback = function() app:toggle_invert() end,
+        },
         more = { icon = "appbar.menu", callback = function() app:open_menu() end },
     }
 end

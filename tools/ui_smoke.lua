@@ -3944,13 +3944,13 @@ check("menu_toolbar_buttons_submenu", function()
         local texts = {}
         for _, r in ipairs(rows) do texts[#texts + 1] = r.text end
         assert_true(table.concat(texts, "|") == "Collapse button|Display|Zoom|Mode|Keyboard|Rotate|Scroll lock|"
-            .. "Scroll up/down|Brightness|Contrast", table.concat(texts, "|"))
+            .. "Scroll up/down|Brightness|Contrast|Invert", table.concat(texts, "|"))
         local cases = {
             { "Collapse button", { "toggle" }, true }, { "Display", { "display" }, true },
             { "Zoom", { "zoom" }, true }, { "Mode", { "mode" }, true }, { "Keyboard", { "keyboard" }, true },
             { "Rotate", { "rotate" }, true }, { "Scroll lock", { "scroll_lock" }, true },
             { "Scroll up/down", { "scroll_up", "scroll_down" }, false }, { "Brightness", { "brightness" }, true },
-            { "Contrast", { "contrast" }, true },
+            { "Contrast", { "contrast" }, true }, { "Invert", { "invert" }, true },
         }
         for _, case in ipairs(cases) do
             local text, ids, on = case[1], case[2], case[3]
@@ -5648,7 +5648,7 @@ end)
 check("a_pointer_move_whose_release_is_eaten_ends_when_the_finger_lifts", function()
     local app, remote, sent = new_app(400, 300, { mode = "mouse", toolbar = true })
     local c = app.canvas
-    local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+    local P = Geom:new{ x = c.x + 50, y = c.y + 80 }
     local lift = finger_down(P)
     dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
     assert_true(app._mouse_moving, "moving the pointer")
@@ -5663,7 +5663,7 @@ check("no_release_watch_without_a_finger_on_the_books", function()
     -- GestureDetector shows no finger down (or does not tell): today's behaviour, no watch
     local app, remote = new_app(400, 300, { mode = "mouse" })
     local c = app.canvas
-    local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+    local P = Geom:new{ x = c.x + 50, y = c.y + 80 }
     dispatch_gesture{ ges = "hold", pos = P }
     confirm_hold(app)
     assert_true(app:has_pointer_action() and scheduled_delay(app._release_watch_task) == nil, "not watched")
@@ -5833,7 +5833,7 @@ check("the_release_watch_follows_the_finger_that_started_it", function()
     for _, case in ipairs{ "other finger", "same slot, new contact" } do
         local app, remote, sent = new_app(400, 300, { mode = "touch" })
         local c = app.canvas
-        local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+        local P = Geom:new{ x = c.x + 50, y = c.y + 80 }
         local lift = finger_down(P, 3)
         dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
         assert_true(scheduled_delay(app._release_watch_task) ~= nil, case .. ": watched")
@@ -5930,7 +5930,7 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     assert_true(app.toolbar_visible, "shown on open")
     local Toolbar = require("vnc/toolbar")
-    assert_true(table.concat(Toolbar.IDS, ",") == "toggle,display,zoom,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,brightness,contrast,close,more",
+    assert_true(table.concat(Toolbar.IDS, ",") == "toggle,display,zoom,mode,keyboard,rotate,scroll_lock,scroll_up,scroll_down,brightness,contrast,invert,close,more",
         table.concat(Toolbar.IDS, ","))
     local before = Screen:getRotationMode()
     tap_toolbar(app, "rotate")
@@ -5995,7 +5995,7 @@ check("toolbar_long_press_shows_a_tooltip_and_does_nothing_else", function()
             mode = "Pointer mode: touch or mouse", keyboard = "Keyboard (drag onto a field to click it and type)", rotate = "Rotate the screen",
             scroll_lock = "Scroll lock: two-finger drag scrolls the remote", scroll_up = "Scroll up",
             scroll_down = "Scroll down", brightness = "Frontlight", contrast = "Contrast of the remote picture",
-            close = "Disconnect", more = "Menu",
+            invert = "Invert the remote picture", close = "Disconnect", more = "Menu",
         }
         local rotation, mode, state = Screen:getRotationMode(), app:get_pointer_mode(), app:view_state()
         for _, id in ipairs(Toolbar.IDS) do
@@ -6339,7 +6339,7 @@ check("toolbar_brightness_and_contrast_buttons_follow_their_settings", function(
         Device.hasFrontlight = function() return true end
         app.toolbar:relayout()
         local ids = table.concat(app.toolbar:visible_ids(), ",")
-        assert_true(ids:find("brightness,contrast,close,more", 1, true), "both before Close and More: " .. ids)
+        assert_true(ids:find("brightness,contrast,invert,close,more", 1, true), "both before Close and More: " .. ids)
         assert_true(app.toolbar.button_by_id.contrast.icon == "appbar.contrast", "KOReader's contrast icon")
         assert_true(app.toolbar.button_by_id.brightness.label_widget.file == require("vnc/icons").path("brightness"),
             "the plugin's brightness icon")
@@ -6522,6 +6522,59 @@ check("stored_contrast_applies_when_the_viewer_paints", function()
     UIManager:forceRePaint()
     assert_true(remote.contrast == 2, "the stored level is drawn, got " .. tostring(remote.contrast))
     close_viewer(app, remote)
+end)
+
+check("contrast_lut_inverts", function()
+    local Scaler = require("vnc/scaler")
+    local inv = Scaler.contrast_lut(1, true)
+    assert_true(inv.g[0] == 255 and inv.g[255] == 0 and inv.w[0] == 255 * 256, "plain inversion")
+    assert_true(Scaler.contrast_lut(1, false) == nil and Scaler.contrast_lut(1) == nil, "neutral: no curve")
+    local a, b = Scaler.contrast_lut(2, true), Scaler.contrast_lut(2)
+    for _, x in ipairs{ 0, 64, 200 } do
+        assert_true(a.g[x] == 255 - b.g[x] and a.w[x] == 255 * 256 - b.w[x], "contrast, then inverted at " .. x)
+    end
+end)
+
+check("invert_is_a_toolbar_button", function()
+    local Settings, Toolbar = require("vnc/settings"), require("vnc/toolbar")
+    local function after_contrast(list)
+        for i, id in ipairs(list) do if id == "contrast" then return list[i + 1] end end
+    end
+    assert_true(after_contrast(Toolbar.IDS) == "invert", "Toolbar.IDS: invert after contrast")
+    assert_true(after_contrast(Settings.TOOLBAR_PINNABLE) == "invert", "pinnable after contrast")
+    assert_true(Settings.TOOLBAR_BUTTONS.invert == true, "shown by default")
+    assert_true(Settings.DEFAULTS.remote_invert == false, "off by default")
+end)
+
+check("invert_button_inverts_the_picture_and_persists", function()
+    fresh_screen()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local plane = remote:get_plane()
+    require("ffi").fill(plane.data, plane.stride * remote.h, 10)
+    remote:mark_dirty()
+    app:zoom_to(1)
+    UIManager:forceRePaint()
+    local function grey()
+        local cr = remote:canvas_rect_for({ x = 0, y = 0, w = 400, h = 300 })
+        return pixel_at(panel, app.canvas.x + cr.x + 100, app.canvas.y + cr.y + 150).r
+    end
+    assert_true(grey() == 10, "as sent: " .. grey())
+    tap_toolbar(app, "invert")
+    UIManager:forceRePaint()
+    assert_true(app.settings.remote_invert == true and remote.invert == true, "stored and applied")
+    assert_true(grey() == 245, "inverted: " .. grey())
+    assert_true(app.toolbar.button_by_id.invert.preselect == true, "the button is drawn selected")
+    tap_toolbar(app, "invert")
+    UIManager:forceRePaint()
+    assert_true(app.settings.remote_invert == false and grey() == 10, "back: " .. grey())
+    assert_true(app.toolbar.button_by_id.invert.preselect ~= true, "and not selected")
+    tap_toolbar(app, "invert")
+    close_viewer(app, remote)
+    local app2, remote2 = new_app(400, 300, { toolbar = true })
+    app2.settings.remote_invert = true
+    UIManager:forceRePaint()
+    assert_true(remote2.invert == true, "a reopened viewer applies the stored value")
+    close_viewer(app2, remote2)
 end)
 
 check("toolbar_more_opens_the_menu", function()
@@ -7752,7 +7805,7 @@ check("toolbar_pinned_buttons_stay_when_collapsed", function()
         local texts = {}
         for _, r in ipairs(rows) do texts[#texts + 1] = r.text end
         assert_true(table.concat(texts, "|") == "Display|Zoom|Mode|Keyboard|Rotate|Scroll lock|Scroll up/down|"
-            .. "Brightness|Contrast|More", table.concat(texts, "|"))
+            .. "Brightness|Contrast|Invert|More", table.concat(texts, "|"))
         for _, r in ipairs(rows) do
             local on = r.text == "Keyboard" or r.text == "Scroll lock"
             assert_true(r.mandatory == (on and "\u{2713}" or "-"), r.text .. ": default " .. tostring(on))

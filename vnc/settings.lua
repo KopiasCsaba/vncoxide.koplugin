@@ -61,6 +61,7 @@ Settings.DEFAULTS = {
     -- left and above it, so it keeps its place across rotations; 0.5, 0 is the top centre
     toolbar_pos = {},
     remote_contrast = 1,             -- contrast of the remote picture as drawn here: one of @{Settings.CONTRAST_LEVELS}
+    remote_invert = false,           -- the remote picture is drawn inverted (the toolbar's Invert button)
     -- the "Send keys" panel's last combos, most recent first: { mods = {"Ctrl", ...}, keysym, label }
     recent_combos = {},
 }
@@ -70,12 +71,13 @@ Settings.DEFAULTS = {
 Settings.TOOLBAR_BUTTONS = {
     toggle = true, display = true, zoom = true, mode = true, keyboard = true, rotate = true,
     scroll_lock = true, scroll_up = false, scroll_down = false, brightness = true, contrast = true,
+    invert = true,
 }
 
 --- The buttons that can stay on the collapsed toolbar (`toolbar_pinned`), in bar order: all but
 --- Collapse (it is the round button itself) and Close.
 Settings.TOOLBAR_PINNABLE = { "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up",
-    "scroll_down", "brightness", "contrast", "more" }
+    "scroll_down", "brightness", "contrast", "invert", "more" }
 
 --- The buttons pinned to the collapsed toolbar by default (every other pinnable one is not).
 Settings.TOOLBAR_PINNED = { keyboard = true, scroll_lock = true }
@@ -154,6 +156,10 @@ local SETTING_CHECKS = {
             if value == level then return value end
         end
         return Settings.DEFAULTS.remote_contrast
+    end,
+    remote_invert = function(value)
+        if value == true then return true end
+        return Settings.DEFAULTS.remote_invert
     end,
     -- (a numeric mode is one of the Display panel's presets, c.f. DisplayPanel.ZOOM_CHOICES)
     zoom_mode = function(value)

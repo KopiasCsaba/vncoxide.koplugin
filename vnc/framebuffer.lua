@@ -49,6 +49,7 @@ function Remote.new(width, height)
         version = 0,    -- bumped whenever the plane may have changed
         scaling = "smooth",
         contrast = 1,       -- contrast factor of the picture as drawn (@{Remote:set_contrast})
+        invert = false,     -- the picture is drawn inverted (@{Remote:set_invert})
         _lut = nil,         -- its tone curve for the scaler, nil at neutral
         _canvas_bb = nil,   -- persistent canvas-sized buffer holding the scaled view
         _dither_bb = nil,   -- the canvas buffer dithered (only while painting dithered)
@@ -125,7 +126,22 @@ next paint, exactly like after a scaling-mode change. At neutral there is no cur
 function Remote:set_contrast(f)
     if f == self.contrast then return false end
     self.contrast = f
-    self._lut = Scaler.contrast_lut(f)
+    self._lut = Scaler.contrast_lut(f, self.invert)
+    self._all_stale = true
+    return true
+end
+
+--[[--
+Draws the picture inverted (`255 - contrast(x)`, the same tone-curve step as the contrast) or as
+it is. The plane is untouched; the whole canvas is recomputed on the next paint.
+--- @tparam boolean on
+--- @treturn boolean whether it changed
+]]
+function Remote:set_invert(on)
+    on = on and true or false
+    if on == self.invert then return false end
+    self.invert = on
+    self._lut = Scaler.contrast_lut(self.contrast, on)
     self._all_stale = true
     return true
 end
