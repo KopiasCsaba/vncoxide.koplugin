@@ -3968,6 +3968,257 @@ local function main()
             end
             return true
         end)
+
+        -- The renderer over caller-given memory: what canvas() returns is what that memory holds.
+        check("renderer_dithered_output_is_in_canvas_mem", function()
+            local Renderer = require("vnc/renderer")
+            local SharedMem = require("vnc/sharedmem")
+            local W, H = 64, 48
+            local plane = BB.new(W, H, BB.TYPE_BBRGB24)
+            for y = 0, H - 1 do
+                for x = 0, W - 1 do plane:setPixel(x, y, BB.ColorRGB24(x * 3, y * 5, 77)) end
+            end
+            local bytes = W * H
+            local ptr = SharedMem.alloc(bytes)
+            local r = Renderer.new{ canvas_mem = { ptr = ptr, bytes = bytes } }
+            local mem = SharedMem.bb(ptr, W, H, BB.TYPE_BB8)
+            local view = { x = 0, y = 0, scale = 1 }
+            local err
+            for _, dither in ipairs({ true, false, true }) do
+                r:render(plane, view, "smooth", W, H, BB.TYPE_BB8, dither, nil, false)
+                local out = r:canvas()
+                for y = 0, H - 1 do
+                    for x = 0, W - 1 do
+                        if not err and out:getPixel(x, y):getColor8().a ~= mem:getPixel(x, y):getColor8().a then
+                            err = string.format("dither=%s: (%d,%d) differs from the canvas memory", tostring(dither), x, y)
+                        end
+                    end
+                end
+            end
+            r:free()
+            SharedMem.free(ptr, bytes)
+            plane:free()
+            if err then return nil, err end
+            return true
+        end)
+
+        check("renderer_reports_no_change_as_nil", function()
+            local Renderer = require("vnc/renderer")
+            local plane = BB.new(64, 48, BB.TYPE_BBRGB24)
+            local r = Renderer.new()
+            local view = { x = 0, y = 0, scale = 1 }
+            r:render(plane, view, "smooth", 32, 24, BB.TYPE_BB8, false, nil, false)
+            -- a stale rect outside the canvas changes nothing
+            local res = r:render(plane, view, "smooth", 32, 24, BB.TYPE_BB8, false, { { x = 50, y = 40, w = 4, h = 4 } }, false)
+            r:free()
+            plane:free()
+            if res ~= nil then return nil, "render returned " .. tostring(res) .. (type(res) == "table" and (" of " .. #res) or "") end
+            return true
+        end)
+
+        -- Decode and scale workers (vnc/workers.lua) behind a live session, over the mock.
+        local function worker_session(name, mock, workers_on)
+            local Session = load_session()
+            local Workers = require("vnc/workers")
+            -- (no device screen here: any canvas up to 400x400 at 4 bytes per pixel)
+            Workers.canvas_bytes = function() return 400 * 400 * 4 end
+            mock.name = name
+            local pid, port, log = start_mock(mock)
+            local states = {}
+            local s = Session.new{
+                profile = { host = "127.0.0.1", port = port, password = "", name = name },
+                worker_processes = workers_on ~= false,
+                network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+                on_state = function(st) states[#states + 1] = st end,
+            }
+            local connected, cerr
+            connect_sync(s, function(ok, err) connected, cerr = ok, err end)
+            if not connected then error("connect failed: " .. tostring(cerr)) end
+            -- the UI's dropped socket object must not close or shut down the workers' connection
+            collectgarbage("collect")
+            return s, states, pid, log
+        end
+        -- Waits for both workers' hello (their pids).
+        local function link_pids(link)
+            poll_until(link.decode, function() return link.decode.pid end, 3)
+            poll_until(link.scale, function() return link.scale.pid end, 3)
+            return link.decode.pid, link.scale.pid
+        end
+        -- Stops the workers and makes sure neither outlives the check.
+        local function end_link(s)
+            local link = s.workers
+            if not link then return end
+            local pids = { link.decode.pid, link.scale.pid }
+            kill_worker(link.decode)
+            kill_worker(link.scale)
+            pcall(link.stop, link)
+            for _, p in ipairs(pids) do
+                if p then ffi.C.kill(p, 9); wait_gone(p, 2) end
+            end
+        end
+        -- Collects `C` messages of the scale worker until `want(c)` holds for one (or `timeout`).
+        local function wait_c(link, want, timeout, seen)
+            seen = seen or {}
+            local deadline = socket.gettime() + timeout
+            repeat
+                local lines = link.scale:poll()
+                for _, l in ipairs(lines) do
+                    if l:match("^C ") then
+                        seen[#seen + 1] = l
+                        if want(l) then return l, seen end
+                    end
+                end
+                socket.sleep(0.005)
+            until socket.gettime() > deadline
+            return nil, seen
+        end
+        local function g_line(id, scale, cw, ch)
+            return string.format("G %d %s 0 0 %d %d %d 0 smooth 1 0", id, tostring(scale), cw, ch, BB.TYPE_BB8)
+        end
+
+        check("workers_decode_and_scale_into_shared_memory", function()
+            local Scaler = require("vnc/scaler")
+            local SharedMem = require("vnc/sharedmem")
+            local W, H = 200, 150
+            local s, _, mpid = worker_session("wk_quads", { encoding = "raw", pattern = "quadrants", width = W, height = H })
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                if s.sock ~= nil then error("the UI process still holds the socket") end
+                if s.remote.worker_link ~= link then error("remote.worker_link not set") end
+                local _, spid = link_pids(link)
+                if not spid then error("no hello from the workers") end
+                local cw, ch = W / 2, H / 2
+                link.scale:send(g_line(1, 0.5, cw, ch))
+                link.decode:send("R")
+                link.decode:send("F")
+                if not wait_c(link, function(l) return l == "C 1 full" end, 5) then error("no C 1 full") end
+                -- the expected canvas: the pattern scaled in this process
+                local plane = BB.new(W, H, BB.TYPE_BBRGB24)
+                for y = 0, H - 1 do
+                    for x = 0, W - 1 do
+                        plane:setPixel(x, y, BB.ColorRGB24(pattern_pixel("quadrants", x, y, W, H)))
+                    end
+                end
+                local exp = BB.new(cw, ch, BB.TYPE_BB8)
+                Scaler.render(exp, plane, { x = 0, y = 0, scale = 0.5 }, { x = 0, y = 0, w = cw, h = ch }, "smooth")
+                local got = SharedMem.bb(link.canvas_mem.ptr, cw, ch, BB.TYPE_BB8)
+                local probes = { { 25, 18 }, { 75, 18 }, { 25, 56 }, { 75, 56 } }
+                local function mismatch()
+                    for _, p in ipairs(probes) do
+                        local a, e = got:getPixel(p[1], p[2]):getColor8().a, exp:getPixel(p[1], p[2]):getColor8().a
+                        if a ~= e then return string.format("(%d,%d) is %d, expected %d", p[1], p[2], a, e) end
+                    end
+                end
+                -- (the full update's rects follow the first render)
+                local deadline, bad = socket.gettime() + 5, nil
+                repeat
+                    link.scale:poll()
+                    bad = mismatch()
+                    if not bad then break end
+                    socket.sleep(0.01)
+                until socket.gettime() > deadline
+                plane:free()
+                exp:free()
+                if bad then error("canvas " .. bad) end
+            end)
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        check("latest_view_wins", function()
+            local s, _, mpid = worker_session("wk_latest", { encoding = "raw", pattern = "quadrants" })
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                link_pids(link)
+                local g = {}
+                for i = 1, 10 do g[i] = g_line(i, 0.25 + i * 0.05, 100, 75) end
+                link.scale:send(table.concat(g, "\n")) -- ten G messages in one write
+                local last, seen = wait_c(link, function(l) return l == "C 10 full" end, 5)
+                if not last then error("no C 10 full: " .. table.concat(seen, " | ")) end
+                wait_c(link, function() return false end, 0.3, seen)
+                local fulls = 0
+                for _, l in ipairs(seen) do if l:match(" full$") then fulls = fulls + 1 end end
+                if fulls ~= 1 then error("C full messages: " .. table.concat(seen, " | ")) end
+            end)
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        check("decode_rects_reach_the_canvas", function()
+            local Scaler = require("vnc/scaler")
+            -- An 80x80 desktop: the mock's 40x40 repaint box at (0, 0) is exactly its top-left quadrant.
+            local s, _, mpid = worker_session("wk_rects", { encoding = "raw", pattern = "quadrants",
+                width = 80, height = 80, repaint = 0.15 })
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                link_pids(link)
+                link.scale:send(g_line(1, 0.5, 40, 40))
+                link.decode:send("R")
+                link.decode:send("F")
+                local e = Scaler.dst_rect_for({ x = 0, y = 0, w = 40, h = 40 }, { x = 0, y = 0, scale = 0.5 }, 40, 40, "smooth")
+                local want = string.format("C 1 %d %d %d %d", e.x, e.y, e.w, e.h)
+                local got, seen = wait_c(link, function(l) return l == want end, 8)
+                if not got then error("no '" .. want .. "' among: " .. table.concat(seen, " | ")) end
+            end)
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        check("worker_death_is_a_session_error", function()
+            local s, states, mpid = worker_session("wk_death", { encoding = "raw", pattern = "quadrants" })
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                local dpid, spid = link_pids(link)
+                if not (dpid and spid) then error("no hello from the workers") end
+                local n0 = #states
+                ffi.C.kill(dpid, 9)
+                local deadline = socket.gettime() + 2
+                while s:get_state() ~= "error" and socket.gettime() < deadline do
+                    link:poll()
+                    socket.sleep(0.01)
+                end
+                if s:get_state() ~= "error" then error("state " .. tostring(s:get_state())) end
+                local errors = 0
+                for i = n0 + 1, #states do if states[i] == "error" then errors = errors + 1 end end
+                if errors ~= 1 then error("on_state('error') " .. errors .. " times") end
+                if s.workers ~= nil or s.remote.worker_link ~= nil then error("the link was not cleared") end
+                if not wait_gone(spid, 2) then error("the scale worker is still running") end
+            end)
+            if s.workers == nil and link then
+                for _, p in ipairs({ link.decode.pid, link.scale.pid }) do
+                    if p then ffi.C.kill(p, 9); wait_gone(p, 2) end
+                end
+            end
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        check("workers_off_is_in_process", function()
+            local s, _, mpid = worker_session("wk_off", { encoding = "raw", pattern = "quadrants" }, false)
+            local ok = s.workers == nil and s.remote.worker_link == nil and s.sock ~= nil and s.proto ~= nil
+            local why = string.format("workers %s, sock %s, proto %s", tostring(s.workers), tostring(s.sock), tostring(s.proto))
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, why end
+            return true
+        end)
     end
 
     stop_all_mocks()

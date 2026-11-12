@@ -141,6 +141,8 @@ Creates a session. Nothing is opened until @{Session:connect} is called.
 --- @tparam[opt] function opts.on_update `(tm)` after every decoded FramebufferUpdate, with
 ---   `tm = { px, bytes, cpu, rects, t0 }`: the summed rect area (remote pixels), the bytes read,
 ---   the decode CPU seconds, the rect count and the `Session._now()` it started at
+--- @tparam[opt] boolean opts.worker_processes after the handshake, decode and scale in worker
+---   processes (@{vnc.workers}); the plane is then in shared memory
 ]]
 function Session.new(opts)
     assert(type(opts) == "table" and type(opts.profile) == "table", "Session.new: opts.profile is required")
@@ -174,6 +176,8 @@ function Session.new(opts)
         _connect_cb = nil,
         _network_mgr = opts.network_mgr,
         on_update = opts.on_update,
+        worker_processes = opts.worker_processes and true or false,
+        workers = nil,     -- the worker link (@{vnc.workers}) while they run
         -- true holds the incremental request that follows every update, like key input does
         hold_incremental = false,
         -- The remote area incremental requests ask for (see `set_view_area`); nil = the whole
@@ -292,6 +296,11 @@ function Session:connect(callback)
     end
 end
 
+--- The remote plane's options: shared memory when the workers will write it.
+function Session:_plane_opts()
+    return self.worker_processes and { shared = true } or nil
+end
+
 --- @treturn boolean true when the network manager reports a usable link (Wi-Fi up with a route),
 ---   the test KOReader's own NetworkMgr uses before it calls anyone back
 function Session:_link_up()
@@ -304,6 +313,12 @@ end
 function Session:_finish_connect(ok, err)
     local cb = self._connect_cb
     self._connect_cb = nil
+    if ok and self.worker_processes and not self.workers then
+        local pok, link, werr = pcall(function() return require("vnc/workers").start(self) end)
+        if not (pok and link) then
+            logger.warn("vnc: worker processes not started, decoding in-process:", pok and werr or link)
+        end
+    end
     if cb then
         local ok2, e = pcall(cb, ok, err)
         if not ok2 then logger.warn("vnc: connect callback failed:", e) end
@@ -403,7 +418,7 @@ function Session:_do_connect(attempt)
                     -- reconnect / fresh size: keep the object so the app's reference stays valid
                     self_ref.remote:resize(w, h)
                 else
-                    self_ref.remote = Remote.new(w, h)
+                    self_ref.remote = Remote.new(w, h, self_ref:_plane_opts())
                 end
                 self_ref:_apply_scaling()
                 self_ref:_set_state("connected")
@@ -438,7 +453,7 @@ function Session:_do_connect(attempt)
                 if self_ref.remote then
                     self_ref.remote:resize(w, h)
                 else
-                    self_ref.remote = Remote.new(w, h)
+                    self_ref.remote = Remote.new(w, h, self_ref:_plane_opts())
                 end
                 -- the area was in the old desktop's coordinates (and the view is re-fitted)
                 self_ref.view_area, self_ref.forced = nil, nil

@@ -18,6 +18,7 @@ remote pixels as sent.
 local BB = require("ffi/blitbuffer")
 local Renderer = require("vnc/renderer")
 local Scaler = require("vnc/scaler")
+local SharedMem = require("vnc/sharedmem")
 local Util = require("vnc/util")
 local time = require("ui/time")
 
@@ -32,14 +33,38 @@ Remote.MAX_STALE_RECTS = 1024
 -- each side (`Session.REQUEST_MARGIN` is this value).
 Remote.REQUEST_MARGIN = 0.25
 
+-- A plane of `w` x `h`: in shared memory (worker processes write and read it) for a shared remote.
+local function new_plane(self, w, h)
+    if self.shared then
+        local bytes = w * h * 3
+        local ptr = SharedMem.alloc(bytes)
+        self._plane_mem = { ptr = ptr, bytes = bytes }
+        return SharedMem.bb(ptr, w, h, BB.TYPE_BBRGB24)
+    end
+    return BB.new(w, h, BB.TYPE_BBRGB24)
+end
+
+local function free_plane(self)
+    if self._plane_mem then
+        SharedMem.free(self._plane_mem.ptr, self._plane_mem.bytes)
+        self._plane_mem = nil
+    elseif self.plane then
+        self.plane:free()
+    end
+    self.plane = nil
+end
+
 --[[--
 Creates a plane of `width` x `height` remote pixels.
 --- @tparam number width
 --- @tparam number height
+--- @tparam[opt] table opts `shared = true`: the plane lives in memory shared with forked
+---   worker processes (see @{vnc.workers})
 ]]
-function Remote.new(width, height)
+function Remote.new(width, height, opts)
     local self = setmetatable({
-        plane = BB.new(width, height, BB.TYPE_BBRGB24),
+        shared = opts and opts.shared or false,
+        plane = nil,
         w = width,
         h = height,
         scale = 1,
@@ -58,6 +83,7 @@ function Remote.new(width, height)
         last_recomputed_px = 0, -- canvas pixels the last draw_to rescaled
         last_blit_ms = nil,     -- the last draw_to's blit time, when it dithered
     }, Remote)
+    self.plane = new_plane(self, width, height)
     return self
 end
 
@@ -173,9 +199,8 @@ function Remote:resize(w, h)
     end
     -- Not left pointing at freed memory should the allocation fail (BB.new asserts): without a
     -- plane nothing draws or decodes. Freed first, so a big desktop never needs both at once.
-    if self.plane then self.plane:free() end
-    self.plane = nil
-    self.plane = BB.new(w, h, BB.TYPE_BBRGB24)
+    free_plane(self)
+    self.plane = new_plane(self, w, h)
     self.w, self.h = w, h
     self:mark_dirty()
     if self.cw and self.ch and self.cw > 0 and self.ch > 0 then
@@ -206,10 +231,7 @@ end
 --- Frees the plane and the canvas buffer.
 function Remote:free()
     self.renderer:free()
-    if self.plane then
-        self.plane:free()
-        self.plane = nil
-    end
+    free_plane(self)
 end
 
 --[[--

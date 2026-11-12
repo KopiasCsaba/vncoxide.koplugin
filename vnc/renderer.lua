@@ -4,8 +4,9 @@ buffer, the tone curve (contrast, invert) and the dithered copy.
 
 It owns the canvas buffer, the dithered buffer and the "filled for view" bookkeeping, and knows
 nothing of the viewer's geometry: the view, the stale rects and the size come in with every
-@{Renderer:render}. The canvas may live in memory given by the caller (`opts.canvas_mem`), e.g.
-shared memory a forked worker renders into.
+@{Renderer:render}. The picture (what @{Renderer:canvas} returns) may live in memory given by
+the caller (`opts.canvas_mem`), e.g. shared memory a forked worker renders into: the canvas
+buffer, or while dithering the dithered buffer (the canvas is then private).
 
 @module vnc.renderer
 ]]
@@ -35,6 +36,7 @@ function Renderer.new(opts)
         _lut = nil,         -- the tone curve for the scaler, nil at neutral
         _canvas_bb = nil,   -- persistent canvas-sized buffer holding the scaled view
         _dither_bb = nil,   -- the canvas buffer dithered (only while painting dithered)
+        _mem_dither = nil,  -- with canvas_mem: whether the dithered buffer is the one over it
         _dither_ok = false, -- _dither_bb matches _canvas_bb
         _dithered = false,  -- the last render was dithered: canvas() is _dither_bb
         _filled = nil,      -- what _canvas_bb was last fully computed for (view, size, mode)
@@ -51,14 +53,15 @@ end
 
 local function drop_canvas(self)
     if self._canvas_bb then
-        -- a canvas over caller-given memory is not ours to free
-        if not self.canvas_mem then self._canvas_bb:free() end
+        -- a buffer over caller-given memory is not ours to free
+        if not (self.canvas_mem and not self._mem_dither) then self._canvas_bb:free() end
         self._canvas_bb = nil
     end
     if self._dither_bb then
-        self._dither_bb:free()
+        if not (self.canvas_mem and self._mem_dither) then self._dither_bb:free() end
         self._dither_bb = nil
     end
+    self._mem_dither = nil
     self._dither_ok = false
     self._dithered = false
     self._filled = nil
@@ -85,16 +88,26 @@ Sets `last_recomputed_px` and, when dithering, `last_dither_ms`.
 function Renderer:render(plane, view, mode, cw, ch, btype, dither, stale_rects, all_stale)
     self.last_recomputed_px, self.last_dither_ms = 0, nil
     local canvas = self._canvas_bb
-    if not (canvas and canvas:getWidth() == cw and canvas:getHeight() == ch and canvas:getType() == btype) then
+    local mem = self.canvas_mem
+    dither = dither and true or false
+    if not (canvas and canvas:getWidth() == cw and canvas:getHeight() == ch and canvas:getType() == btype)
+            or (mem and self._mem_dither ~= dither) then
         drop_canvas(self)
-        local mem = self.canvas_mem
         if mem then
             local need = cw * ch * assert(BPP[btype], "unsupported canvas type")
             if need > mem.bytes then
                 error("vnc.renderer: a " .. cw .. "x" .. ch .. " canvas needs " .. need
                     .. " bytes, the canvas memory has " .. tostring(mem.bytes))
             end
-            canvas = SharedMem.bb(mem.ptr, cw, ch, btype)
+            -- the picture goes into the caller's memory: the dithered buffer while dithering
+            self._mem_dither = dither
+            if dither then
+                canvas = BB.new(cw, ch, btype)
+                self._dither_bb = SharedMem.bb(mem.ptr, cw, ch, btype)
+                self._dither_ok = false
+            else
+                canvas = SharedMem.bb(mem.ptr, cw, ch, btype)
+            end
         else
             canvas = BB.new(cw, ch, btype)
         end
@@ -122,6 +135,7 @@ function Renderer:render(plane, view, mode, cw, ch, btype, dither, stale_rects, 
             px = px + d.w * d.h
         end
         self.last_recomputed_px = px
+        if not rects[1] then rects = nil end -- (none of them is in the canvas: nothing changed)
     end
 
     if dither then

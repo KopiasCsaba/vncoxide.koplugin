@@ -152,6 +152,11 @@ local function close_others(keep)
     for _, fd in ipairs(fds) do C.close(fd) end
 end
 
+-- For workers with descriptors of their own (vnc.workers): a blocking write of a whole string
+-- (false when the other end is gone) and a read of up to `size` bytes ("" at EOF, nil on error).
+Worker.write_all = write_all
+Worker.read_some = read_some
+
 -- ------------------------------------------------------------------ child side
 
 local function stuck_forever()
