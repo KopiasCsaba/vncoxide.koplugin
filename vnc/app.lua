@@ -177,8 +177,8 @@ function ViewerApp:toggle_toolbar()
 end
 
 --[[--
-Folds the toolbar into its small round button (`on`), at the spot where its Collapse button was,
-or opens it again from there; stored (`toolbar_collapsed`, `toolbar_pos`). Repaints the area of both.
+Folds the toolbar into its small round button (`on`), or opens it again, at the spot `toolbar_pos`
+anchors it to (an expanded bar clamped leftwards does not move the anchor); stored (`toolbar_collapsed`, `toolbar_pos`). Repaints the area of both.
 ]]
 function ViewerApp:set_toolbar_collapsed(on)
     on = on and true or false
@@ -192,7 +192,7 @@ function ViewerApp:set_toolbar_collapsed(on)
     end
     local old = bar.dimen
     self.settings.toolbar_collapsed = on
-    bar:relayout({ x = old.x, y = old.y })
+    bar:relayout()
     self.plugin.settings:flush()
     if not self.toolbar_visible then return end
     local area = old:combine(bar.dimen)

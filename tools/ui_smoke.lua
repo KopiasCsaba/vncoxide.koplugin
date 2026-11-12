@@ -6023,6 +6023,33 @@ check("toolbar_long_press_shows_a_tooltip_and_does_nothing_else", function()
     close_viewer(app, remote)
 end)
 
+check("collapsing_a_bar_expanded_from_the_top_right_returns_it_there", function()
+    local app = new_app(400, 300, { toolbar = true })
+    local Size = require("ui/size")
+    app.settings.toolbar_pinned = { keyboard = false, scroll_lock = false } -- (nothing pinned: the round button)
+    app.settings.toolbar_pos = { x = 1, y = 0 }
+    app:set_toolbar_collapsed(true)
+    app:set_toolbar_collapsed(false)
+    app:set_toolbar_collapsed(true)
+    local d = app.toolbar.dimen
+    assert_true(app.toolbar.collapsed, "collapsed")
+    assert_true(d.x + d.w == Screen:getWidth() - Size.margin.default and d.y == Size.margin.default,
+        string.format("the round button is at the top right corner: %d,%d %dx%d", d.x, d.y, d.w, d.h))
+    local p = app.settings.toolbar_pos
+    assert_true(p.x == 1 and p.y == 0, "toolbar_pos is still top right")
+end)
+
+check("toggling_the_bar_keeps_a_dragged_position", function()
+    local app = new_app(400, 300, { toolbar = true })
+    app.settings.toolbar_pos = { x = 0.3, y = 0.5 }
+    app:set_toolbar_collapsed(true)
+    app:set_toolbar_collapsed(false)
+    app:set_toolbar_collapsed(true)
+    app:set_toolbar_collapsed(false)
+    local p = app.settings.toolbar_pos
+    assert_true(p.x == 0.3 and p.y == 0.5, "toolbar_pos unchanged: " .. tostring(p.x) .. "," .. tostring(p.y))
+end)
+
 check("toolbar_collapses_into_a_bubble_and_back", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     local Icons = require("vnc/icons")
@@ -6046,7 +6073,10 @@ check("toolbar_collapses_into_a_bubble_and_back", function()
     UIManager.setDirty = real_dirty
     local d = app.toolbar.dimen
     assert_true(app.toolbar.collapsed and app.settings.toolbar_collapsed == true, "collapsed and stored")
-    assert_true(d.x == bar.x and d.y == bar.y and d.w == d.h and d.w < bar.w, "a small round button where Collapse was")
+    local Size = require("ui/size")
+    local m = Size.margin.default
+    assert_true(d.x == m + math.floor(0.5 * (Screen:getWidth() - d.w - 2 * m) + 0.5) and d.y == m
+        and d.w == d.h and d.w < bar.w, "a small round button at the bar's anchor (top centre)")
     assert_true(#dirty == 1 and dirty[1].mode == "ui" and dirty[1].area:contains(bar), "a ui refresh of the old bar")
     assert_true(app.toolbar.button_by_id.more == nil and app.toolbar.button_by_id.toggle ~= nil, "just the bubble")
     -- the bubble is the toolbar: a tap on it never reaches the remote
@@ -6132,7 +6162,14 @@ check("toolbar_drags_and_stays_on_screen", function()
     assert_true(app.toolbar.dimen.x == b.x + 20 and app.toolbar.dimen.y == b.y + 100, "the bubble moves")
     assert_true(#sent.pointer == 0 and app.toolbar.collapsed, "and stays a bubble")
     tap_toolbar(app, "toggle")
-    assert_true(app.toolbar.dimen.x == b.x + 20 and app.toolbar.dimen.y == b.y + 100, "the bar opens at the bubble")
+    local pos = app.settings.toolbar_pos
+    local stored_pos = { x = pos.x, y = pos.y }
+    assert_true(not app.toolbar.collapsed and app.toolbar.dimen.y > b.y, "the bar opens at the bubble's anchor")
+    app:set_toolbar_collapsed(true)
+    assert_true(app.toolbar.dimen.x == b.x + 20 and app.toolbar.dimen.y == b.y + 100
+        and app.settings.toolbar_pos.x == stored_pos.x and app.settings.toolbar_pos.y == stored_pos.y,
+        "and folds back to where the bubble was dropped")
+    app:set_toolbar_collapsed(false)
     close_viewer(app, remote)
 end)
 
