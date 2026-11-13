@@ -148,8 +148,13 @@ local function axis_box(slot, n, v, s, len)
             if i1 - i0 + 1 > maxc then maxc = i1 - i0 + 1 end
         end
     end
+    -- the weights as doubles too, for the grey kernel's horizontal pass: there an accumulator times
+    -- a weight can exceed 2^31, and with int32 weights that is an overflow-checked integer multiply
+    -- on ARM (dual-number mode) whose guard fails on bright pixels, i.e. a side exit per pixel run
+    local wtd = ffi.new("double[?]", max(n * per, 1))
+    for i = 0, n * per - 1 do wtd[i] = wt[i] end
     a = { kind = "box", n = n, v = v, s = s, len = len, first = first, count = count,
-          off = off, tot = tot, wt = wt, lo = lo, hi = hi, maxc = maxc }
+          off = off, tot = tot, wt = wt, wtd = wtd, lo = lo, hi = hi, maxc = maxc }
     axis_cache[slot] = a
     return a
 end
@@ -393,7 +398,7 @@ end
 
 --- Into TYPE_BB8: the area average of the (x256) grey values, one accumulator per column.
 local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
-    local xf, xc, xo, xt, xwt = ax.first, ax.count, ax.off, ax.tot, ax.wt
+    local xf, xc, xo, xt, xwt, xwd = ax.first, ax.count, ax.off, ax.tot, ax.wt, ax.wtd
     local yf, yc, yo, yt, ywt = ay.first, ay.count, ay.off, ay.tot, ay.wt
     local sa, sb = xf[xa], xf[xb - 1] + xc[xb - 1] - 1
     -- at most 65280 * 256 * 21 (scale 0.05) per column: fits int32
@@ -401,38 +406,76 @@ local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
     local inv = scratch_buf("invX", "double", xb)
     for x = xa, xb - 1 do inv[x] = 1 / xt[x] end
     local three = ax.maxc <= 3
+    -- The last source row of a footprint is usually the first of the next one (footprints are
+    -- contiguous): its grey row is kept (`glast`, for source row `jlast`) and reused instead of
+    -- being converted again. Same integers summed, so the same result.
+    local glast = scratch_buf("greyLast", "int32_t", sb + 3)
+    local gnext = scratch_buf("greyNext", "int32_t", sb + 3)
+    local jlast = -1
+    local wl = lut and lut.w
     for y = ya, yb - 1 do
         -- vertical pass: weighted sum of the footprint's source rows, per source column
         local j0, oy, n = yf[y], yo[y], yc[y]
-        local wy = ywt[oy]
-        local r = sp + j0 * ss
-        if lut then
-            -- the curve on the floored grey, kept x256 (`lut.w`) like the plain grey
-            local w = lut.w
-            for i = sa, sb do
-                local o = i * 3
-                acc[i] = w[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)] * wy
-            end
-            for k = 1, n - 1 do
-                wy = ywt[oy + k]
-                r = sp + (j0 + k) * ss
-                for i = sa, sb do
-                    local o = i * 3
-                    acc[i] = acc[i] + w[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)] * wy
+        for k = 0, n - 1 do
+            local j, wy = j0 + k, ywt[oy + k]
+            if j == jlast then
+                if k == 0 then
+                    for i = sa, sb do acc[i] = glast[i] * wy end
+                else
+                    for i = sa, sb do acc[i] = acc[i] + glast[i] * wy end
                 end
-            end
-        else
-            for i = sa, sb do
-                local o = i * 3
-                acc[i] = (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
-            end
-            for k = 1, n - 1 do
-                wy = ywt[oy + k]
-                r = sp + (j0 + k) * ss
-                for i = sa, sb do
-                    local o = i * 3
-                    acc[i] = acc[i] + (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+            else
+                local r = sp + j * ss
+                local keep = k == n - 1 -- (may be the next footprint's first row)
+                if wl then
+                    if keep then
+                        for i = sa, sb do
+                            local o = i * 3
+                            local g = wl[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)]
+                            gnext[i] = g
+                            acc[i] = (k == 0 and 0 or acc[i]) + g * wy
+                        end
+                    elseif k == 0 then
+                        for i = sa, sb do
+                            local o = i * 3
+                            acc[i] = wl[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)] * wy
+                        end
+                    else
+                        for i = sa, sb do
+                            local o = i * 3
+                            acc[i] = acc[i] + wl[rshift(r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29, 8)] * wy
+                        end
+                    end
+                else
+                    if keep then
+                        if k == 0 then
+                            for i = sa, sb do
+                                local o = i * 3
+                                local g = r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29
+                                gnext[i] = g
+                                acc[i] = g * wy
+                            end
+                        else
+                            for i = sa, sb do
+                                local o = i * 3
+                                local g = r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29
+                                gnext[i] = g
+                                acc[i] = acc[i] + g * wy
+                            end
+                        end
+                    elseif k == 0 then
+                        for i = sa, sb do
+                            local o = i * 3
+                            acc[i] = (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+                        end
+                    else
+                        for i = sa, sb do
+                            local o = i * 3
+                            acc[i] = acc[i] + (r[o] * 77 + r[o + 1] * 150 + r[o + 2] * 29) * wy
+                        end
+                    end
                 end
+                if keep then glast, gnext, jlast = gnext, glast, j end
             end
         end
         -- horizontal pass
@@ -441,7 +484,7 @@ local function box_kernel_grey(dp, ds, sp, ss, ax, ay, xa, xb, ya, yb, lut)
         if three then
             for x = xa, xb - 1 do
                 local i0, ox = xf[x], xo[x]
-                out[x] = tobit((acc[i0] * xwt[ox] + acc[i0 + 1] * xwt[ox + 1] + acc[i0 + 2] * xwt[ox + 2])
+                out[x] = tobit((acc[i0] * xwd[ox] + acc[i0 + 1] * xwd[ox + 1] + acc[i0 + 2] * xwd[ox + 2])
                     * inv[x] * ity + FLOOR_BIAS)
             end
         else
