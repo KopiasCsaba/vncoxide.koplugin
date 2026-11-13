@@ -71,17 +71,17 @@ Settings.DEFAULTS = {
 --- is switched together; Brightness also needs a device with a frontlight.
 Settings.TOOLBAR_BUTTONS = {
     toggle = true, display = true, zoom = true, mode = true, keyboard = true, rotate = true,
-    scroll_lock = true, scroll_up = false, scroll_down = false, brightness = true, contrast = true,
+    scroll_up = false, scroll_down = false, brightness = true, contrast = true,
     invert = true,
 }
 
 --- The buttons that can stay on the collapsed toolbar (`toolbar_pinned`), in bar order: all but
 --- Collapse (it is the round button itself) and Close.
-Settings.TOOLBAR_PINNABLE = { "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up",
+Settings.TOOLBAR_PINNABLE = { "display", "zoom", "mode", "keyboard", "rotate", "scroll_up",
     "scroll_down", "brightness", "contrast", "invert", "more" }
 
 --- The buttons pinned to the collapsed toolbar by default (every other pinnable one is not).
-Settings.TOOLBAR_PINNED = { keyboard = true, scroll_lock = true }
+Settings.TOOLBAR_PINNED = { keyboard = true }
 
 --- Where the toolbar sits by default (see `toolbar_pos`).
 Settings.TOOLBAR_POS = { x = 0.5, y = 0 }

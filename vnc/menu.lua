@@ -305,7 +305,6 @@ function MenuBuilder.open(app)
         pinned_row(_("Mode"), { "mode" }),
         pinned_row(_("Keyboard"), { "keyboard" }),
         pinned_row(_("Rotate"), { "rotate" }),
-        pinned_row(_("Scroll lock"), { "scroll_lock" }),
         pinned_row(_("Scroll up/down"), { "scroll_up", "scroll_down" }),
     }
     if has_frontlight then collapsed_rows[#collapsed_rows + 1] = pinned_row(_("Brightness"), { "brightness" }) end
@@ -327,7 +326,6 @@ function MenuBuilder.open(app)
                     toolbar_row(_("Mode"), { "mode" }),
                     toolbar_row(_("Keyboard"), { "keyboard" }),
                     toolbar_row(_("Rotate"), { "rotate" }),
-                    toolbar_row(_("Scroll lock"), { "scroll_lock" }),
                     toolbar_row(_("Scroll up/down"), { "scroll_up", "scroll_down" }),
                     toolbar_row(_("Brightness"), { "brightness" }, {
                         help_text = has_frontlight and _("KOReader's frontlight dialog.")

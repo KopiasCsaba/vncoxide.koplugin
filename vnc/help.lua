@@ -1,6 +1,6 @@
 --[[--
 The help page's content: what the gestures do in each pointer mode, every toolbar button, the key
-strip, scroll lock, the display panel, the menu and the reconnect behaviour. `Help.ROWS` is the one
+strip, the display panel, the menu and the reconnect behaviour. `Help.ROWS` is the one
 source of the gesture rows; `Help.text(mode)` builds the whole page, the current mode's gestures
 first. Shown by `ViewerApp:open_help` in a TextViewer.
 
@@ -12,7 +12,7 @@ local _ = require("gettext")
 local Help = {}
 
 local COMMON = {
-    { _("Two-finger drag"), _("Move the picture (with scroll lock on: scroll)") },
+    { _("Two-finger drag"), _("Move the picture") },
     { _("Pinch / spread"), _("Zoom") },
     { _("Two-finger tap"), _("Fit to screen") },
     { _("Page buttons"), _("Page Up/Down or wheel") },
@@ -69,7 +69,6 @@ function Help.text(mode)
             "  " .. _("Mode: switch between Touch and Mouse mode."),
             "  " .. _("Keyboard: show or hide the on-screen keyboard with the key strip; closes the Send keys panel if it is open. The viewer opens with the keyboard as you last left it. Drag the button out onto the picture to click a field and type: where you let go it left-clicks (Mouse mode: the pointer moves there first) and shows the keyboard; let go anywhere else and nothing happens."),
             "  " .. _("Rotate: turn the screen a quarter turn clockwise; the viewer remembers the orientation."),
-            "  " .. _("Scroll lock: while on, a two-finger drag scrolls and does not move the picture (see below)."),
             "  " .. _("Scroll up / down: mouse-wheel notches (hidden by default)."),
             "  " .. _("Brightness: KOReader's frontlight dialog; only on devices with a frontlight."),
             "  " .. _("Contrast: the contrast of the remote picture as drawn here (50% to 300%), remembered."),
@@ -84,9 +83,6 @@ function Help.text(mode)
 
         _("SEND KEYS PANEL"),
         "  " .. _("Its top row is the key strip's, except for its first two buttons: X (closes the panel) and the keyboard icon (back to the on-screen keyboard and its strip; armed modifiers stay armed). Below it: tabs Keys, Hotkeys (Ctrl+Z/X/C/V/A/S/F/W, Alt+Tab, Alt+F4, Lock = Super+L, Ctrl+Alt+Del, each sent exactly as named) and F1\u{2013}F12, recently sent combos and Release all. Modifiers only (Keys tab) sends just the armed modifiers (Super on its own). The Keyboard button closes the panel too."),
-
-        _("SCROLL LOCK"),
-        "  " .. _("A toolbar toggle. While it is on, a two-finger drag scrolls instead of moving the picture: the content follows your fingers, and a sideways drag scrolls horizontally. Pinch still zooms. It starts off each time the viewer opens."),
 
         _("DISPLAY PANEL"),
         "  " .. _("Zoom (Fit screen, Fit (with keyboard), 25% to 400%), Smooth or Sharp scaling, screen orientation, picture quality (changing it reconnects), and the pointer speed for Mouse mode."),

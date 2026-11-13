@@ -12,8 +12,7 @@ the same spot; a tap on that brings the bar back), Display (the display panel), 
 1:1 -> the user's own pinch/pan view -> fit, see `ViewerApp:cycle_zoom`; its icon shows the current
 state: `zoom.page`, the plugin's `zoom-1to1`, `zoom.manual`), Mode (Touch/Mouse, the label shows the
 current one), Keyboard (shows or hides the on-screen keyboard with the key strip, or closes the
-"Send keys" panel), Rotate, Scroll lock (a toggle, drawn inverted while on: a two-finger drag
-scrolls the remote), Scroll up/down, Brightness (KOReader's frontlight dialog; only on a device with
+"Send keys" panel), Rotate, Scroll up/down, Brightness (KOReader's frontlight dialog; only on a device with
 a frontlight), Contrast (the contrast dialog, @{vnc.contrastdialog}), Invert (a toggle, drawn inverted
 while on: the remote picture drawn inverted), Close (disconnect, after a
 confirmation) and More (the menu). All but Close and More can be hidden (`toolbar_buttons`, the
@@ -58,7 +57,7 @@ local Toolbar = InputContainer:extend{
     app = nil, -- the @{vnc.app} instance
 }
 
-Toolbar.IDS = { "toggle", "display", "zoom", "mode", "keyboard", "rotate", "scroll_lock", "scroll_up", "scroll_down",
+Toolbar.IDS = { "toggle", "display", "zoom", "mode", "keyboard", "rotate", "scroll_up", "scroll_down",
     "brightness", "contrast", "invert", "close", "more" }
 
 --- The long-press tooltip of each button; `expand` is the round button's.
@@ -70,7 +69,6 @@ Toolbar.TIPS = {
     mode = _("Pointer mode: touch or mouse"),
     keyboard = _("Keyboard (drag onto a field to click it and type)"),
     rotate = _("Rotate the screen"),
-    scroll_lock = _("Scroll lock: two-finger drag scrolls the remote"),
     scroll_up = _("Scroll up"),
     scroll_down = _("Scroll down"),
     brightness = _("Frontlight"),
@@ -132,11 +130,6 @@ local function specs(app)
             callback = function() app:toggle_keyboard() end,
         },
         rotate = { icon = "appbar.rotation", callback = function() app:rotate(1) end },
-        scroll_lock = {
-            icon_file = Icons.path("scroll-lock"),
-            selected = app.scroll_lock,
-            callback = function() app:toggle_scroll_lock() end,
-        },
         scroll_up = { icon = "move.up", callback = function() app:scroll_wheel(-1, 1) end },
         scroll_down = { icon = "move.down", callback = function() app:scroll_wheel(1, 1) end },
         brightness = { icon_file = Icons.path("brightness"), callback = function() app:open_frontlight_dialog() end },
@@ -243,8 +236,8 @@ function Toolbar:_stored_pos()
 end
 
 --[[--
-Rebuilds the bar (or the round button while collapsed) for the current screen size, pointer mode,
-scroll lock and button settings. It goes where `toolbar_pos` says, or with `at` (a point) at that
+Rebuilds the bar (or the round button while collapsed) for the current screen size, pointer mode
+and button settings. It goes where `toolbar_pos` says, or with `at` (a point) at that
 spot on the screen, clamped, which is then stored as the new `toolbar_pos` (not flushed).
 ]]
 function Toolbar:relayout(at)

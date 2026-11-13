@@ -100,25 +100,23 @@ after a rotation) for the next time. Its buttons, left to right:
 6. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
    Display panel: a pinch never turns the screen.) The viewer remembers the orientation you last
    used and opens in it, unless **Match orientation to the remote screen** (see below) turns it.
-7. **Scroll lock** is a toggle, drawn inverted while on; it starts off each time the viewer opens.
-   While it is on, a two-finger drag scrolls the remote instead of moving the picture (see below).
-8. **Scroll up / down** send one wheel notch each. Hidden by default.
-9. **Brightness** (a sun) opens KOReader's own frontlight dialog. Only on devices with a frontlight.
-10. **Contrast** opens a small dialog under the toolbar (above it when the bar sits low) with a
+7. **Scroll up / down** send one wheel notch each. Hidden by default.
+8. **Brightness** (a sun) opens KOReader's own frontlight dialog. Only on devices with a frontlight.
+9. **Contrast** opens a small dialog under the toolbar (above it when the bar sits low) with a
     stepped bar (50 % … 300 %, 100 % is the picture as the server sends it, marked as the default).
     It changes the contrast of the remote picture as it is drawn on this screen (a stretch around
     mid grey; the remote desktop is not touched), at once and without a new picture from the
     server, and is remembered. ✕, Back, a tap outside or the button close it. Shown by default.
-11. **Invert** (a circle, left half black) draws the remote picture inverted, light for dark. It is a
+10. **Invert** (a circle, left half black) draws the remote picture inverted, light for dark. It is a
     toggle, drawn inverted while on, and is remembered. Only the picture is inverted (not the toolbar,
     keyboard or dialogs), as a tone curve on this screen: the remote desktop is not touched. Shown by default.
-12. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
-13. **⋯** opens the menu (below).
+11. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
+12. **⋯** opens the menu (below).
 
 **⋯ › Toolbar buttons… › On the toolbar…** switches each button but Close and **⋯** on or off (one
 row for the scroll pair); **⋯** always stays, as on a device without keys it is the only way to the
 menu. **⋯ › Toolbar buttons… › Also when collapsed…** picks buttons that stay next to the round button
-when the toolbar is collapsed (Keyboard and Scroll lock by default): collapsing leaves a short bar of
+when the toolbar is collapsed (Keyboard by default): collapsing leaves a short bar of
 the expand button and those; with none ticked it is the round button alone. Only buttons the toolbar shows can stay (the others
 are greyed out there).
 
@@ -129,7 +127,7 @@ are greyed out there).
 | one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed) |
 | tap, then drag | not used (a plain drag already drags) | drag with the left button held from the pointer |
 | tap, then long press | right click at the finger (the tap clicked first) | hold the left button at the pointer: moving drags, lifting lets go |
-| two-finger drag | pan the view (with **scroll lock** on: scroll the remote, see below): the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
+| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
 | two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |
 | two-finger long press | on lifting: left click at the fingers' midpoint, then the on-screen keyboard (as the **⌨** drag does); moving the fingers first cancels it | left click at the pointer, then the keyboard |
@@ -155,13 +153,6 @@ The end of a drag or long press is the viewer's wherever the finger lifts: over 
 arrive, the button is let go as soon as the finger that started it is off the screen, and opening
 the menu, the display panel or the help ends a drag first. Every button press and release sent is
 written to KOReader's debug log (`vnc-pointer: <buttons> <x> <y> <reason>`).
-
-**Scroll lock.** With the toolbar's scroll lock on, a two-finger drag, and the quick flick that
-ends one, sends mouse-wheel notches instead of panning: one notch per tenth of the screen height
-(sideways: of the width) the fingers travel. The content follows the fingers, as on a phone:
-fingers up scroll down, fingers left scroll right (horizontal wheel). The notches go to the pointer
-in Mouse mode and to the fingers in Touch mode. Pinch still zooms and a two-finger tap still fits.
-Switching it on or off in the middle of a drag ends that drag.
 
 A tap is *always* a click on the remote, everywhere outside the bar, so there is never a dead spot
 on the screen. With a physical keyboard, the **Menu** key (F1 on KOReader's own keymap) opens the
@@ -379,7 +370,7 @@ return {
         -- all of them but Scroll up/down (Brightness only on devices with a frontlight)
         ["toolbar_buttons"] = { ["scroll_up"] = true, ["scroll_down"] = true, ["rotate"] = false },
         ["toolbar_collapsed"] = false,     -- the toolbar is folded into its round button
-        ["toolbar_pinned"] = { ["rotate"] = true }, -- buttons kept beside it while collapsed, only those switched (default: Keyboard, Scroll lock)
+        ["toolbar_pinned"] = { ["rotate"] = true }, -- buttons kept beside it while collapsed, only those switched (default: Keyboard)
         ["toolbar_pos"] = { ["x"] = 0.5, ["y"] = 0 }, -- where it sits: fractions of the free space (0.5, 0 = top centre)
         ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
         ["remote_invert"] = false,         -- the remote picture drawn inverted (the toolbar's Invert button)
