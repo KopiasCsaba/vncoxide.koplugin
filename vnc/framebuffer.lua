@@ -405,6 +405,15 @@ function Remote:_send_view(link, cw, ch, btype, dither, srot, sinv)
     return geom
 end
 
+local plain_bb = nil
+--- Whether KOReader's blit into `bb` (inverted) ignores its invert flag: its C blitter takes the
+--- pair regardless (KOReader on Android), so the old blit stores plain values.
+function Remote._blit_ignores_inverse(bb)
+    if bb:getInverse() == 0 then return false end
+    plain_bb = plain_bb or BB.new(1, 1, BB.TYPE_BB8)
+    return bb:canUseCbbTogether(plain_bb) and true or false
+end
+
 --[[--
 Draws the view into `bb` at `(cx, cy)`, using a canvas of `cw` x `ch`.
 
@@ -446,7 +455,12 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
         -- worker (which does the rotating blit on its own core): the blit here is then a plain
         -- copy of physical rows. Only for a destination of the canvas type itself.
         local srot, sinv = 0, 0
-        if bb:getType() == btype and not Remote.NO_NATIVE then srot, sinv = bb:getRotation(), bb:getInverse() end
+        if bb:getType() == btype and not Remote.NO_NATIVE then
+            srot, sinv = bb:getRotation(), bb:getInverse()
+            -- (where KOReader's blit ignores the flag, e.g. on Android, whose framebuffer inverts
+            -- on flip, the screen buffer holds plain values)
+            if sinv == 1 and Remote._blit_ignores_inverse(bb) then sinv = 0 end
+        end
         local geom = self:_send_view(link, cw, ch, btype, dither, srot, sinv)
         -- the in-process canvas buffer is out of date: should the workers stop, the next paint
         -- here recomputes all of it
@@ -474,7 +488,12 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
         if srot ~= 0 or sinv ~= 0 then
             -- unrotated, uninverted view of the destination's memory, and the canvas' physical rect
             local px, py, ppw, pph = bb:getPhysicalRect(cx, cy, cw, ch)
-            local view = BB.new(bb.w, bb.h, btype, bb.data, bb.stride, bb.pixel_stride)
+            local view = link.screen_view
+            if not (view and view.data == bb.data and view.stride == bb.stride and view.pixel_stride == bb.pixel_stride
+                    and view.w == bb.w and view.h == bb.h and view:getType() == btype) then
+                view = BB.new(bb.w, bb.h, btype, bb.data, bb.stride, bb.pixel_stride)
+                link.screen_view = view
+            end
             view:blitFrom(cb, px, py, 0, 0, ppw, pph)
         else
             bb:blitFrom(cb, cx, cy, 0, 0, cw, ch)

@@ -9035,34 +9035,35 @@ local function physical_helpers(env)
         end
         env.session:_poll_workers()
     end
-    --- Paints the canvas into `target` until the scale worker has rendered it. `native = false`:
-    --- the old path (`Remote.NO_NATIVE`). Returns the `G` line sent and how many views of the
-    --- target's memory the final paint made (1 on the physical-layout path, 0 on the old one).
+    --- Paints the canvas into `target` until the scale worker has rendered it, then once more.
+    --- `native = false`: the old path (`Remote.NO_NATIVE`). Returns the `G` line sent and how many
+    --- views of the target's memory all the paints made (1 on the physical-layout path, which
+    --- keeps it, 0 on the old one).
     function h.paint(target, cx, cy, cw, ch, dither, native)
         local Remote = require("vnc/framebuffer")
         Remote.NO_NATIVE = not native or nil
         local n0 = #h.sent
+        link.screen_view = nil   -- (a freed target's memory may come back for the next one)
+        local views, real_new = 0, bb.new
+        bb.new = function(w, hh, t, data, ...)
+            if data ~= nil and data == target.data then views = views + 1 end
+            return real_new(w, hh, t, data, ...)
+        end
         local ok, err = pcall(function()
             remote:draw_to(target, cx, cy, cw, ch, dither)
             h.wait_answer()
+            remote:draw_to(target, cx, cy, cw, ch, dither)
+            remote:draw_to(target, cx, cy, cw, ch, dither)
         end)
-        local views, real_new = 0, bb.new
-        if ok then
-            bb.new = function(w, hh, t, data, ...)
-                if data ~= nil and data == target.data then views = views + 1 end
-                return real_new(w, hh, t, data, ...)
-            end
-            ok, err = pcall(remote.draw_to, remote, target, cx, cy, cw, ch, dither)
-            bb.new = real_new
-        end
+        bb.new = real_new
         Remote.NO_NATIVE = nil
         if not ok then error(err, 0) end
         return h.sent[#h.sent] ~= h.sent[n0] and h.sent[#h.sent] or nil, views
     end
     --- A buffer of `pw` x `ph` physical pixels, rotation `rot`, inverted or not, holding a pattern
-    --- (so a paint outside its canvas shows).
-    function h.target(btype, pw, ph, rot, inv)
-        local t = bb.new(pw, ph, btype)
+    --- (so a paint outside its canvas shows); `stride`, `pixel_stride` as for `bb.new`.
+    function h.target(btype, pw, ph, rot, inv, stride, pixel_stride)
+        local t = bb.new(pw, ph, btype, nil, stride, pixel_stride)
         for y = 0, ph - 1 do
             for x = 0, pw - 1 do t:setPixel(x, y, bb.Color8((x * 7 + y * 3) % 256)) end
         end
@@ -9080,9 +9081,11 @@ local function physical_helpers(env)
         local pb, sb = bytes_of(b)
         for y = 0, tonumber(a.h) - 1 do
             local ra, rb = pa + y * sa, pb + y * sb
-            for x = 0, tonumber(a.w) * bpp - 1 do
+            -- (a padded row's tail too: nothing may be written past the width)
+            for x = 0, math.min(sa, sb) - 1 do
                 if ra[x] ~= rb[x] then
-                    return string.format("physical (%d,%d): %d, expected %d", math.floor(x / bpp), y, ra[x], rb[x])
+                    return string.format("physical (%d,%d) byte %d: %d, expected %d", math.floor(x / bpp), y, x % bpp,
+                        ra[x], rb[x])
                 end
             end
         end
@@ -9119,18 +9122,30 @@ check("worker_canvas_in_the_screens_physical_layout_matches_the_old_paint", func
                 { "BB8", bb.TYPE_BB8, false }, { "BB8 dithered", bb.TYPE_BB8, true },
                 { "RGB32", bb.TYPE_BBRGB32, false }, { "RGB24", bb.TYPE_BBRGB24, false },
             }
+            -- row layouts: packed; padded rows; padded rows with pixel_stride the width (as
+            -- PocketBook's framebuffer is set up)
+            local BPP = { [bb.TYPE_BB8] = 1, [bb.TYPE_BBRGB24] = 3, [bb.TYPE_BBRGB32] = 4 }
+            local layouts = {
+                { "", function() return nil, nil end },
+                { " padded", function(t) return (PW + 9) * BPP[t], PW + 9 end },
+                { " scanline", function(t) return (PW + 9) * BPP[t] + 2, PW end },
+            }
             for _, k in ipairs(kinds) do
                 for rot = 0, 3 do
                     for _, inv in ipairs({ false, true }) do
+                        for li, lay in ipairs(layouts) do
                         for _, offset in ipairs({ false, true }) do
-                            local what = string.format("%s rot %d%s%s", k[1], rot, inv and " inverted" or "",
+                          -- (the other layouts: one kind each way of rotation, all inversions)
+                          if li == 1 or ((k[1] == "BB8" or k[1] == "RGB32") and (rot == 0 or rot == 1)) then
+                            local what = string.format("%s%s rot %d%s%s", k[1], lay[1], rot, inv and " inverted" or "",
                                 offset and " offset canvas" or "")
+                            local stride, pstride = lay[2](k[2])
                             local lw, lh = PW, PH
                             if rot % 2 == 1 then lw, lh = PH, PW end
                             local cx, cy, cw, ch = 0, 0, lw, lh
                             if offset then cx, cy, cw, ch = 13, 7, lw - 31, lh - 22 end
-                            local old = h.target(k[2], PW, PH, rot, inv)
-                            local new = h.target(k[2], PW, PH, rot, inv)
+                            local old = h.target(k[2], PW, PH, rot, inv, stride, pstride)
+                            local new = h.target(k[2], PW, PH, rot, inv, stride, pstride)
                             local g_old, v_old = h.paint(old, cx, cy, cw, ch, k[3], false)
                             local g_new, v_new = h.paint(new, cx, cy, cw, ch, k[3], true)
                             local plain = rot == 0 and not inv
@@ -9151,6 +9166,8 @@ check("worker_canvas_in_the_screens_physical_layout_matches_the_old_paint", func
                             local bad = h.mem_diff(new, old)
                             old:free(); new:free()
                             assert_true(bad == nil, what .. ": " .. tostring(bad))
+                          end
+                        end
                         end
                     end
                 end
@@ -9205,18 +9222,31 @@ check("a_screen_rotation_or_inversion_change_never_blits_the_old_layout", functi
 end)
 
 check("night_mode_viewer_paints_what_the_old_path_paints", function()
-    -- the real viewer over an inverted, upside-down screen buffer (same logical size)
+    -- The real viewer over inverted and turned screen buffers of the same logical size: the
+    -- emulator's own, and BB8 ones (rotations 1 and 3 over a buffer of the turned shape).
     with_worker_viewer("wk_phys_night", function(env)
         local Remote = require("vnc/framebuffer")
         local h = physical_helpers(env)
-        local sbb = Screen.bb
+        local sbb, sdither = Screen.bb, Screen.sw_dithering
         local rot0, inv0 = sbb:getRotation(), sbb:getInverse()
+        local lw, lh = sbb:getWidth(), sbb:getHeight()
         local ok, err = pcall(function()
             local app = env.app
-            for _, st in ipairs({ { 0, 1 }, { 2, 0 }, { 2, 1 } }) do
-                local what = string.format("screen rot %d inverse %d", st[1], st[2])
-                sbb:setRotation(st[1])
-                sbb:setInverse(st[2])
+            local screens = {
+                { "screen", 0, 1 }, { "screen", 2, 0 }, { "screen", 2, 1 },
+                { "BB8", 1, 0 }, { "BB8", 1, 1 }, { "BB8", 3, 1 }, { "BB8", 0, 1, true }, { "BB8", 3, 0, true },
+            }
+            for _, st in ipairs(screens) do
+                local what = string.format("%s rot %d inverse %d%s", st[1], st[2], st[3], st[4] and " dithered" or "")
+                local target = sbb
+                if st[1] == "BB8" then
+                    if st[2] % 2 == 1 then target = bb.new(lh, lw, bb.TYPE_BB8) else target = bb.new(lw, lh, bb.TYPE_BB8) end
+                    Screen.bb = target
+                end
+                Screen.sw_dithering = st[4] or sdither
+                target:setRotation(st[2])
+                target:setInverse(st[3])
+                assert_true(target:getWidth() == lw and target:getHeight() == lh, what .. ": another logical size")
                 local function painted(native)
                     Remote.NO_NATIVE = not native or nil
                     local link = env.session.workers
@@ -9229,21 +9259,72 @@ check("night_mode_viewer_paints_what_the_old_path_paints", function()
                     UIManager:forceRePaint()
                     Remote.NO_NATIVE = nil
                     assert_true(done, what .. ": no render")
-                    return h.snapshot(sbb), link.view_key
+                    return h.snapshot(target), link.view_key
                 end
                 local old, k_old = painted(false)
                 local new, k_new = painted(true)
-                local tail = string.format(" %d %d", st[1], st[2])
-                assert_true(k_new:sub(-#tail) == tail and k_old:sub(-#tail) ~= tail,
-                    what .. ": views " .. k_old .. " / " .. k_new)
+                local tail = string.format(" %d %d", st[2], st[3])
+                assert_true(k_new == k_old .. tail, what .. ": views " .. k_old .. " / " .. k_new)
+                assert_true(not st[4] or k_new:find(" 1 %a+ %S+ [01] %d %d$"), what .. ": not dithered: " .. k_new)
+                assert_true(h.distinct(target, 0, 0, lw, lh) > 3, what .. ": a screen of few colours")
                 local bad = h.mem_diff(new, old)
                 old:free(); new:free()
+                Screen.bb = sbb
+                if target ~= sbb then target:free() end
                 assert_true(bad == nil, what .. ": " .. tostring(bad))
             end
         end)
         Remote.NO_NATIVE = nil
+        Screen.bb, Screen.sw_dithering = sbb, sdither
         sbb:setRotation(rot0)
         sbb:setInverse(inv0)
+        h.restore()
+        if not ok then error(err, 0) end
+    end, "gradient")
+end)
+
+check("an_inversion_the_blitter_ignores_stays_plain", function()
+    -- KOReader on Android: its C blitter takes every pair, the invert flag is ignored (the screen
+    -- buffer holds plain values, the framebuffer inverts on flip)
+    local Remote = require("vnc/framebuffer")
+    local fake = function(inv, cbb)
+        return { getInverse = function() return inv end, canUseCbbTogether = function() return cbb end }
+    end
+    assert_true(Remote._blit_ignores_inverse(fake(1, true)) == true, "a C blit of an inverted pair")
+    assert_true(Remote._blit_ignores_inverse(fake(1, false)) == false, "the Lua blit honours the flag")
+    assert_true(Remote._blit_ignores_inverse(fake(0, true)) == false, "not inverted")
+    local inv = bb.new(4, 4, bb.TYPE_BB8)
+    inv:setInverse(1)
+    assert_true(Remote._blit_ignores_inverse(inv) == (os.getenv("IS_ANDROID") ~= nil and bb:getUseCBB()),
+        "this KOReader's blitter")
+    inv:free()
+    with_worker_viewer("wk_phys_android", function(env)
+        local h = physical_helpers(env)
+        local real = Remote._blit_ignores_inverse
+        Remote._blit_ignores_inverse = function() return true end
+        local ok, err = pcall(function()
+            local PW, PH = 170, 124
+            for rot = 0, 3 do
+                for _, t in ipairs({ bb.TYPE_BB8, bb.TYPE_BBRGB32 }) do
+                    local what = string.format("type %d rot %d", t, rot)
+                    local lw, lh = PW, PH
+                    if rot % 2 == 1 then lw, lh = PH, PW end
+                    local cx, cy, cw, ch = 9, 5, lw - 20, lh - 13
+                    local plain = h.target(t, PW, PH, rot, false)
+                    h.paint(plain, cx, cy, cw, ch, false, false)
+                    -- the same physical memory, flagged inverted
+                    local night = h.target(t, PW, PH, rot, true)
+                    local g = h.paint(night, cx, cy, cw, ch, false, true)
+                    local tail = string.format(" %d 1", rot)
+                    assert_true(not g or g:sub(-#tail) ~= tail, what .. ": sent the inversion: " .. tostring(g))
+                    -- (unrotated, the old blit: on this KOReader it honours the flag, on Android not)
+                    local bad = rot ~= 0 and h.mem_diff(night, plain) or nil
+                    plain:free(); night:free()
+                    assert_true(bad == nil, what .. ": " .. tostring(bad))
+                end
+            end
+        end)
+        Remote._blit_ignores_inverse = real
         h.restore()
         if not ok then error(err, 0) end
     end, "gradient")

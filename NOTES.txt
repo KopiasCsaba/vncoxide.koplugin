@@ -216,6 +216,11 @@ Workers._to_physical blits (rotating, invertblitFrom for inversion) into the sha
 screen's physical layout; the UI then copies it through an unrotated, uninverted view of the screen
 memory at bb:getPhysicalRect(canvas), a straight row copy. An unrotated, uninverted screen and a G
 without the tail take the plain layout as before; Remote.NO_NATIVE (tests) forces the old path.
+Cost: in physical mode the scale worker keeps a second, private canvas (~2 MB BB8 at 1680x1264,
+~8.5 MB RGB32) besides the shared one. Where KOReader's blit ignores the invert flag (its C
+blitter takes every pair: Android, whose framebuffer inverts on flip, so the screen buffer holds
+plain values) the tail says sinv 0 (Remote._blit_ignores_inverse). The UI's unrotated view of the
+screen memory is kept on the link (link.screen_view) while the buffer's memory and layout stay.
 Resize: the plane is the UI's and a worker cannot change its size, so on a new desktop size the
 decode worker sends Z and exits before decoding anything of the new size; the UI then reconnects
 (a fresh handshake and fresh workers). A DesktopSize of the plane's own size is no resize: the
