@@ -209,6 +209,7 @@ just dropped (a long press tells why), the connection list (**Connections…**, 
 buttons send** (Page Up/Down keys or Mouse wheel),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
+**Decode in background processes** (default off: on a multi-core reader the picture is decoded and scaled in separate processes, so the interface stays responsive while a big update arrives; applies from the next connection, and the connection falls back to the normal way if the processes cannot start),
 **Toolbar buttons…** (above), **Help** and **Leave (keep connection)**. Rows that switch something
 on or off show ✓ or - and keep the menu open; anything else closes it.
 

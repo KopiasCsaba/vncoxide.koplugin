@@ -2032,6 +2032,61 @@ check("keep_screen_on_pauses_auto_suspend_while_shown", function()
     share.pause_auto_suspend = saved
 end)
 
+check("worker_switch_round_trips", function()
+    local app, remote = new_app()
+    local s = app.plugin.settings.data.settings
+    assert_true(require("vnc/settings").DEFAULTS.worker_processes == false, "off by default")
+    s.worker_processes = false
+    local flushed = 0
+    app.plugin.settings.flush = function() flushed = flushed + 1 end
+    local menu = app:open_menu()
+    local function entry() return find_item(menu.item_table, "Decode in background processes") end
+    assert_true(entry().mandatory == "-", "off shows -")
+    assert_true(entry().help_text == "Faster on multi-core readers. Applies from the next connection.", "help text")
+    menu:onMenuSelect(entry()); UIManager:_checkTasks()
+    assert_true(s.worker_processes == true and flushed == 1, "toggled on and flushed")
+    assert_true(entry().mandatory == "✓", "on shows the check")
+    menu:onMenuSelect(entry()); UIManager:_checkTasks()
+    assert_true(s.worker_processes == false and flushed == 2, "toggled off and flushed")
+    assert_true(entry().mandatory == "-", "off shows - again")
+    app:close_menu()
+    -- a hand-edited junk value is cleaned to the default
+    local path = data_dir .. "/ui_smoke_workers.lua"; os.remove(path)
+    local f = io.open(path, "w"); f:write('return { settings = { worker_processes = "yes" } }'); f:close()
+    local st = require("vnc/settings").open(path)
+    assert_true(st.data.settings.worker_processes == false, "junk cleans to false")
+    os.remove(path)
+    remote:free()
+end)
+
+check("new_connections_use_the_setting", function()
+    local Session = require("vnc/session")
+    local real_new = Session.new
+    local seen = {}
+    Session.new = function(opts) seen[#seen + 1] = opts.worker_processes; return real_new(opts) end
+    local saved = store:get_setting("worker_processes")
+    plugin.sessions = {}
+    plugin.app = nil
+    local ok, err = pcall(function()
+        for _, on in ipairs{ true, false } do
+            store:set_setting("worker_processes", on)
+            plugin.sessions = {}
+            plugin:connect_profile("dead")
+            settle_connects(plugin)
+            assert_true(seen[#seen] == on, "connect_profile passes the setting " .. tostring(on) .. ": " .. tostring(seen[#seen]))
+        end
+    end)
+    Session.new = real_new
+    store:set_setting("worker_processes", saved)
+    store:flush()
+    plugin.sessions = {}
+    UIManager._window_stack = {}
+    if not ok then error(err, 0) end
+    -- the benchmark builds its own sessions and never asks for workers
+    local f = assert(io.open(plugin_dir .. "/vnc/benchmark.lua")); local src = f:read("*a"); f:close()
+    assert_true(not src:find("worker_processes", 1, true), "benchmark sessions stay in-process")
+end)
+
 check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
     local app, remote = new_app()
     local s = app.plugin.settings.data.settings
@@ -3879,7 +3934,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text end
     assert_true(table.concat(order, "|") == "Connections…|Refresh|"
-        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Toolbar buttons…|Help|Leave (keep connection)",
+        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Decode in background processes|Toolbar buttons…|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app.send_text == nil and app.send_combo == nil, "send_text and send_combo are gone with their rows")

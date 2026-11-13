@@ -181,6 +181,31 @@ re-reads the setting (Session:_apply_scaling) whenever it creates or resizes its
 VNC:save_profile still points the live session at the saved profile, and connect_profile at the
 reloaded one.
 
+Worker processes. Setting `worker_processes` (default off; menu "Decode in background processes";
+read by VNC:connect_profile when it creates a session, so it applies from the next connection).
+With it on, Session.new{ worker_processes = true } makes the session, after the RFB handshake,
+fork (vnc/worker.lua) two processes (vnc/workers.lua): a decode worker, which inherits the socket
+and the protocol state and decodes updates into the remote plane, and a scale worker, which scales
+the visible part of the plane into the canvas. The UI process keeps the keyboard/pointer/view
+logic, the e-ink refresh and the paint. Plane and canvas are MAP_SHARED memory (vnc/sharedmem.lua);
+the pipes carry only small messages, so a big update no longer blocks the UI thread for its decode
+and scale. vnc/renderer.lua holds the scaling the in-process path shares. Messages (the table in
+vnc/workers.lua's header is the source):
+  UI -> decode    K <keysym> <0|1>; P <x> <y> <mask>; V <x> <y> <w> <h> | V -; F; N <what>;
+                  T <len> + bytes (cut text); S (detached: stop reading); R (attached: resume); Q
+  decode -> UI    H <pid>; Z <w> <h> (desktop resized; the worker exits after); B (bell);
+                  E <message> (error; exits after)
+  decode -> scale D <x> <y> <w> <h> [...] (plane rects fully written)
+  UI -> scale     G <id> <scale> <view_x> <view_y> <cw> <ch> <btype> <dither> <mode> <contrast>
+                  <invert> (the view; latest wins); Q
+  scale -> UI     H <pid>; C <id> full | C <id> <x> <y> <w> <h> [...] (canvas rects of view <id>);
+                  E <message> (a render failed; exits after)
+Resize: the plane is the UI's and a worker cannot change its size, so on a new desktop size the
+decode worker sends Z and exits before decoding anything of the new size; the UI then reconnects
+(a fresh handshake and fresh workers). If the workers cannot start (no link), the session carries
+on in-process. What stays in-process: the picture benchmark (vnc/benchmark.lua creates its own
+sessions without the flag; a test asserts it) and the plugin's own VNC server (vnc/server.lua).
+
 Picture benchmark. vnc/benchmark.lua measures combinations (see its header); the UI is
 Dialogs.picture_benchmark, behind "Find fastest picture settings" in the per-connection dialog:
 intro ConfirmBox (Start/Cancel) -> a non-dismissable ButtonDialog whose title shows

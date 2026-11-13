@@ -356,7 +356,10 @@ function VNC:connect_profile(name, on_failure)
 
     local session = self.sessions[name]
     if not session then
-        session = Session.new{ profile = profile }
+        session = Session.new{
+            profile = profile,
+            worker_processes = self.settings:get_setting("worker_processes") == true,
+        }
         self.sessions[name] = session
     else
         session:set_profile(profile)
