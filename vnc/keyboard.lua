@@ -20,6 +20,9 @@ local Keyboard = {}
 
 --- Seconds between two Backspaces while the keyboard's Backspace key is held.
 Keyboard.REPEAT_INTERVAL = 0.1
+--- Ticks after which a repeat whose finger cannot be followed stops anyway (10 s), so that a lost
+--- release can never make it repeat forever.
+Keyboard.REPEAT_UNTRACKED_MAX = 100
 
 -- Saved G_reader_settings values while a keyboard created here is alive.
 local saved_layout = nil
@@ -129,18 +132,23 @@ ends, like a PC key. Each one is a whole press (down and up), so nothing is ever
 remote; the plugin repeats, not the remote's own auto-repeat. The hold ends with the next gesture
 reaching the keyboard (the lift's hold_release first of all), with the keyboard closing, with
 @{Keyboard.stop_repeat} (the viewer closing, the connection dropping), or - when that lift went
-elsewhere - once GestureDetector no longer has the finger down.
+elsewhere - once GestureDetector no longer has the finger down; a finger that cannot be followed
+stops it after REPEAT_UNTRACKED_MAX repeats.
 ]]
 function Keyboard._start_repeat(vk, rep, send)
     local UIManager = require("ui/uimanager")
     UIManager:unschedule(rep.task)
-    -- the finger that held the key: the one down nearest to where the hold was
-    local best, best_d
+    -- the finger that held the key: the one down nearest to where the hold was; none when that
+    -- cannot be told (several fingers down and no distance to go by)
+    local best, best_d, unplaced = nil, nil, 0
     for _i, f in ipairs(Util.fingers_down() or {}) do
         local d = (rep.hold_pos and f.start) and rep.hold_pos:distance(f.start) or math.huge
+        if d == math.huge then unplaced = unplaced + 1 end
         if not best or d < best_d then best, best_d = f, d end
     end
+    if best and best_d == math.huge and unplaced > 1 then best = nil end
     rep.finger = best and { slot = best.slot, contact = best.contact } or nil
+    rep.untracked_ticks = 0
     rep.running = true
     send(Keysyms.special.Backspace)
     -- (sending may have ended it: a popup or the session going)
@@ -152,6 +160,13 @@ function Keyboard._repeat_tick(vk, rep, send)
     if not vk.visible or Util.finger_still_down(rep.finger) == false then
         Keyboard.stop_repeat(vk, vk.visible and "finger up, release lost" or "keyboard hidden")
         return
+    end
+    if not rep.finger then
+        rep.untracked_ticks = (rep.untracked_ticks or 0) + 1
+        if rep.untracked_ticks > Keyboard.REPEAT_UNTRACKED_MAX then
+            Keyboard.stop_repeat(vk, "untracked repeat cap")
+            return
+        end
     end
     send(Keysyms.special.Backspace)
     if rep.running then require("ui/uimanager"):scheduleIn(Keyboard.REPEAT_INTERVAL, rep.task) end

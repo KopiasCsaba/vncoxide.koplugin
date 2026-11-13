@@ -5731,6 +5731,38 @@ check("held_backspace_stops_with_the_keyboard_viewer_or_session", function()
     end
 end)
 
+check("untracked_backspace_repeat_stops_after_10_s", function()
+    local Keyboard = require("vnc/keyboard")
+    assert_true(Keyboard.REPEAT_UNTRACKED_MAX == 100, "the cap is 100 ticks (10 s)")
+    local gd = Device.input.gesture_detector
+    for _, case in ipairs{ "no finger", "two fingers, no start" } do
+        local app, remote, pos, wire = backspace_setup()
+        if case ~= "no finger" then
+            gd.active_contacts[7] = { slot = 7, down = true }
+            gd.active_contacts[8] = { slot = 8, down = true }
+        end
+        dispatch_gesture{ ges = "hold", pos = pos }
+        assert_true(app.vk.vnc_backspace_repeat.finger == nil, case .. ": no finger is tracked")
+        repeat_ticks(app, 100, case)
+        local got, n = wire(), 0
+        for _ in got:gmatch("%+0xFF08,%-0xFF08") do n = n + 1 end
+        assert_true(n == 101, case .. ": 1 + 100 Backspaces, got " .. n)
+        run_scheduled(repeat_task(app))
+        assert_true(wire() == "", case .. ": the tick after the cap sends nothing")
+        assert_true(scheduled_delay(repeat_task(app)) == nil, case .. ": and stops")
+        -- a tracked hold is not capped
+        gd.active_contacts[7], gd.active_contacts[8] = nil, nil
+        local lift = finger_down(pos)
+        dispatch_gesture{ ges = "hold", pos = pos }
+        repeat_ticks(app, 101, case .. ", tracked")
+        assert_true(scheduled_delay(repeat_task(app)) ~= nil, case .. ": a tracked hold keeps repeating")
+        dispatch_gesture{ ges = "hold_release", pos = pos }
+        lift()
+        wire()
+        close_viewer(app, remote)
+    end
+end)
+
 check("held_backspace_leaves_nothing_down_and_takes_armed_modifiers_once", function()
     local app, remote, pos, wire = backspace_setup{ toolbar = true }
     app:set_toolbar_visible(false)
