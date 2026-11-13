@@ -84,6 +84,10 @@ PxFmt.channel_lut = channel_lut
 -- value v (in host order), cached per channel layout (at most 192 KiB for 16 bpp).
 local pixel_luts = {}
 local function pixel_lut(fmt, size)
+    -- remembered on the format table too: the shared-table key below is a table and a string per
+    -- call, and the decoders convert row by row (and tile by tile)
+    local own = fmt._pixel_lut
+    if own and own.size == size then return own.lut end
     local key = table.concat({ size, fmt.red_max, fmt.green_max, fmt.blue_max,
         fmt.red_shift, fmt.green_shift, fmt.blue_shift }, ",")
     local lut = pixel_luts[key]
@@ -98,6 +102,7 @@ local function pixel_lut(fmt, size)
         end
         pixel_luts[key] = lut
     end
+    fmt._pixel_lut = { size = size, lut = lut }
     return lut
 end
 PxFmt.pixel_lut = pixel_lut
