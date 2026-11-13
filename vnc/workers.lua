@@ -307,6 +307,7 @@ function Link:poll()
             if session.app and session.app.on_bell then session.app:on_bell() end
         elseif op == "E" then
             err = l:sub(3)
+            if err == "" then err = "worker process exited" end
         elseif op == "Z" then
             resized = l
         end
@@ -318,6 +319,7 @@ function Link:poll()
             out[#out + 1] = l
         elseif l:sub(1, 1) == "E" and not err then
             err = l:sub(3)
+            if err == "" then err = "worker process exited" end
         end
     end
     gone = gone or eof

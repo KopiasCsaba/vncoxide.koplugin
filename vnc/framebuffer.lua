@@ -378,22 +378,25 @@ end
 local CANVAS_TYPES = { [BB.TYPE_BB8] = true, [BB.TYPE_BBRGB24] = true, [BB.TYPE_BBRGB32] = true }
 
 --[[--
-Worker mode: sends the view to the scale worker as `G <id> ...` unless it is the one last sent,
-and keeps `link.canvas_bb`, the shared canvas memory seen as a `cw` x `ch` buffer of `btype`.
+Worker mode: sends the view to the scale worker as `G <id> ...` unless it is the one last sent.
+Each view id's canvas geometry (`"cw ch btype"`) is kept in `link.view_geoms`; the session sets
+`link.canvas_geom` to the geometry of the last view the scale worker reported (`C`), i.e. the
+layout the shared canvas memory holds.
+--- @treturn string the geometry this paint needs
 ]]
 function Remote:_send_view(link, cw, ch, btype, dither)
     local v = self:_render_view()
     local key = string.format("%.17g %.17g %.17g %d %d %d %d %s %.17g %d", v.scale, v.x, v.y, cw, ch,
         btype, dither and 1 or 0, self.scaling, self.contrast, self.invert and 1 or 0)
+    local geom = string.format("%d %d %d", cw, ch, btype)
     if key ~= link.view_key then
         link.view_id = (link.view_id or 0) + 1
         link.view_key, link.view_cw, link.view_ch = key, cw, ch
+        link.view_geoms = link.view_geoms or {}
+        link.view_geoms[link.view_id] = geom
         link.scale:send("G " .. link.view_id .. " " .. key)
     end
-    local cb = link.canvas_bb
-    if not (cb and cb:getWidth() == cw and cb:getHeight() == ch and cb:getType() == btype) then
-        link.canvas_bb = SharedMem.bb(link.canvas_mem.ptr, cw, ch, btype)
-    end
+    return geom
 end
 
 --[[--
@@ -433,12 +436,29 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
     if not CANVAS_TYPES[btype] then btype = BB.TYPE_BBRGB24 end
     local link = self.worker_link
     if link then
-        self:_send_view(link, cw, ch, btype, dither)
-        bb:blitFrom(link.canvas_bb, cx, cy, 0, 0, cw, ch)
+        local geom = self:_send_view(link, cw, ch, btype, dither)
         -- the in-process canvas buffer is out of date: should the workers stop, the next paint
         -- here recomputes all of it
         self._all_stale = true
         if #self._stale > 0 then self._stale = {} end
+        if link.canvas_geom ~= geom then
+            -- The shared memory still holds a render of another size or type: read with this
+            -- geometry it would be garbage. The canvas area keeps what the screen shows (black
+            -- when nothing was drawn there yet) until the scale worker's `C` for this geometry
+            -- makes the session repaint it.
+            if not self._canvas_painted then
+                bb:paintRect(cx, cy, cw, ch, BB.COLOR_BLACK)
+                self._canvas_painted = true
+            end
+            return true
+        end
+        local cb = link.canvas_bb
+        if not (cb and cb:getWidth() == cw and cb:getHeight() == ch and cb:getType() == btype) then
+            cb = SharedMem.bb(link.canvas_mem.ptr, cw, ch, btype)
+            link.canvas_bb = cb
+        end
+        bb:blitFrom(cb, cx, cy, 0, 0, cw, ch)
+        self._canvas_painted = true
         return true
     end
     local renderer = self.renderer

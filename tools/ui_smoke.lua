@@ -8354,6 +8354,49 @@ check("pan_does_not_scale_on_the_ui_thread", function()
     end)
 end)
 
+check("a_new_canvas_size_never_blits_the_old_render", function()
+    with_worker_viewer("wk_geom", function(env)
+        local app = env.app
+        local dimen = app.dimen
+        local ok, err = pcall(function()
+            local bad
+            assert_true(env.pump(function() bad = env.shows("quadrants"); return bad == nil end, 10),
+                "the panel never showed the remote: " .. tostring(bad))
+            local before = app.canvas
+            local probes = {}
+            for i = 0, 6 do
+                for j = 0, 6 do
+                    local x = before.x + math.floor((before.w - 1) * (2 * i + 1) / 14)
+                    local y = before.y + math.floor((before.h - 1) * (2 * j + 1) / 14)
+                    probes[#probes + 1] = { x = x, y = y, v = pixel_at(Screen.bb, x, y) }
+                end
+            end
+            -- A narrower canvas (as a side panel would leave): another row stride than the render
+            -- the shared memory holds. Painted before the scale worker's answer is polled.
+            app.dimen = Geom:new{ x = dimen.x, y = dimen.y, w = dimen.w - 120, h = dimen.h }
+            app:update_canvas()
+            UIManager:setDirty(app, "ui")
+            UIManager:forceRePaint()
+            local after = app.canvas
+            assert_true(after.w == before.w - 120, "the canvas did not narrow: " .. after.w)
+            local inside, changed = 0, 0
+            for _, p in ipairs(probes) do
+                if p.x >= after.x and p.x < after.x + after.w and p.y >= after.y and p.y < after.y + after.h then
+                    inside = inside + 1
+                    if pixel_at(Screen.bb, p.x, p.y) ~= p.v then changed = changed + 1 end
+                end
+            end
+            assert_true(inside >= 10, "too few probes inside the new canvas: " .. inside)
+            assert_true(changed == 0, changed .. " of " .. inside .. " probe(s) painted before the new render")
+            assert_true(env.pump(function() bad = env.shows("quadrants"); return bad == nil end, 10),
+                "the panel never showed the new render: " .. tostring(bad))
+        end)
+        app.dimen = dimen
+        app:update_canvas()
+        if not ok then error(err, 0) end
+    end)
+end)
+
 check("closing_a_dialog_mid_render_leaves_no_remnant", function()
     local ConfirmBox = require("ui/widget/confirmbox")
     with_worker_viewer("wk_dialog", function(env)

@@ -139,7 +139,9 @@ Creates a session. Nothing is opened until @{Session:connect} is called.
 --- @tparam table opts
 --- @tparam table opts.profile connection profile (see @{vnc.settings})
 --- @tparam[opt] table opts.plugin the plugin instance
---- @tparam[opt] function opts.on_state `(state, err)` on every transition
+--- @tparam[opt] function opts.on_state `(state, err)` on every transition (one exception: in
+---   worker mode a desktop resize reconnects, which goes connected → connecting → connected
+---   without a "disconnected" in between, see `_reconnect_resized`)
 --- @tparam[opt] table opts.network_mgr override the network manager (tests)
 --- @tparam[opt] function opts.on_update `(tm)` after every decoded FramebufferUpdate, with
 ---   `tm = { px, bytes, cpu, rects, t0 }`: the summed rect area (remote pixels), the bytes read,
@@ -900,9 +902,18 @@ function Session:_poll_workers()
     local out = link:poll()
     local current = link.view_id and tostring(link.view_id)
     local rects, full, rw, rh
+    local geoms = link.view_geoms
     for _, l in ipairs(out) do
         if l:sub(1, 2) == "C " then
             local id, rest = l:match("^C (%d+) (.*)$")
+            -- (the shared canvas now holds a render of this view's geometry, whatever its id)
+            local n = tonumber(id)
+            if n and geoms and geoms[n] then
+                link.canvas_geom = geoms[n]
+                for k in pairs(geoms) do
+                    if k < n then geoms[k] = nil end
+                end
+            end
             if id and id == current and not full then
                 if rest == "full" then
                     full = true

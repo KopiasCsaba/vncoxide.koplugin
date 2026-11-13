@@ -523,7 +523,7 @@ local function wait_canvas(env, shows, pattern, timeout)
     end, timeout)
     return bad
 end
-local function proxy_session(env, name, mock)
+local function proxy_session(env, name, mock, network_mgr)
     local Session = load_session()
     require("vnc/workers").canvas_bytes = function() return 400 * 400 * 4 end
     mock.name = name
@@ -532,7 +532,7 @@ local function proxy_session(env, name, mock)
     local s = Session.new{
         profile = { host = "127.0.0.1", port = port, password = "", name = name },
         worker_processes = true,
-        network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        network_mgr = network_mgr or { isWifiOn = function() return true end, turnOffWifi = function() end },
         on_state = function(st) states[#states + 1] = st end,
     }
     local connected, cerr
@@ -4491,6 +4491,30 @@ local function main()
             return true
         end)
 
+        -- A bare `E` (no text) still fails the session with a message.
+        check("bare_worker_error_says_the_worker_exited", function()
+            local s, _, mpid = worker_session("wk_bare_e", { encoding = "raw", pattern = "quadrants" })
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                link_pids(link)
+                local real = link.decode.poll
+                link.decode.poll = function(h) local _ = real(h); return { "E" }, false end
+                link:poll()
+                link.decode.poll = real
+                if s:get_state() ~= "error" then error("state " .. tostring(s:get_state())) end
+                if s:get_error() ~= "worker process exited" then error("error " .. string.format("%q", tostring(s:get_error()))) end
+            end)
+            for _, p in ipairs({ link and link.decode.pid, link and link.scale.pid }) do
+                if p then ffi.C.kill(p, 9); wait_gone(p, 2) end
+            end
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
         -- A render that fails in the scale worker reaches the session as its error.
         check("scale_render_error_is_a_session_error", function()
             local s, states, mpid = worker_session("wk_render_err", { encoding = "raw", pattern = "quadrants" })
@@ -4677,6 +4701,36 @@ local function main()
             env.finish()
             stop_mock(mpid)
             if not ok then return nil, err end
+            return true
+        end)
+
+        -- Wi-Fi this session turned on stays its duty across the resize reconnect: a hangup
+        -- afterwards turns it off, once.
+        check("desktop_resize_reconnect_keeps_the_wifi_duty", function()
+            local env = proxy_env()
+            local s, mpid
+            local offs = 0
+            local ok, err = pcall(function()
+                s, mpid = proxy_session(env, "wk_resize_wifi", { encoding = "raw", pattern = "quadrants",
+                    resize_after = 2, resize_once = true, persist = true },
+                    { isWifiOn = function() return true end, turnOffWifi = function() offs = offs + 1 end })
+                s.wifi_was_on = false -- (as if this session had turned Wi-Fi on)
+                local first, app = s.workers, proxy_app()
+                s:attach(app)
+                if not env.run_until(function()
+                    return app.resized > 0 and s.workers ~= nil and s.workers ~= first
+                end, 10) then
+                    error("no reconnect: state " .. tostring(s:get_state()) .. " " .. tostring(s:get_error()))
+                end
+                if offs ~= 0 then error("the reconnect turned Wi-Fi off " .. offs .. " time(s)") end
+                s:hangup()
+                if offs ~= 1 then error("the hangup turned Wi-Fi off " .. offs .. " time(s), expected once") end
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            if offs ~= 1 then return nil, "turnOffWifi ran " .. offs .. " times in all" end
             return true
         end)
 
