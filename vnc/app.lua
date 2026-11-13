@@ -977,8 +977,9 @@ function ViewerApp:_hold_confirm_due()
     self:_hold_confirmed()
 end
 
---- A pending long press is genuine: it acts now - a right click, or (Mouse mode, a tap pending
---- near it) a left-button drag. Nothing when the canvas got covered meanwhile.
+--- A pending long press is genuine: it acts now (`_hold_act`) - it waits for its lift or its
+--- first move, or (Mouse mode, a tap pending near it) is a left-button drag. Nothing when the
+--- canvas got covered meanwhile.
 function ViewerApp:_hold_confirmed()
     local pending = self._hold_pending
     self._hold_pending = nil
@@ -1039,7 +1040,21 @@ function ViewerApp:_false_hold_followed_by(start, kind)
     return nil
 end
 
---- What a confirmed long press does (the pending record `p`: `pos`, `mode`).
+--[[--
+The kinds of a confirmed long press of ours (`_hold_active`): "touch_wait" / "mouse_wait" - nothing
+sent yet, its lift is a right click (`onHoldRelease`), its first move a left-button drag
+(`onHoldPan`); "touch_drag" - the left button down, it follows the finger; "mouse_drag" - the left
+button down, the finger moves the pointer (`_mouse_move`).
+]]
+local function hold_waits(kind) return kind == "touch_wait" or kind == "mouse_wait" end
+--- Whether a long press of kind `kind` acts at the Mouse-mode pointer (moved relatively), not at the finger.
+local function hold_on_pointer(kind) return kind == "mouse_wait" or kind == "mouse_drag" end
+
+--[[--
+What a confirmed long press does (the pending record `p`: `pos`, `mode`): nothing yet - it waits
+for its lift, a right click there, or its first move, a left-button drag (see `hold_waits`).
+Mouse mode, a tap pending near it: a left-button drag at once (`_mouse_hold_drag`).
+]]
 function ViewerApp:_hold_act(p)
     self._last_touch_tap = nil
     local ges = { ges = "hold", pos = p.pos }
@@ -1049,19 +1064,33 @@ function ViewerApp:_hold_act(p)
     end
     if mouse then self:_flush_deferred_click() end
     self:_end_stale_pointer_action()
-    local rx, ry
-    if mouse then
-        rx, ry = self:_mouse_pointer_px()
-    else
-        rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
-    end
-    -- a long press is a right click: the armed modifiers go with it, like with a tap
-    self:_press_armed()
-    self:send_pointer(rx, ry, 4, "hold start")
-    self._hold_active = mouse and "mouse" or true
-    self:_pointer_action_changed()
+    self._hold_active = mouse and "mouse_wait" or "touch_wait"
+    self._hold_pos = ges.pos
     self:_watch_release(ges.pos)
     return true
+end
+
+--- Where a long press of ours acts (remote pixels): the Mouse-mode pointer, or where its finger
+--- came down.
+function ViewerApp:_hold_spot(kind)
+    if hold_on_pointer(kind) then return self:_mouse_pointer_px() end
+    return self:_to_remote(self._hold_pos.x, self._hold_pos.y)
+end
+
+--- A waiting long press moves: the left button goes down where it acts, with the armed modifiers,
+--- and it is a drag from now on.
+function ViewerApp:_hold_drag_start()
+    local kind = self._hold_active
+    local x, y = self:_hold_spot(kind)
+    self:_press_armed()
+    self:send_pointer(x, y, 1, "hold drag start")
+    if hold_on_pointer(kind) then
+        self._hold_active = "mouse_drag"
+        self._mouse_rel = { x = 0, y = 0 }
+    else
+        self._hold_active = "touch_drag"
+    end
+    self:_pointer_action_changed()
 end
 
 --[[--
@@ -1083,8 +1112,8 @@ function ViewerApp:_mouse_hold_drag(ges)
 end
 
 --[[--
-A long press that moves: drags the pointer during a Mouse-mode tap-then-hold drag. A long press
-of ours ends instead
+A long press that moves: a waiting one becomes a left-button drag (`_hold_drag_start`), and a drag
+follows the finger (Touch mode) or moves the pointer (Mouse mode). A long press of ours ends instead
 - under a popup that is not ours (as a pan stops reaching us there, the drag must not go on
   blind), and
 - when it is really two fingers: GestureDetector reports a two-finger pan seen in hold state as a
@@ -1114,8 +1143,13 @@ function ViewerApp:onHoldPan(_, ges)
         self:_end_pointer_action("two-finger gesture")
         return true
     end
-    if self._hold_active ~= "mouse_drag" then return nil end
-    self:_mouse_move(ges.relative, 1)
+    if hold_waits(self._hold_active) then self:_hold_drag_start() end
+    if self._hold_active == "mouse_drag" then
+        self:_mouse_move(ges.relative, 1)
+    else
+        local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
+        self:send_pointer(rx, ry, 1)
+    end
     return true
 end
 
@@ -1253,9 +1287,12 @@ function ViewerApp:drop_keyboard_at(pos)
     return true
 end
 
---- Lets go of the right click a long press of ours started - also when a popup came up on top in
---- the meantime or the finger lifted over the key panel: the button and the modifiers it took
---- would otherwise stay down on the remote.
+--[[--
+The lift of a long press of ours. One that never moved is a right click now, where it acts
+(`_hold_spot`) - nothing under a popup that is not ours. A drag lets go of the button (at the
+finger, or the Mouse-mode pointer) and the modifiers it took - also when a popup came up on top in
+the meantime or the finger lifted over the key panel: they would otherwise stay down on the remote.
+]]
 function ViewerApp:onHoldRelease(_, ges)
     local pending = self._hold_pending
     if pending then
@@ -1275,16 +1312,33 @@ function ViewerApp:onHoldRelease(_, ges)
         UIManager:scheduleIn(self.FALSE_HOLD_FOLLOW, self._false_hold_task)
         return true
     end
-    if not self._hold_active then return nil end
+    local kind = self._hold_active
+    if not kind then return nil end
+    if hold_waits(kind) then
+        self._hold_active = nil
+        if not self:_input_target() then
+            self._hold_pos = nil
+            logger.dbg("vnc-hold:", "lifted under a popup: no right click")
+            return true
+        end
+        local x, y = self:_hold_spot(kind)
+        self._hold_pos = nil
+        -- a right click: the armed modifiers go with it, like with a tap
+        self:_press_armed()
+        self:send_pointer(x, y, 4, "hold start")
+        self:send_pointer(x, y, 0, "hold end")
+        self:_release_action_mods()
+        return true
+    end
     local rx, ry
-    if self._hold_active == "mouse" or self._hold_active == "mouse_drag" then
+    if hold_on_pointer(kind) then
         rx, ry = self._pointer_x, self._pointer_y -- (Mouse mode: the finger is not the pointer)
     else
         rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     end
-    local reason = self._hold_active == "mouse_drag" and "hold drag end" or "hold end"
     self._hold_active = nil
-    self:send_pointer(rx, ry, 0, reason)
+    self._hold_pos = nil
+    self:send_pointer(rx, ry, 0, "hold drag end")
     self:_release_action_mods()
     self:_pointer_action_changed()
     return true
@@ -1301,9 +1355,12 @@ function ViewerApp:_end_pointer_action(reason)
     self._last_touch_tap = nil
     self._mouse_moving = nil
     if self._drag_active or self._hold_active then
+        -- (a long press still waiting has nothing down)
+        local pressed = self._drag_active or not hold_waits(self._hold_active)
         self._drag_active = nil
         self._hold_active = nil
-        if self._pointer_x then
+        self._hold_pos = nil
+        if pressed and self._pointer_x then
             self:send_pointer(self._pointer_x, self._pointer_y, 0, reason or "end_pointer_action")
         end
     end
@@ -1588,7 +1645,8 @@ end
 --- Whether a canvas action still holds something down on the remote: a drag's or long press's
 --- button, or the modifiers it took.
 function ViewerApp:has_pointer_action()
-    return (self._drag_active or self._hold_active or self._action_mods) and true or false
+    return (self._drag_active or (self._hold_active and not hold_waits(self._hold_active))
+        or self._action_mods) and true or false
 end
 
 --- A drag or long press began or ended: the key panel's "Release all" follows.

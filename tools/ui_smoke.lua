@@ -4231,6 +4231,8 @@ check("key_panel_long_press_ending_over_the_panel_releases_its_modifiers", funct
         local on_panel = Geom:new{ x = 20, y = panel.dimen.y + math.floor(panel.dimen.h / 2) }
         dispatch_gesture{ ges = "hold", pos = above }
         confirm_hold(app)
+        -- it moves: a left-button drag, the modifiers down with it
+        dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = 20, y = 40 }, relative = { x = 0, y = 20 } }
         local message
         if case == "under a message" then
             message = InfoMessage:new{ text = "busy" }
@@ -4240,8 +4242,9 @@ check("key_panel_long_press_ending_over_the_panel_releases_its_modifiers", funct
         dispatch_gesture{ ges = "hold_pan", pos = on_panel, relative = { x = 0, y = on_panel.y - 20 } }
         dispatch_gesture{ ges = "hold_release", pos = on_panel }
         local got = wire()
-        assert_true(got == "+0xFFE3,+0xFFE9,p4,p0,-0xFFE9,-0xFFE3",
-            case .. ": the right click and its modifiers are let go, got " .. got)
+        local want = case == "under a message" and "+0xFFE3,+0xFFE9,p1,p1,p0,-0xFFE9,-0xFFE3"
+            or "+0xFFE3,+0xFFE9,p1,p1,p1,p0,-0xFFE9,-0xFFE3"
+        assert_true(got == want, case .. ": the drag's button and its modifiers are let go, got " .. got)
         if message then UIManager:close(message) end
         close_viewer(app, remote)
         assert_true(wire() == "", case .. ": nothing more later")
@@ -4293,7 +4296,8 @@ check("stale_drag_is_ended_before_the_next_action_or_key", function()
         hold = function(app) app:onHold(nil, { pos = Geom:new{ x = 40, y = 30 } }); confirm_hold(app) end,
         key = function(app) app:send_key(0x61, true) end,
     }
-    local expected = { tap = "p0,-0xFFE1,p0,p1,p0", hold = "p0,-0xFFE1,p4", key = "p0,-0xFFE1,+0x61" }
+    -- (a confirmed long press sends nothing until it lifts or moves)
+    local expected = { tap = "p0,-0xFFE1,p0,p1,p0", hold = "p0,-0xFFE1", key = "p0,-0xFFE1,+0x61" }
     for name, act in pairs(actions) do
         local app, remote = new_app()
         local panel = open_key_panel(app)
@@ -4360,16 +4364,17 @@ check("key_panel_quick_drag_does_not_keep_the_next_gesture", function()
 end)
 
 check("key_panel_release_all_ends_a_pending_drag_or_long_press", function()
-    for _, case in ipairs({ "Shift+drag", "drag", "long press" }) do
+    for _, case in ipairs({ "Shift+drag", "drag", "long press drag" }) do
         local app, remote = new_app()
         local panel = open_key_panel(app)
         local wire = wire_log(app)
         if case == "Shift+drag" then touch(panel, "mod:Shift") end
         UIManager:forceRePaint()
         wire()
-        if case == "long press" then
+        if case == "long press drag" then
             dispatch_gesture{ ges = "hold", pos = Geom:new{ x = 20, y = 20 } }
             confirm_hold(app)
+            dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
         else
             dispatch_gesture{ ges = "pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
         end
@@ -4548,7 +4553,7 @@ check("key_panel_close_paths_release_everything", function()
 end)
 
 check("leaving_the_viewer_mid_drag_lets_go_of_the_button", function()
-    for _, case in ipairs({ "drag", "long press" }) do
+    for _, case in ipairs({ "drag", "long press drag" }) do
         local app, remote = new_app()
         local wire = wire_log(app)
         if case == "drag" then
@@ -4556,6 +4561,7 @@ check("leaving_the_viewer_mid_drag_lets_go_of_the_button", function()
         else
             dispatch_gesture{ ges = "hold", pos = Geom:new{ x = 20, y = 20 } }
             confirm_hold(app)
+            dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = 40, y = 30 }, relative = { x = 20, y = 10 } }
         end
         wire()
         UIManager:close(app)
@@ -5348,12 +5354,12 @@ check("mouse_long_press_right_clicks_at_the_pointer", function()
     local far = Geom:new{ x = c.x + 5, y = c.y + 5 }
     dispatch_gesture{ ges = "hold", pos = far }
     confirm_hold(app)
-    local e = last_pointer(sent)
-    assert_true(#sent.pointer == 1 and e.mask == 4 and e.x == 200 and e.y == 150,
-        "a right press at the pointer, got " .. #sent.pointer .. " event(s)")
+    assert_true(#sent.pointer == 0, "nothing before the lift, got " .. #sent.pointer .. " event(s)")
     dispatch_gesture{ ges = "hold_release", pos = far }
+    local e = sent.pointer[1]
+    assert_true(#sent.pointer == 2 and e.mask == 4 and e.x == 200 and e.y == 150, "a right press at the pointer")
     e = last_pointer(sent)
-    assert_true(#sent.pointer == 2 and e.mask == 0 and e.x == 200 and e.y == 150, "released at the pointer")
+    assert_true(e.mask == 0 and e.x == 200 and e.y == 150, "released at the pointer")
     assert_true(app:has_pointer_action() == false)
     close_viewer(app, remote)
 end)
@@ -5434,6 +5440,162 @@ local function finger_down(pos, slot)
     gd.active_contacts[slot] = { slot = slot, down = true, initial_tev = { x = pos.x, y = pos.y } }
     return function() gd.active_contacts[slot] = nil end
 end
+
+--[[ The one long-press rule (Touch and Mouse mode): a confirmed long press sends nothing yet. Lifted
+without moving it is a right click, sent at the lift - Touch mode where the finger pressed, Mouse
+mode at the pointer; moved (a hold_pan) it is a left-button drag - Touch mode from the finger,
+following it, Mouse mode from the pointer, moving it relatively. ]]
+local function long_press_spot(app, mode, P)
+    if mode == "mouse" then return 200, 150 end
+    return app:_to_remote(P.x, P.y)
+end
+
+check("long_press_lift_is_a_right_click", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 50, y = c.y + 60 }
+        dispatch_gesture{ ges = "hold", pos = P }
+        confirm_hold(app)
+        assert_true(wire() == "", mode .. ": nothing sent at the confirmation")
+        assert_true(app._hold_active == mode .. "_wait", mode .. ": waiting: " .. tostring(app._hold_active))
+        dispatch_gesture{ ges = "hold_release", pos = P }
+        local got = wire()
+        assert_true(got == "p4,p0", mode .. ": a right click at the lift: " .. got)
+        local x, y = long_press_spot(app, mode, P)
+        for _, e in ipairs(sent.pointer) do
+            assert_true(e.x == x and e.y == y, mode .. string.format(": at (%d,%d), got (%d,%d)", x, y, e.x, e.y))
+        end
+        assert_true(not app:has_pointer_action() and app._hold_active == nil, mode .. ": nothing held")
+        close_viewer(app, remote)
+    end
+end)
+
+check("long_press_with_jitter_is_a_right_click", function()
+    -- a drift under GestureDetector's pan threshold makes no hold_pan: the lift is just elsewhere
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 50, y = c.y + 60 }
+        dispatch_gesture{ ges = "hold", pos = P }
+        confirm_hold(app)
+        dispatch_gesture{ ges = "hold_release", pos = Geom:new{ x = P.x + 4, y = P.y - 3 } }
+        local got = wire()
+        assert_true(got == "p4,p0", mode .. ": still a right click: " .. got)
+        local x, y = long_press_spot(app, mode, P)
+        for _, e in ipairs(sent.pointer) do
+            assert_true(e.x == x and e.y == y, mode .. ": where it was pressed, not a 1-px drag")
+        end
+        close_viewer(app, remote)
+    end
+end)
+
+check("long_press_then_drag_is_a_left_drag", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 50, y = c.y + 60 }
+        local Q1 = Geom:new{ x = P.x + 40, y = P.y }
+        local Q2 = Geom:new{ x = P.x + 40, y = P.y + 20 }
+        dispatch_gesture{ ges = "hold", pos = P }
+        confirm_hold(app)
+        dispatch_gesture{ ges = "hold_pan", pos = Q1, relative = { x = 40, y = 0 } }
+        assert_true(app._hold_active == mode .. "_drag", mode .. ": dragging: " .. tostring(app._hold_active))
+        dispatch_gesture{ ges = "hold_pan", pos = Q2, relative = { x = 40, y = 20 } }
+        dispatch_gesture{ ges = "hold_release", pos = Q2 }
+        local got = wire()
+        assert_true(got == "p1,p1,p1,p0", mode .. ": a left drag, no right button: " .. got)
+        local p = sent.pointer
+        local x0, y0 = long_press_spot(app, mode, P)
+        assert_true(p[1].x == x0 and p[1].y == y0, mode .. ": pressed at the press point")
+        local x1, y1, x2, y2
+        if mode == "touch" then
+            x1, y1 = app:_to_remote(Q1.x, Q1.y)
+            x2, y2 = app:_to_remote(Q2.x, Q2.y)
+        else
+            local k = 1.25 / remote:get_scale()
+            x1, y1 = math.floor(200 + 40 * k + 0.5), 150
+            x2, y2 = x1, math.floor(150 + 20 * k + 0.5)
+        end
+        assert_true(p[2].x == x1 and p[2].y == y1, mode .. string.format(": first move to (%d,%d), got (%d,%d)", x1, y1, p[2].x, p[2].y))
+        assert_true(p[3].x == x2 and p[3].y == y2, mode .. ": second move")
+        assert_true(p[4].x == x2 and p[4].y == y2, mode .. ": let go at the end")
+        assert_true(not app:has_pointer_action() and app._hold_active == nil, mode .. ": nothing held")
+        close_viewer(app, remote)
+    end
+end)
+
+check("long_press_drag_released_under_a_popup", function()
+    local InfoMessage = require("ui/widget/infomessage")
+    for _, mode in ipairs{ "touch", "mouse" } do
+        for _, moved in ipairs{ true, false } do
+            local what = mode .. (moved and " drag" or " still")
+            local app, remote, sent = new_app(400, 300, { mode = mode })
+            local wire = wire_log(app)
+            local c = app.canvas
+            local P = Geom:new{ x = c.x + 50, y = c.y + 60 }
+            local lift = finger_down(P)
+            dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
+            if moved then
+                dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+            end
+            assert_true(scheduled_delay(app._release_watch_task) ~= nil, what .. ": watched")
+            local before = wire()
+            -- a popup comes up and takes the lift
+            local popup = InfoMessage:new{ text = "server says hi" }
+            UIManager:show(popup)
+            lift()
+            run_scheduled(app._release_watch_task)
+            local got = wire()
+            if moved then
+                assert_true(before == "p1,p1" and got == "p0", what .. ": the button is let go: " .. before .. "|" .. got)
+                assert_true(last_pointer(sent).mask == 0)
+            else
+                assert_true(before == "" and got == "", what .. ": nothing was or is sent: " .. before .. "|" .. got)
+            end
+            assert_true(not app:has_pointer_action() and app._hold_active == nil, what .. ": nothing held")
+            UIManager:close(popup)
+            close_viewer(app, remote)
+        end
+    end
+end)
+
+check("long_press_takes_armed_modifiers", function()
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote = new_app(nil, nil, { mode = mode })
+        local panel = open_key_panel(app)
+        local wire = wire_log(app)
+        local above = Geom:new{ x = 20, y = 20 }
+        -- the right click
+        touch(panel, "mod:Shift")
+        wire()
+        UIManager:forceRePaint()
+        dispatch_gesture{ ges = "hold", pos = above }
+        confirm_hold(app)
+        assert_true(wire() == "", mode .. ": nothing at the confirmation, not even Shift")
+        dispatch_gesture{ ges = "hold_release", pos = above }
+        local got = wire()
+        assert_true(got == "+0xFFE1,p4,p0,-0xFFE1", mode .. ": Shift+right click: " .. got)
+        assert_true(panel:modifier_state("Shift") == nil, mode .. ": Shift disarmed")
+        -- the drag
+        touch(panel, "mod:Shift")
+        wire()
+        UIManager:forceRePaint()
+        dispatch_gesture{ ges = "hold", pos = above }
+        confirm_hold(app)
+        dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = 60, y = 20 }, relative = { x = 40, y = 0 } }
+        assert_true(panel:modifier_state("Shift") == nil, mode .. ": the drag took Shift")
+        dispatch_gesture{ ges = "hold_release", pos = Geom:new{ x = 60, y = 20 } }
+        got = wire()
+        assert_true(got == "+0xFFE1,p1,p1,p0,-0xFFE1", mode .. ": Shift+drag: " .. got)
+        assert_true(not app:has_pointer_action(), mode .. ": nothing held")
+        close_viewer(app, remote)
+    end
+end)
 
 check("mouse_click_waits_while_a_finger_is_down_then_a_pan_drags", function()
     local app, remote, sent = new_app(400, 300, { mode = "mouse" })
@@ -5609,7 +5771,7 @@ check("mouse_hold_without_a_pending_tap_stays_a_right_click", function()
     run_scheduled(app._deferred_click_task)
     assert_true(wire() == "p0,p1,p0", "the tap clicked")
     dispatch_gesture{ ges = "hold", pos = P }
-    dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+    confirm_hold(app)
     dispatch_gesture{ ges = "hold_release", pos = P }
     local got = wire()
     assert_true(got == "p4,p0", "a right click, the pointer stays: " .. got)
@@ -5655,19 +5817,27 @@ check("pointer_button_changes_are_logged_with_a_reason", function()
 end)
 
 check("a_drag_whose_release_is_eaten_ends_when_the_finger_lifts", function()
-    -- Mouse-mode button drag, Touch-mode drag, Touch- and Mouse-mode long press, tap-then-hold
+    -- Mouse-mode button drag, Touch-mode drag, Touch- and Mouse-mode long-press drag, tap-then-hold
     -- drag: each one's end goes to a widget above us (the on-screen keyboard's keys, a menu) and
     -- never reaches us; the finger is up on GestureDetector's books all the same.
     local cases = {
         { "touch", "drag", function(c, P)
             dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
         end },
-        { "touch", "hold", function(c, P) dispatch_gesture{ ges = "hold", pos = P } end },
+        { "touch", "hold drag", function(c, P, app)
+            dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
+            dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+        end },
         { "mouse", "drag", function(c, P)
             dispatch_gesture{ ges = "tap", pos = P }
             dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
         end },
-        { "mouse", "hold", function(c, P) dispatch_gesture{ ges = "hold", pos = P } end },
+        { "mouse", "hold drag", function(c, P, app)
+            dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
+            dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+        end },
         { "mouse", "tap-hold", function(c, P)
             dispatch_gesture{ ges = "tap", pos = P }
             dispatch_gesture{ ges = "hold", pos = P }
@@ -5679,7 +5849,7 @@ check("a_drag_whose_release_is_eaten_ends_when_the_finger_lifts", function()
         local c = app.canvas
         local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
         local lift = finger_down(P)
-        start(c, P)
+        start(c, P, app)
         confirm_hold(app)
         local what = mode .. " " .. name
         assert_true(app:has_pointer_action(), what .. ": under way")
@@ -5721,7 +5891,9 @@ check("no_release_watch_without_a_finger_on_the_books", function()
     local P = Geom:new{ x = c.x + 50, y = c.y + 80 }
     dispatch_gesture{ ges = "hold", pos = P }
     confirm_hold(app)
-    assert_true(app:has_pointer_action() and scheduled_delay(app._release_watch_task) == nil, "not watched")
+    assert_true(app._hold_active and scheduled_delay(app._release_watch_task) == nil, "not watched")
+    dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+    assert_true(app:has_pointer_action() and scheduled_delay(app._release_watch_task) == nil, "not watched, dragging")
     dispatch_gesture{ ges = "hold_release", pos = P }
     close_viewer(app, remote)
 end)
@@ -5831,15 +6003,18 @@ check("a_hold_drag_turning_two_finger_ends_cleanly", function()
         { ges = "two_finger_hold_pan_release" },
     }
     for _, ender in ipairs(enders) do
-        for _, kind in ipairs{ "hold-drag", "right" } do
-            local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+        -- (a long press still waiting has nothing down: it just ends)
+        for _, mk in ipairs{ { "mouse", "hold-drag" }, { "mouse", "long-press drag" }, { "touch", "long-press drag" },
+                             { "mouse", "waiting" }, { "touch", "waiting" } } do
+            local mode, kind = mk[1], mk[2]
+            local app, remote, sent = new_app(400, 300, { mode = mode })
             local wire = wire_log(app)
             local c = app.canvas
             local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
             if kind == "hold-drag" then dispatch_gesture{ ges = "tap", pos = P } end
             dispatch_gesture{ ges = "hold", pos = P }
             confirm_hold(app)
-            if kind == "hold-drag" then
+            if kind ~= "waiting" then
                 dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 120, y = P.y + 40 }, relative = { x = 120, y = 40 } }
             end
             local before = last_pointer(sent)
@@ -5847,12 +6022,16 @@ check("a_hold_drag_turning_two_finger_ends_cleanly", function()
             local ev = { pos = Geom:new{ x = P.x + 60, y = P.y } }
             for k, v in pairs(ender) do ev[k] = v end
             dispatch_gesture(ev)
-            local what = kind .. " / " .. ender.ges .. (ender.span and " (no relative)" or "")
+            local what = mode .. " " .. kind .. " / " .. ender.ges .. (ender.span and " (no relative)" or "")
             local got = wire()
-            assert_true(got == "p0", what .. ": one release, no move: " .. got)
-            local e = last_pointer(sent)
-            assert_true(e.x == before.x and e.y == before.y, what .. ": let go at the pointer")
-            assert_true(not app:has_pointer_action(), what .. ": nothing held")
+            if kind == "waiting" then
+                assert_true(got == "", what .. ": nothing to let go: " .. got)
+            else
+                assert_true(got == "p0", what .. ": one release, no move: " .. got)
+                local e = last_pointer(sent)
+                assert_true(e.x == before.x and e.y == before.y, what .. ": let go at the pointer")
+            end
+            assert_true(not app:has_pointer_action() and app._hold_active == nil, what .. ": nothing held")
             dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 10, y = P.y }, relative = { x = 10, y = 0 } }
             dispatch_gesture{ ges = "hold_release", pos = P }
             assert_true(wire() == "", what .. ": the rest of it sends nothing")
@@ -7391,9 +7570,9 @@ check("genuine_hold_confirms_then_right_clicks", function()
         local t0 = time.now()
         hold_at(P, t0)
         run_scheduled(app._hold_confirm_task)
-        assert_true(wire() == "p4", mode .. ": right press once confirmed")
+        assert_true(wire() == "" and app._hold_active == mode .. "_wait", mode .. ": confirmed, nothing sent yet")
         hold_release_at(P, t0 + time.ms(1100))
-        assert_true(wire() == "p0", mode .. ": released")
+        assert_true(wire() == "p4,p0", mode .. ": a right click at the lift")
         local rx, ry = app:_to_remote(P.x, P.y)
         if mode == "mouse" then rx, ry = 200, 150 end
         for _, e in ipairs(sent.pointer) do assert_true(e.x == rx and e.y == ry, mode .. ": where it should be") end
@@ -7410,10 +7589,10 @@ check("hold_pan_before_confirmation_is_a_genuine_hold", function()
     local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
     hold_at(P, time.now())
     dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 8, y = P.y }, relative = { x = 8, y = 0 } }
-    assert_true(wire() == "p4", "touch: right press at once")
+    assert_true(wire() == "p1,p1", "touch: a left-button drag at once")
     assert_true(scheduled_delay(app._hold_confirm_task) == nil, "no confirmation left")
     hold_release_at(P)
-    assert_true(wire() == "p0", "released")
+    assert_true(wire() == "p0" and no_right_button(sent), "touch: released, no right button")
     close_viewer(app, remote)
     -- Mouse mode, tap then hold: the button drag, moved by the hold_pan
     app, remote, sent = new_app(400, 300, { mode = "mouse" })
@@ -8116,19 +8295,25 @@ end)
 
 check("a_second_finger_joining_a_long_press_only_ends_it", function()
     for _, mode in ipairs{ "touch", "mouse" } do
-        local app, remote = new_app(400, 300, { mode = mode })
-        local wire = wire_log(app)
-        local c = app:canvas_geom()
-        local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
-        local t0 = time.now()
-        dispatch_gesture{ ges = "hold", pos = P, time = t0 }
-        confirm_hold(app)
-        assert_true(wire() == "p4", mode .. ": right press")
-        two_finger("two_finger_hold", P, t0 + time.ms(800))
-        assert_true(wire() == "p0", mode .. ": let go")
-        two_finger("two_finger_hold_release", P, t0 + time.ms(1600))
-        assert_true(wire() == "" and not app.vk_wanted, mode .. ": its lift clicks nothing, no keyboard")
-        close_viewer(app, remote)
+        for _, moved in ipairs{ false, true } do
+            local what = mode .. (moved and " drag" or " waiting")
+            local app, remote = new_app(400, 300, { mode = mode })
+            local wire = wire_log(app)
+            local c = app:canvas_geom()
+            local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
+            local t0 = time.now()
+            dispatch_gesture{ ges = "hold", pos = P, time = t0 }
+            confirm_hold(app)
+            if moved then
+                dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
+            end
+            assert_true(wire() == (moved and "p1,p1" or ""), what .. ": under way")
+            two_finger("two_finger_hold", P, t0 + time.ms(800))
+            assert_true(wire() == (moved and "p0" or "") and app._hold_active == nil, what .. ": ended")
+            two_finger("two_finger_hold_release", P, t0 + time.ms(1600))
+            assert_true(wire() == "" and not app.vk_wanted, what .. ": its lift clicks nothing, no keyboard")
+            close_viewer(app, remote)
+        end
     end
 end)
 
