@@ -443,6 +443,79 @@ Encodings._fill_px = fill_px
 local MAX_TILE = 64
 
 --[[--
+Expands a packed-palette tile (`th` rows of `tw` `bpp`-bit indices at `p`, each row `row_bytes`
+long) into packed RGB24 at `tb`. One loop per index width that takes a whole byte (2, 4 or 8
+pixels) per iteration with constant shifts, instead of a per-pixel bit position and variable
+shift. An index is checked against `palette_size` (an index can only be out of range when the
+palette is not a power of two); returns that index and its column, nothing when all are valid.
+]]
+local function packed_rows(tb, pal, p, row_bytes, tw, th, bpp, palette_size)
+    local o = 0
+    local full = rshift(tw * bpp, 3)    -- whole bytes of a row
+    local rest = tw - rshift(full * 8, bpp == 4 and 2 or (bpp == 2 and 1 or 0)) -- pixels left over
+    for row = 0, th - 1 do
+        local ro = row * row_bytes -- (an offset: a pointer per row would be allocated)
+        if bpp == 4 then
+            for k = ro, ro + full - 1 do
+                local b = p[k]
+                local v = rshift(b, 4)
+                if v >= palette_size then return v, (k - ro) * 2 end
+                local q = v * 3
+                tb[o], tb[o + 1], tb[o + 2] = pal[q], pal[q + 1], pal[q + 2]
+                v = band(b, 15)
+                if v >= palette_size then return v, (k - ro) * 2 + 1 end
+                q = v * 3
+                tb[o + 3], tb[o + 4], tb[o + 5] = pal[q], pal[q + 1], pal[q + 2]
+                o = o + 6
+            end
+        elseif bpp == 2 then
+            for k = ro, ro + full - 1 do
+                local b = p[k]
+                local v = rshift(b, 6)
+                if v >= palette_size then return v, (k - ro) * 4 end
+                local q = v * 3
+                tb[o], tb[o + 1], tb[o + 2] = pal[q], pal[q + 1], pal[q + 2]
+                v = band(rshift(b, 4), 3)
+                if v >= palette_size then return v, (k - ro) * 4 + 1 end
+                q = v * 3
+                tb[o + 3], tb[o + 4], tb[o + 5] = pal[q], pal[q + 1], pal[q + 2]
+                v = band(rshift(b, 2), 3)
+                if v >= palette_size then return v, (k - ro) * 4 + 2 end
+                q = v * 3
+                tb[o + 6], tb[o + 7], tb[o + 8] = pal[q], pal[q + 1], pal[q + 2]
+                v = band(b, 3)
+                if v >= palette_size then return v, (k - ro) * 4 + 3 end
+                q = v * 3
+                tb[o + 9], tb[o + 10], tb[o + 11] = pal[q], pal[q + 1], pal[q + 2]
+                o = o + 12
+            end
+        else -- 1 bit, two colours: never out of range
+            local r0, g0, b0, r1, g1, b1 = pal[0], pal[1], pal[2], pal[3], pal[4], pal[5]
+            for k = ro, ro + full - 1 do
+                local b = p[k]
+                for s = 7, 0, -1 do
+                    if band(rshift(b, s), 1) ~= 0 then
+                        tb[o], tb[o + 1], tb[o + 2] = r1, g1, b1
+                    else
+                        tb[o], tb[o + 1], tb[o + 2] = r0, g0, b0
+                    end
+                    o = o + 3
+                end
+            end
+        end
+        -- the last, partly used byte
+        local b = rest > 0 and p[ro + full] or 0
+        for i = 0, rest - 1 do
+            local v = band(rshift(b, 8 - bpp * (i + 1)), lshift(1, bpp) - 1)
+            if v >= palette_size then return v, full * rshift(8, bpp == 4 and 2 or (bpp == 2 and 1 or 0)) + i end
+            local q = v * 3
+            tb[o], tb[o + 1], tb[o + 2] = pal[q], pal[q + 1], pal[q + 2]
+            o = o + 3
+        end
+    end
+end
+
+--[[--
 Decodes one TRLE-style tile at `(dx, dy)` into `vp`.
 
 The tile is built in a packed RGB24 tile buffer, then copied into the plane row by row, so runs
@@ -517,23 +590,11 @@ local function decode_tile(state, cv, fmt, vp, r, dx, dy, tw, th)
         -- packed palette: rows of 1/2/4-bit indices, each row padded to a byte
         local bpp = palette_size == 2 and 1 or (palette_size <= 4 and 2 or 4)
         local row_bytes = rshift(tw * bpp + 7, 3)
-        local mask = lshift(1, bpp) - 1
         local p = r:ptr(row_bytes * th)
-        local o = 0
-        local checked = palette_size < lshift(1, bpp) -- only then can an index be out of range
-        for row = 0, th - 1 do
-            local ro = row * row_bytes -- (an offset: a pointer per row would be allocated)
-            for col = 0, tw - 1 do
-                local bitpos = col * bpp
-                local v = band(rshift(p[ro + rshift(bitpos, 3)], 8 - bpp - band(bitpos, 7)), mask)
-                if checked and v >= palette_size then
-                    return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d) col %d",
-                        v, palette_size, dx, dy, col)
-                end
-                local q = v * 3
-                tb[o], tb[o + 1], tb[o + 2] = pal[q], pal[q + 1], pal[q + 2]
-                o = o + 3
-            end
+        local bad, col = packed_rows(tb, pal, p, row_bytes, tw, th, bpp, palette_size)
+        if bad then
+            return nil, string.format("TRLE: palette index %d out of range (%d entries) at tile (%d,%d) col %d",
+                bad, palette_size, dx, dy, col)
         end
     elseif r.p then
         -- run-length encoded, straight off a memory reader (ZRLE's inflated stream): the bytes
