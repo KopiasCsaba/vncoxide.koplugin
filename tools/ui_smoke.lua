@@ -5862,7 +5862,7 @@ check("pointer_button_changes_are_logged_with_a_reason", function()
     logger.dbg = dbg
     if not ok then error(err, 0) end
     local got = table.concat(lines, "|")
-    assert_true(got == "1 click|0 click|4 hold start|0 hold end|1 hold drag start|0 hold drag end",
+    assert_true(got == "1 click|0 click|4 right click|0 right click end|1 hold drag start|0 hold drag end",
         "one line per button change, not per move: " .. got)
 end)
 
@@ -5970,7 +5970,7 @@ check("a_canvas_drag_ending_over_a_keyboard_key_is_ours", function()
     -- A key of the on-screen keyboard took the end of a canvas drag or long press that lifted on
     -- it: a letter typed itself, and a key that types nothing (the symbol switch) left the button
     -- down. The end is the viewer's: released at once, no key, the layout unchanged.
-    for _, mode in ipairs{ "touch", "mouse" } do
+    for _, mode in ipairs{ "touch", "mouse", "hybrid" } do
         local app, remote = new_app(400, 300, { mode = mode })
         app:set_keyboard_visible(true)
         UIManager:forceRePaint()
@@ -5991,7 +5991,12 @@ check("a_canvas_drag_ending_over_a_keyboard_key_is_ours", function()
             dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
             dispatch_gesture{ ges = "pan_release", pos = over }
             local want = mode == "mouse" and "p0" or "p1,p1,p0" -- (Mouse mode: a pointer move)
-            assert_true(wire() == want, what .. ": the drag let go, no key")
+            local got0 = wire()
+            if mode == "hybrid" then -- (a scroll: wheel notches, never a key)
+                assert_true(got0:find("p8,p0", 1, true) and not got0:find("[+-]0x"), what .. ": scrolled, no key: " .. got0)
+            else
+                assert_true(got0 == want, what .. ": the drag let go, no key: " .. got0)
+            end
             assert_true(not app:has_pointer_action(), what .. ": nothing held")
             dispatch_gesture{ ges = "hold", pos = P }
             confirm_hold(app)
@@ -7611,6 +7616,20 @@ check("hybrid_false_hold_then_pan_scrolls", function()
     close_viewer(app, remote)
 end)
 
+check("hybrid_drag_lifting_under_a_popup_sends_no_notches", function()
+    local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
+    local c = app.canvas
+    local s = Geom:new{ x = c.x + 50, y = c.y + 400, w = 0, h = 0 }
+    dispatch_gesture{ ges = "pan", relative = { x = 0, y = 10 }, start_pos = s, pos = Geom:new{ x = s.x, y = s.y + 10, w = 0, h = 0 } }
+    assert_true(app._hybrid_pan, "under way")
+    app:open_menu()
+    clear_sent(sent)
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = s.x, y = s.y + 300, w = 0, h = 0 } }
+    assert_true(#sent.pointer == 0 and app._hybrid_pan == nil, "no notches under a popup")
+    app:close_menu()
+    close_viewer(app, remote)
+end)
+
 check("hybrid_tap_clicks_at_the_finger", function()
     local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
     local wire = wire_log(app)
@@ -8468,6 +8487,21 @@ check("two_finger_long_press_clicks_and_shows_the_keyboard", function()
         assert_true(wire() == "p0,p1,p0" and app.vk_visible, mode .. ": again, the click alone")
         close_viewer(app, remote)
     end
+end)
+
+check("hybrid_drag_voids_a_second_fingers_two_finger_hold", function()
+    local app, remote = new_app(400, 300, { mode = "hybrid" })
+    local wire = wire_log(app)
+    local c = app:canvas_geom()
+    local P = Geom:new{ x = c.x + 70, y = c.y + 90 }
+    dispatch_gesture{ ges = "pan", start_pos = P, pos = Geom:new{ x = P.x, y = P.y + 40 }, relative = { x = 0, y = 40 } }
+    assert_true(app._hybrid_pan and app:_one_finger_busy(), "a Hybrid drag is a one-finger action")
+    wire()
+    local t0 = time.now()
+    two_finger("two_finger_hold", P, t0)
+    two_finger("two_finger_hold_release", P, t0 + time.ms(600))
+    assert_true(wire() == "" and not app.vk_visible, "no click, no keyboard")
+    close_viewer(app, remote)
 end)
 
 check("two_finger_long_press_that_moves_or_lifts_at_once_does_not_click", function()

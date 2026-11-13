@@ -7,8 +7,9 @@ of the remote desktop ends up behind the keyboard. A compact toolbar (`vnc.toolb
 top; a **swipe down** in KOReader's own top screen zone (the `DTAP_ZONE_MENU` area) shows or hides
 it, and a tap on the bar never reaches the remote. Everywhere else taps are *never* taken away from
 the remote desktop. What a tap, a long press and a one-finger drag do depends on the pointer mode:
-Touch acts at the finger, Mouse moves a pointer relatively (a tap clicks at once); two-finger drag, pinch/spread and
-two-finger tap behave the same in both. Rotations and screen resizes go through KOReader's generic
+Touch acts at the finger, Mouse moves a pointer relatively (a tap clicks at once), Hybrid clicks at
+the finger but scrolls the remote with a one-finger drag; two-finger drag, pinch/spread and
+two-finger tap behave the same in all three. Rotations and screen resizes go through KOReader's generic
 `SetRotationMode` / `ScreenResize` events, so that the keyboard is re-laid out for the new
 dimensions as well.
 
@@ -736,7 +737,8 @@ end
 --- Whether a one-finger action of ours is under way: a drag, a long press (also one still
 --- waiting for its confirmation) or a Mouse-mode pointer move. Its end is ours wherever it lifts.
 function ViewerApp:_one_finger_busy()
-    return (self._drag_active or self._hold_active or self._mouse_moving or self._hold_pending) and true or false
+    return (self._drag_active or self._hold_active or self._mouse_moving or self._hold_pending
+        or self._hybrid_pan) and true or false
 end
 
 --- Ends a drag or long press whose release never reached us (see `_end_pointer_action`), and a
@@ -930,7 +932,7 @@ end
 
 function ViewerApp:onPanRelease(_, ges)
     if self._hybrid_pan then
-        self:_hybrid_end(ges.pos)
+        self:_hybrid_end(self:_input_target() and ges.pos or nil)
         return true
     end
     if self._mouse_moving then
@@ -968,7 +970,7 @@ function ViewerApp:_end_quick_drag(ges)
         -- (only the swipe of the contact that is dragging feeds its tail)
         local g = self._hybrid_pan
         local same = g and ges.pos and math.abs(g.start.x - ges.pos.x) <= 1 and math.abs(g.start.y - ges.pos.y) <= 1
-        self:_hybrid_end(same and ges.end_pos or nil)
+        self:_hybrid_end(same and self:_input_target() and ges.end_pos or nil)
         self:_follow_settled()
         if self._drag_active then self:_end_pointer_action("swipe end") end
     end
@@ -996,11 +998,8 @@ function ViewerApp:onHold(_, ges)
     -- a new contact held right after a false hold: one continuous long press with it
     self:_false_hold_followed_by(ges.pos, "hold")
     self:_cancel_hold("new hold")
-    self._hold_pending = {
-        pos = ges.pos:copy(), time = ges.time,
-        mode = self:get_pointer_mode() == "mouse" and "mouse" or "touch",
-    }
-    logger.dbg("vnc-hold:", "pending", ges.pos.x, ges.pos.y, self._hold_pending.mode)
+    self._hold_pending = { pos = ges.pos:copy(), time = ges.time }
+    logger.dbg("vnc-hold:", "pending", ges.pos.x, ges.pos.y, self:get_pointer_mode())
     UIManager:scheduleIn(self.HOLD_CONFIRM, self._hold_confirm_task)
     return true
 end
@@ -1335,8 +1334,8 @@ function ViewerApp:onHoldRelease(_, ges)
         self._hold_pos = nil
         -- a right click: the armed modifiers go with it, like with a tap
         self:_press_armed()
-        self:send_pointer(x, y, 4, "hold start")
-        self:send_pointer(x, y, 0, "hold end")
+        self:send_pointer(x, y, 4, "right click")
+        self:send_pointer(x, y, 0, "right click end")
         self:_release_action_mods()
         return true
     end

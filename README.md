@@ -122,7 +122,7 @@ are greyed out there).
 
 | Gesture | Touch mode | Mouse mode | Hybrid mode |
 | --- | --- | --- | --- |
-| tap | left click at the finger | left click at the pointer, sent at once (two quick taps: a double click) | left click at the finger |
+| tap | left click at the finger (two quick taps: a double click) | left click at the pointer, sent at once (two quick taps: a double click) | left click at the finger (two quick taps: a double click) |
 | long press | lift without moving: right click at the finger (sent at the lift); moving: drag with the left button held | the same, at the pointer (the finger's movement moves it) | the same as Touch mode |
 | one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed); zoomed in, the view follows it once it passes the middle of the screen, until the view reaches the remote screen's edge (as in RustDesk); a pointer off the screen first jumps to its middle | scroll the remote with mouse-wheel notches where the drag began (a thirtieth of the screen per notch; sideways scrolls horizontally); the content follows the finger |
 | two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same | same |
@@ -132,7 +132,7 @@ are greyed out there).
 | device page buttons | Page Up/Down or wheel (setting) | same | same |
 
 In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
-x11vnc, `-cursor arrow`); the viewer draws none. A second finger joining a long press drag lets go of its button. Touch and Mouse mode clicks are sent at once. A long press acts
+x11vnc, `-cursor arrow`); the viewer draws none. A second finger joining a long press drag lets go of its button. Clicks are sent at once in all three modes. A long press acts
 about 0.12 s after KOReader reports it (at once if the finger moves first): some PocketBook
 firmware holds a touch back for half a second and then delivers it in a burst, which KOReader
 takes for a long press; one that lifts within that time is treated as the tap or drag it really

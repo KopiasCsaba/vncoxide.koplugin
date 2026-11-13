@@ -338,8 +338,7 @@ ids and defaults; Close and More are not in it and always shown). It replaced th
 Settings:normalise turns `toolbar_scroll_buttons` (both scroll ids), `toolbar_brightness_button`
 and `toolbar_contrast_button` into it once, only when there is no `toolbar_buttons` yet; the old
 keys are then dropped. Switching the Collapse button off while collapsed opens the bar first.
-The
-bar only ever asks for partial refreshes of its own rectangle ("ui"; "fast" while it is dragged). The Display panel is a
+The bar only ever asks for partial refreshes of its own rectangle ("ui"; "fast" while it is dragged). The Display panel is a
 ButtonDialog anchored under the bar, rebuilt in place after each choice so the check marks show the
 live state; only a rotation closes it. Quality presets (Settings.QUALITY_PRESETS) are sets of the
 four picture fields of the profile; Settings.preset_of() names the match or "custom".
@@ -402,9 +401,8 @@ that gains a second finger becomes a two-finger gesture in GestureDetector (Cont
 a buddy contact) and ends in two_finger_pan_release, never in pan_release; every two-finger handler
 therefore first ends such an action (ViewerApp:_end_pointer_action: button up, then the modifiers).
 A quick two-finger drag (two_finger_swipe) only ends the view pan. A two-finger drag always pans
-the view (there is no scroll lock). _scroll_by_drag (drag movement into wheel notches) and
-_wheel_position are kept unused for the Hybrid mode. Wheel notches come from the toolbar's
-optional scroll buttons (ViewerApp:scroll_wheel) and the page buttons, and are not modifier actions. A drag or hold whose release was eaten by the keyboard or menu is ended by the next
+the view (there is no scroll lock). Wheel notches come from the Hybrid mode's one-finger drag (_scroll_by_drag, at
+_wheel_position), the toolbar's optional scroll buttons (ViewerApp:scroll_wheel) and the page buttons, and are not modifier actions. A drag or hold whose release was eaten by the keyboard or menu is ended by the next
 tap/pan start/hold, any send_key, or showing the on-screen keyboard (_end_stale_pointer_action).
 Gestures off the panel never reach its buttons (KeyPanel:handleEvent): a button rebuilt since the
 last paint does not know its place yet. Replaying a recent combo is an action too: it clears the
