@@ -547,7 +547,14 @@ end
 -- ---------------------------------------------------------------- checks
 
 local failures = 0
+-- `--only <lua pattern>` (or `--only=<pattern>`): run only the checks whose name matches.
+local ONLY
+for i, a in ipairs(arg or {}) do
+    local v = a:match("^%-%-only=(.+)$") or (a == "--only" and (arg or {})[i + 1] or nil)
+    if v then ONLY = v end
+end
 local function check(name, fn)
+    if ONLY and not name:find(ONLY) then return end
     local ok, res, err = pcall(fn)
     stop_all_mocks()
     if ok and res then
