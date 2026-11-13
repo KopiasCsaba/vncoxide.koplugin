@@ -539,6 +539,10 @@ local function proxy_session(env, name, mock, network_mgr)
     local connected, cerr
     s:connect(function(ok, err) connected, cerr = ok, err end)
     env.run_until(function() return connected ~= nil end, 10)
+    if connected == nil then
+        error(string.format("the connect did not finish (state %s, phase %s, states %s)",
+            tostring(s.state), tostring(s._phase), table.concat(states, ",")))
+    end
     if not connected then error("connect failed: " .. tostring(cerr)) end
     if not s.workers then error("no workers started") end
     return s, pid, log, states
@@ -1685,6 +1689,53 @@ local function main()
         if not ok then return nil, err end
         return true
     end
+
+    -- A connect tick whose pump runs out of budget (bytes, CPU or steps) in the very step that
+    -- completes the handshake: the session is "connected" then, and the attempt must still finish
+    -- (the callback, the workers) instead of stalling in the handshake phase with no tick left.
+    -- One step per pump makes that happen on every step; a slow device gets there by the CPU budget.
+    both_modes("session_connect_finishes_when_the_budget_ends_with_the_handshake", function()
+        local Session = load_session()
+        local pid, port = start_mock{ name = "budget_hs", encoding = "raw", pattern = "gradient",
+            width = 32, height = 24 }
+        local s = Session.new{
+            profile = { host = "127.0.0.1", port = port, password = "", name = "budget_hs" },
+            network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        }
+        local real_steps = Session.MAX_STEPS_PER_TICK
+        Session.MAX_STEPS_PER_TICK = 1
+        local connected, cerr
+        local pok, perr = pcall(connect_sync, s, function(ok, err) connected, cerr = ok, err end)
+        Session.MAX_STEPS_PER_TICK = real_steps
+        local ok, err = true, nil
+        if not pok then
+            ok, err = nil, perr
+        elseif connected == nil then
+            ok, err = nil, string.format("the connect callback never ran (state %s, phase %s)",
+                tostring(s.state), tostring(s._phase))
+        elseif not connected then
+            ok, err = nil, "connect failed: " .. tostring(cerr)
+        end
+        s:disconnect()
+        stop_mock(pid)
+        return ok, err
+    end, function()
+        local Session = load_session()
+        local env = proxy_env()
+        local s, mpid
+        local real_steps = Session.MAX_STEPS_PER_TICK
+        Session.MAX_STEPS_PER_TICK = 1
+        local ok, err = pcall(function()
+            s, mpid = proxy_session(env, "budget_hs_w", { encoding = "raw", pattern = "gradient",
+                width = 32, height = 24 })
+        end)
+        Session.MAX_STEPS_PER_TICK = real_steps
+        if s then s:disconnect() end
+        env.finish()
+        stop_mock(mpid)
+        if not ok then return nil, err end
+        return true
+    end)
 
     -- 11. A server message that arrives split across TCP segments: the transport keeps the
     -- partial reads and resumes, and the protocol decodes the message once the rest arrives.

@@ -784,6 +784,9 @@ function Session:_pump(stop_connected)
                 return "error"
             end
         end
+        -- (the step that completed the handshake may also have spent the budget: "busy" then
+        -- would leave a connect tick that, seeing "connected", never finishes the attempt)
+        if stop_connected and self.state == "connected" then return "connected" end
         if budget <= 0 or os.clock() >= cpu_deadline then return "busy" end
     end
     return "busy"
