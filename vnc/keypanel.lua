@@ -247,21 +247,12 @@ function KeyPanel:has_armed()
     return next(self.mods) ~= nil
 end
 
---- The names of the armed modifiers (for @{KeyPanel:take_armed}'s `only`).
-function KeyPanel:armed_names()
-    local names = {}
-    for _i, name in ipairs(self:_mods_where(is_armed)) do names[name] = true end
-    return names
-end
-
 --- Hands the armed modifiers to an action on the canvas, and disarms them.
---- @tparam[opt] table only take just these (a set of names, c.f. @{KeyPanel:armed_names}): the
----   others stay armed
 --- @treturn {number,...} their keysyms, in the order they are to be pressed
-function KeyPanel:take_armed(only)
+function KeyPanel:take_armed()
     local keysyms = {}
     for _i, m in ipairs(Keysyms.modifiers) do
-        if self.mods[m.name] == "armed" and (not only or only[m.name]) then
+        if self.mods[m.name] == "armed" then
             keysyms[#keysyms + 1] = m.keysym
             self.mods[m.name] = nil
         end

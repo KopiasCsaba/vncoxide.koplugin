@@ -5911,7 +5911,11 @@ check("a_new_pan_never_continues_a_stale_drag", function()
         local c = app.canvas
         local P = Geom:new{ x = c.x + 50, y = c.y + 50 }
         dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
-        assert_true(app:has_pointer_action() or app._mouse_moving, mode .. ": dragging")
+        if mode == "mouse" then
+            assert_true(app._mouse_moving and not app:has_pointer_action(), "mouse: a pointer move, no button")
+        else
+            assert_true(app._drag_active == true, "touch: dragging")
+        end
         wire() -- its release never comes
         local Q = Geom:new{ x = c.x + 200, y = c.y + 150 }
         dispatch_gesture{ ges = "pan", pos = Geom:new{ x = Q.x + 30, y = Q.y }, relative = { x = 30, y = 0 } }

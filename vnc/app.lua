@@ -780,14 +780,13 @@ end
 --[[--
 A canvas action (tap, long press, drag) begins: the modifiers armed on the key strip or the "Send
 keys" panel go down now, before the pointer press, and are disarmed there - they are for this one
-action only. `_release_action_mods` lets them go after the pointer release. With `only` (a set of
-modifier names), just those go: the others stay armed for the next action.
+action only. `_release_action_mods` lets them go after the pointer release.
 ]]
-function ViewerApp:_press_armed(only)
+function ViewerApp:_press_armed()
     self:_release_action_mods()
     local source = self:_armed_source()
     if not source then return end
-    local keysyms = source:take_armed(only)
+    local keysyms = source:take_armed()
     if #keysyms == 0 then return end
     for _i, keysym in ipairs(keysyms) do
         self:send_key(keysym, true)
@@ -808,7 +807,7 @@ end
 -- ---------------------------------------------------------------- canvas gestures
 
 -- (defined with the Mouse-mode helpers below)
-local double_tap_radius, finger_down_near
+local false_hold_radius, finger_down_near
 
 -- A desktop only sees a double click when both clicks land within a few pixels of each other
 -- (4 px by default on Windows, about 5 on GTK), but a finger jitters 10-20 device pixels between
@@ -989,13 +988,13 @@ end
 --[[--
 The window after a false hold passed. A finger still down near it may yet turn into its pan or
 tap (it can take a while to cross the pan threshold): wait for it, re-checked every
-MOUSE_CLICK_RECHECK, up to the hold interval. Otherwise it was a tap at the hold position.
+FALSE_HOLD_RECHECK, up to the hold interval. Otherwise it was a tap at the hold position.
 ]]
 function ViewerApp:_false_hold_due()
     local held = self._false_hold
     if not held then return end
-    if time.now() < held.deadline and finger_down_near(held.pos, double_tap_radius()) then
-        UIManager:scheduleIn(self.MOUSE_CLICK_RECHECK, self._false_hold_task)
+    if time.now() < held.deadline and finger_down_near(held.pos, false_hold_radius()) then
+        UIManager:scheduleIn(self.FALSE_HOLD_RECHECK, self._false_hold_task)
         return
     end
     self._false_hold = nil
@@ -1014,7 +1013,7 @@ function ViewerApp:_false_hold_followed_by(start, kind)
     if not held then return nil end
     self._false_hold = nil
     UIManager:unschedule(self._false_hold_task)
-    if start and held.pos:distance(start) <= double_tap_radius() then
+    if start and held.pos:distance(start) <= false_hold_radius() then
         logger.dbg("vnc-hold:", "false hold continued by a", kind)
         return held
     end
@@ -1387,11 +1386,11 @@ end
 -- ---------------------------------------------------------------- mouse mode
 
 -- How long a false hold waits for a finger that came down near it (it may yet turn into its pan or
--- tap): re-checked every MOUSE_CLICK_RECHECK seconds, see `_false_hold_due`.
-ViewerApp.MOUSE_CLICK_RECHECK = 0.05
+-- tap): re-checked every FALSE_HOLD_RECHECK seconds, see `_false_hold_due`.
+ViewerApp.FALSE_HOLD_RECHECK = 0.05
 
 --- How near (screen pixels) a contact must land to a false hold to continue it.
-function double_tap_radius() return Screen:scaleByDPI(50) end
+function false_hold_radius() return Screen:scaleByDPI(50) end
 
 --[[--
 The fingers GestureDetector has down now, as a list of `{ slot =, contact =, start = }`, `start`
@@ -1455,24 +1454,16 @@ function ViewerApp:_mouse_pointer_px()
     return math.floor(x + 0.5), math.floor(y + 0.5)
 end
 
---- Clicks `n` times at the Mouse-mode pointer, the armed modifiers (or just `only`, c.f.
---- `_press_armed`) held around all of them.
-function ViewerApp:_mouse_click(n, only)
-    local x, y = self:_mouse_pointer_px()
-    self:_press_armed(only)
-    for _i = 1, n do
-        self:send_pointer(x, y, 0)
-        self:send_pointer(x, y, 1, "click")
-        self:send_pointer(x, y, 0, "click")
-    end
-    self:_release_action_mods()
-end
-
 --- Mouse-mode tap: the click goes to the pointer, not the finger, at once (two quick taps are a
 --- double click).
 function ViewerApp:_mouse_tap(_ges)
     self:_end_stale_pointer_action()
-    self:_mouse_click(1)
+    local x, y = self:_mouse_pointer_px()
+    self:_press_armed()
+    self:send_pointer(x, y, 0)
+    self:send_pointer(x, y, 1, "click")
+    self:send_pointer(x, y, 0, "click")
+    self:_release_action_mods()
     return true
 end
 

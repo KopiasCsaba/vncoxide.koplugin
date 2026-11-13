@@ -309,7 +309,7 @@ Long press on a button: a one-line tooltip (Toolbar.TIPS) and nothing else. KORe
 toast on any input that passes it, and the hold's own hold_release would close it the moment the
 finger lifts, so the tooltip's toast lets hold_release and hold_pan through without closing.
 
-Click and type, two ways (ViewerApp:_click_and_type: flush a deferred Mouse click, end a stale
+Click and type, two ways (ViewerApp:_click_and_type: end a stale
 action, then the armed modifiers + move/press/release, then set_keyboard_visible(true) unless the
 keyboard is already wished or the Send keys panel is up; it is the button's own saved wish,
 keyboard_shown):
@@ -335,8 +335,8 @@ Which buttons the bar shows is `toolbar_buttons` ({ id = bool }, Settings.TOOLBA
 ids and defaults; Close and More are not in it and always shown). It replaced three switches:
 Settings:normalise turns `toolbar_scroll_buttons` (both scroll ids), `toolbar_brightness_button`
 and `toolbar_contrast_button` into it once, only when there is no `toolbar_buttons` yet; the old
-keys are then dropped. Switching the Collapse button off while collapsed opens the bar first. Every bar button first flushes the deferred click
-below, since a pending click belongs to where the user tapped before reaching for the bar. The
+keys are then dropped. Switching the Collapse button off while collapsed opens the bar first.
+The
 bar only ever asks for partial refreshes of its own rectangle ("ui"; "fast" while it is dragged). The Display panel is a
 ButtonDialog anchored under the bar, rebuilt in place after each choice so the check marks show the
 live state; only a rotation closes it. Quality presets (Settings.QUALITY_PRESETS) are sets of the
@@ -345,15 +345,11 @@ four picture fields of the profile; Settings.preset_of() names the match or "cus
 Pointer modes (Settings: profile field pointer_mode, "touch" or "mouse"; pointer_speed in the global
 settings, Settings.POINTER_SPEEDS 0.75 / 1.25 / 2.0). Touch mode acts at the finger. In Mouse mode the
 viewer keeps a remote pointer position, a one-finger drag moves it by the drag delta taken through
-the zoom and times the speed, and a tap clicks at the pointer. The click is *deferred* by KOReader's
-double-tap interval (ges_double_tap_interval): a pan that starts within it, near the tap, drops the
-click and becomes a left-button drag ("double tap and move"); a second tap sends the first click at
-once and then its own. Everything is built from GestureDetector's tap / hold / pan, no raw touch
-handling. The deferred click is sent or dropped (ViewerApp:_flush_deferred_click /
-_drop_deferred_click) before anything that could reorder it: a toolbar button, a later pointer
-action, key presses and closing the viewer. It takes the modifiers armed when its tap came
-(_deferred_click.mods); one armed while it waits stays armed for the next action. Touch mode
-clicks are never deferred.
+the zoom and times the speed, and a tap clicks at the pointer at once (two quick taps are a double click; the armed modifiers go
+with the click). A drag only moves the pointer, even right after a tap. A long press waits for its
+lift (a right click at the pointer) or its first move (a left-button drag from the pointer, moved
+through _mouse_move). Everything is built from GestureDetector's tap / hold / pan, no raw touch
+handling. Touch mode clicks are as immediate.
 
 Physical keyboard. Printable characters arrive as TextInput events, not as key events, and
 SDL 3 only delivers those after Device:startTextInput() ("Text input events are not received by
@@ -755,7 +751,7 @@ canvas follows rotations, the keyboard neither rescales nor moves a view that do
 it, the fitted zoom modes and the keyboard-aware placement behave, the keyboard yields to popups,
 the toolbar (its buttons, their tooltips, collapsing, dragging and clamping, the top-zone swipe
 toggling it, taps on it never reaching the remote, the Toolbar buttons… menu), both
-pointer modes' gestures (the deferred Mouse click, double tap and move, two-finger tap, no scroll or
+pointer modes' gestures (the instant Mouse click, long press then drag, two-finger tap, no scroll or
 rotate gesture, click and type by the Keyboard button's drag and by a two-finger long press), the Help page and the mode tooltip, the two-finger drag always panning, the Display panel and its quality presets, the More menu, the key
 strip, the reconnect box and loop (backoff, Retry now, Close, no background retry, Wi-Fi kept on while
 retrying), platform text input is enabled exactly while the viewer is shown, typed
@@ -839,7 +835,7 @@ Not verified, and where to look first if something is wrong:
 - The gesture *detector*: multi-touch gestures (pinch/spread/two-finger drag/two-finger tap) cannot be
   synthesised on this box (no ydotool/wtype, /dev/uinput is not writable, no bare X server, and
   Xwayland ignores XTest keys for an unfocused window), so the handlers are tested but the wiring
-  from real fingers is not. Same for a real swipe in the toolbar zone and for the Mouse-mode double tap and move timing.
+  from real fingers is not. Same for a real swipe in the toolbar zone and for the Mouse-mode long press then drag timing.
 - Tight compression: exercised against the mock only. It is not RFC 6143 and servers differ in how
   they read its control byte (0x0A is "uncompressed" in libvncclient, "PNG" in TurboVNC/noVNC);
   the implementation follows libvncclient, cross-checked against noVNC. Flip the profile
