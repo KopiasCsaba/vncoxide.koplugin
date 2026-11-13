@@ -378,6 +378,25 @@ end
 local CANVAS_TYPES = { [BB.TYPE_BB8] = true, [BB.TYPE_BBRGB24] = true, [BB.TYPE_BBRGB32] = true }
 
 --[[--
+Worker mode: sends the view to the scale worker as `G <id> ...` unless it is the one last sent,
+and keeps `link.canvas_bb`, the shared canvas memory seen as a `cw` x `ch` buffer of `btype`.
+]]
+function Remote:_send_view(link, cw, ch, btype, dither)
+    local v = self:_render_view()
+    local key = string.format("%.17g %.17g %.17g %d %d %d %d %s %.17g %d", v.scale, v.x, v.y, cw, ch,
+        btype, dither and 1 or 0, self.scaling, self.contrast, self.invert and 1 or 0)
+    if key ~= link.view_key then
+        link.view_id = (link.view_id or 0) + 1
+        link.view_key, link.view_cw, link.view_ch = key, cw, ch
+        link.scale:send("G " .. link.view_id .. " " .. key)
+    end
+    local cb = link.canvas_bb
+    if not (cb and cb:getWidth() == cw and cb:getHeight() == ch and cb:getType() == btype) then
+        link.canvas_bb = SharedMem.bb(link.canvas_mem.ptr, cw, ch, btype)
+    end
+end
+
+--[[--
 Draws the view into `bb` at `(cx, cy)`, using a canvas of `cw` x `ch`.
 
 The scaled view lives in a persistent canvas-sized buffer of `bb`'s type, (re)allocated only when
@@ -395,6 +414,12 @@ what dithering the whole canvas would give), and that buffer is blitted as is.
 
 Sets `last_recomputed_px` (canvas pixels rescaled) and, when dithering, `last_blit_ms` (the
 dithering plus the blit).
+
+While worker processes run (`worker_link`, see @{vnc.workers}) nothing is scaled here: a view
+(scale, offset, canvas size and type, dithering, scaling mode, contrast, inversion) other than the
+one last sent goes to the scale worker as a `G` message with a new id, and the shared canvas the
+workers keep is blitted as it is. The canvas rects the scale worker then reports for that id are
+repainted by the session's poll (@{vnc.session}).
 --- @tparam BlitBuffer bb destination
 --- @tparam boolean dither use the dithered blit (grey-screen screenshot path)
 --- @treturn boolean whether the canvas area was painted
@@ -406,6 +431,16 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
 
     local btype = bb:getType()
     if not CANVAS_TYPES[btype] then btype = BB.TYPE_BBRGB24 end
+    local link = self.worker_link
+    if link then
+        self:_send_view(link, cw, ch, btype, dither)
+        bb:blitFrom(link.canvas_bb, cx, cy, 0, 0, cw, ch)
+        -- the in-process canvas buffer is out of date: should the workers stop, the next paint
+        -- here recomputes all of it
+        self._all_stale = true
+        if #self._stale > 0 then self._stale = {} end
+        return true
+    end
     local renderer = self.renderer
     renderer:render(self.plane, self:_render_view(), self.scaling, cw, ch, btype, dither,
         self._stale, self._all_stale)

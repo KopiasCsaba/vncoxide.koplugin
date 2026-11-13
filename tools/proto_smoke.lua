@@ -119,7 +119,11 @@ local function start_mock(opts)
     if opts.repaint then table.insert(cmd, "--repaint"); table.insert(cmd, tostring(opts.repaint)) end
     if opts.resize_after then table.insert(cmd, "--resize-after"); table.insert(cmd, tostring(opts.resize_after)) end
     if opts.split then table.insert(cmd, "--split"); table.insert(cmd, tostring(opts.split)) end
-    table.insert(cmd, "--once")
+    if opts.resize_once then table.insert(cmd, "--resize-once") end
+    if opts.alt_pattern then table.insert(cmd, "--alt-pattern"); table.insert(cmd, opts.alt_pattern) end
+    if opts.input_during_send then table.insert(cmd, "--input-during-send") end
+    -- (`persist`: it serves later connections too, e.g. a reconnect)
+    if not opts.persist then table.insert(cmd, "--once") end
     local full = table.concat(cmd, " ") .. " > " .. log .. ".stdout 2>&1 & echo $!"
     local h = assert(io.popen(full, "r"))
     local pid = (h:read("*l") or ""):gsub("%s", "")
@@ -398,6 +402,147 @@ local function connect_sync(s, cb)
     end
 end
 
+-- ---------------------------------------------------------------- the session as the workers' proxy
+-- A UIManager on the real clock that runs due tasks (the session's poll task, a worker
+-- handle's delayed kill), and every link Workers.start makes, for the cleanup.
+local function proxy_env()
+    load_session()
+    local UIManager = require("ui/uimanager")
+    local Workers = require("vnc/workers")
+    local real_si, real_un, real_start = UIManager.scheduleIn, UIManager.unschedule, Workers.start
+    local env = { tasks = {}, links = {} }
+    UIManager.scheduleIn = function(_, delay, fn, ...)
+        env.tasks[#env.tasks + 1] = { t = socket.gettime() + delay, fn = fn, args = { ... }, n = select("#", ...) }
+    end
+    UIManager.unschedule = function(_, fn)
+        for i = #env.tasks, 1, -1 do
+            if env.tasks[i].fn == fn then table.remove(env.tasks, i) end
+        end
+    end
+    Workers.start = function(session)
+        local link, err = real_start(session)
+        if link then env.links[#env.links + 1] = link end
+        return link, err
+    end
+    --- Runs the due tasks once.
+    function env.step()
+        local now, due = socket.gettime(), {}
+        for i = #env.tasks, 1, -1 do
+            if env.tasks[i].t <= now then due[#due + 1] = table.remove(env.tasks, i) end
+        end
+        for i = #due, 1, -1 do due[i].fn(unpack(due[i].args, 1, due[i].n)) end
+    end
+    --- Runs tasks until `cond()` holds (true) or `timeout` seconds passed (false).
+    function env.run_until(cond, timeout)
+        local deadline = socket.gettime() + timeout
+        repeat
+            env.step()
+            if cond() then return true end
+            socket.sleep(0.003)
+        until socket.gettime() > deadline
+        return cond() and true or false
+    end
+    --- Restores the scheduler and makes sure no worker of any link outlives the check.
+    function env.finish()
+        UIManager.scheduleIn, UIManager.unschedule, Workers.start = real_si, real_un, real_start
+        for _, link in ipairs(env.links) do
+            pcall(link.stop, link)
+            for _, h in ipairs({ link.decode, link.scale }) do
+                local deadline = socket.gettime() + 2
+                while not h.pid and h.read_fd and socket.gettime() < deadline do
+                    h.eof = false
+                    h:poll()
+                    socket.sleep(0.01)
+                end
+                if h.pid then
+                    ffi.C.kill(h.pid, 9)
+                    while ffi.C.kill(h.pid, 0) == 0 and socket.gettime() < deadline do socket.sleep(0.01) end
+                end
+            end
+        end
+        env.tasks = {}
+    end
+    return env
+end
+-- The app side of a session: records what the session hands it.
+local function proxy_app()
+    local app = { dirty = {}, resized = 0, bells = 0 }
+    function app.on_framebuffer_dirty_canvas(_, rects) app.dirty[#app.dirty + 1] = rects end
+    function app.on_framebuffer_dirty() error("in worker mode the app gets canvas rects") end
+    function app.on_remote_resized() app.resized = app.resized + 1 end
+    function app.on_bell() app.bells = app.bells + 1 end
+    return app
+end
+local function pattern_plane(pattern, W, H)
+    local plane = BB.new(W, H, BB.TYPE_BBRGB24)
+    for y = 0, H - 1 do
+        for x = 0, W - 1 do
+            plane:setPixel(x, y, BB.ColorRGB24(pattern_pixel(pattern, x, y, W, H)))
+        end
+    end
+    return plane
+end
+--[[--
+A paint target for `remote` (BB8, the size of its canvas) and a function that tells whether
+the target, painted now, shows `pattern` as the remote's current view scales it (nil when it
+does, else the first mismatching probe).
+]]
+local function canvas_probe(remote, cw, ch)
+    local Scaler = require("vnc/scaler")
+    local target = BB.new(cw, ch, BB.TYPE_BB8)
+    local cache = {}
+    return target, function(pattern)
+        local W, H = remote:get_size()
+        local view = remote:_render_view()
+        local key = string.format("%s %d %d %.17g %.17g %.17g", pattern, W, H, view.scale, view.x, view.y)
+        local exp = cache[key]
+        if not exp then
+            local plane = pattern_plane(pattern, W, H)
+            exp = BB.new(cw, ch, BB.TYPE_BB8)
+            Scaler.render(exp, plane, view, { x = 0, y = 0, w = cw, h = ch }, remote.scaling)
+            plane:free()
+            cache[key] = exp
+        end
+        remote:draw_to(target, 0, 0, cw, ch, false)
+        for i = 0, 4 do
+            for j = 0, 4 do
+                local x, y = math.floor((cw - 1) * (2 * i + 1) / 10), math.floor((ch - 1) * (2 * j + 1) / 10)
+                local a, e = target:getPixel(x, y):getColor8().a, exp:getPixel(x, y):getColor8().a
+                if a ~= e then return string.format("(%d,%d) is %d, expected %d", x, y, a, e) end
+            end
+        end
+        return nil
+    end
+end
+-- Waits until the paint target shows `pattern` (the session's poll running meanwhile).
+local function wait_canvas(env, shows, pattern, timeout)
+    local bad
+    env.run_until(function()
+        bad = shows(pattern)
+        return bad == nil
+    end, timeout)
+    return bad
+end
+local function proxy_session(env, name, mock)
+    local Session = load_session()
+    require("vnc/workers").canvas_bytes = function() return 400 * 400 * 4 end
+    mock.name = name
+    local pid, port, log = start_mock(mock)
+    local states = {}
+    local s = Session.new{
+        profile = { host = "127.0.0.1", port = port, password = "", name = name },
+        worker_processes = true,
+        network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+        on_state = function(st) states[#states + 1] = st end,
+    }
+    local connected, cerr
+    s:connect(function(ok, err) connected, cerr = ok, err end)
+    env.run_until(function() return connected ~= nil end, 10)
+    if not connected then error("connect failed: " .. tostring(cerr)) end
+    if not s.workers then error("no workers started") end
+    return s, pid, log, states
+end
+
 -- ---------------------------------------------------------------- checks
 
 local failures = 0
@@ -414,6 +559,23 @@ local function check(name, fn)
             print(string.format("FAIL: %s: %s", name, tostring(err)))
         end
     end
+end
+
+--[[--
+A live-connection session check in both modes: `name` in-process, `name_workers` with
+`worker_processes` (the session as the workers' proxy). Checks that inspect the in-process
+session's internals (`session.proto`, `tx`, the receive buffer, `_pump`) are in-process only:
+session_send_partial_progress, session_send_partial_end_to_end (the UI's socket buffer),
+session_modifier_release_after_input_waits_a_gap, session_holds_update_request_during_input,
+session_requests_update_at_once_without_input, protocol_release_update_noop, the update timing
+checks (`on_update`), session_attach_after_held_request_owes_nothing,
+session_does_not_log_the_server_clipboard, session_forced_area_waits_while_held and the
+session_rx_* checks; the connect-phase checks run before any worker exists, and the benchmark
+always runs in-process.
+]]
+local function both_modes(name, in_process, workers)
+    check(name, in_process)
+    check(name .. "_workers", workers)
 end
 
 --- Runs one encoding end-to-end against the mock and compares every pixel.
@@ -1485,11 +1647,42 @@ local function main()
         return true
     end)
 
+    -- (worker mode: the decode worker decodes the split stream into the shared plane)
+    local function split_workers()
+        local env = proxy_env()
+        local s, mpid
+        local ok, err = pcall(function()
+            local W, H = 32, 24
+            s, mpid = proxy_session(env, "split_w", { encoding = "raw", pattern = "gradient",
+                width = W, height = H, split = 16 })
+            local remote = s:get_remote()
+            local target = BB.new(W, H, BB.TYPE_BB8)
+            remote:draw_to(target, 0, 0, W, H, false)
+            local app = proxy_app()
+            s:attach(app)
+            local bad
+            local done = env.run_until(function()
+                local good, why = check_plane(remote:get_plane(), W, H, expect_pattern("gradient", W, H))
+                bad = why
+                return good and app.dirty[1] ~= nil
+            end, 20)
+            target:free()
+            if not done then
+                error(bad or "rectangle decoded but the app was not told the canvas changed")
+            end
+        end)
+        if s then s:disconnect() end
+        env.finish()
+        stop_mock(mpid)
+        if not ok then return nil, err end
+        return true
+    end
+
     -- 11. A server message that arrives split across TCP segments: the transport keeps the
     -- partial reads and resumes, and the protocol decodes the message once the rest arrives.
     -- (The mock writes every message in small chunks, with a pause between them, so the reads
     -- between the chunks really do time out.)
-    check("session_split_server_message", function()
+    both_modes("session_split_server_message", function()
         local Session = load_session()
         local W, H = 32, 24
         local pid, port = start_mock{
@@ -1549,7 +1742,7 @@ local function main()
         s:disconnect()
         stop_mock(pid)
         return ok, err
-    end)
+    end, split_workers)
 
     -- 12. The same partial write over a real socket: a message larger than the send buffer,
     -- flushed in one go, must not be duplicated. SO_SNDBUF is shrunk so the write really is
@@ -2915,6 +3108,43 @@ local function main()
         remote:set_canvas(160, 120)
     end
 
+    -- Worker mode: the same session behind the workers; the requests are read from the mock's log.
+    local function view_workers(name, opts, body)
+        return function()
+            local env = proxy_env()
+            local v, s, mpid = { env = env, W = 160, H = 120, app = proxy_app() }, nil, nil
+            local ok, err = pcall(function()
+                s, mpid, v.log = proxy_session(env, name, { encoding = "raw", pattern = "gradient",
+                    width = v.W, height = v.H, repaint = opts.repaint })
+                v.s = s
+                function v.requests()
+                    local out = {}
+                    for inc, x, y, w, h in (read_file(v.log) or ""):gmatch(
+                            "FramebufferUpdateRequest incremental=(%d) x=(%d+) y=(%d+) w=(%d+) h=(%d+)") do
+                        out[#out + 1] = req_bytes(tonumber(inc), tonumber(x), tonumber(y), tonumber(w), tonumber(h))
+                    end
+                    return out
+                end
+                function v.wait(cond, what)
+                    if not env.run_until(cond, 10) then error("timed out waiting for " .. what) end
+                end
+                function v.idle(t) env.run_until(function() return false end, t) end
+                body(v, s, s:get_remote())
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end
+    end
+    -- attach: the full request, then (once it is decoded) the first incremental one
+    local function attach_first_update(v)
+        local before = #v.requests()
+        v.s:attach(v.app)
+        v.wait(function() return #v.requests() >= before + 2 end, "the first update")
+    end
+
     check("remote_visible_rect_fit_and_zoomed", function()
         local Remote = require("vnc/framebuffer")
         local r = Remote.new(160, 120)
@@ -2936,7 +3166,7 @@ local function main()
         return true
     end)
 
-    check("session_fit_requests_whole_framebuffer", function()
+    both_modes("session_fit_requests_whole_framebuffer", function()
         local env = view_session("view_fit", {})
         local ok, err = pcall(function()
             local s, remote = env.s, env.s:get_remote()
@@ -2950,9 +3180,20 @@ local function main()
             if reqs[2] ~= req_bytes(1, 0, 0, 160, 120) then error("incremental request is not the whole framebuffer") end
         end)
         return env.done(ok, err)
-    end)
+    end, view_workers("view_fit_w", {}, function(v, s, remote)
+        remote:fit_view(320, 200)
+        s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+        v.idle(0.2)
+        if #v.requests() ~= 0 then error("a fit view must not send anything by itself") end
+        attach_first_update(v)
+        v.idle(0.2)
+        local reqs = v.requests()
+        if #reqs ~= 2 then error("expected the full request and one incremental, got " .. #reqs) end
+        if reqs[1] ~= req_bytes(0, 0, 0, 160, 120) then error("full request bytes changed") end
+        if reqs[2] ~= req_bytes(1, 0, 0, 160, 120) then error("incremental request is not the whole framebuffer") end
+    end))
 
-    check("session_zoomed_requests_visible_area", function()
+    both_modes("session_zoomed_requests_visible_area", function()
         local env = view_session("view_zoom", { repaint = 0.02 })
         local ok, err = pcall(function()
             local s, remote = env.s, env.s:get_remote()
@@ -2984,9 +3225,32 @@ local function main()
             if not clipped then error("no repaint was clipped to the requested rect") end
         end)
         return env.done(ok, err)
-    end)
+    end, view_workers("view_zoom_w", { repaint = 0.02 }, function(v, s, remote)
+        zoom_quarter(remote)
+        s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+        v.idle(0.2)
+        if #v.requests() ~= 0 then error("zooming in needs no forced request, got " .. #v.requests()) end
+        attach_first_update(v)
+        v.wait(function() return log_count(v.log, "REPAINT x=") >= 6 end, "six repaints")
+        local reqs = v.requests()
+        if reqs[1] ~= req_bytes(0, 0, 0, 160, 120) then error("the attach's full request must stay whole-framebuffer") end
+        for i = 2, #reqs do
+            if reqs[i] ~= req_bytes(1, 0, 0, 100, 75) then
+                error(string.format("request %d is not the incremental visible area + margin", i))
+            end
+        end
+        local clipped = false
+        for x, y, w, h in (read_file(v.log) or ""):gmatch("REPAINT x=(%d+) y=(%d+) w=(%d+) h=(%d+)") do
+            x, y, w, h = tonumber(x), tonumber(y), tonumber(w), tonumber(h)
+            if x + w > 100 or y + h > 75 then
+                error(string.format("change outside the requested rect: %d,%d %dx%d", x, y, w, h))
+            end
+            if w < 40 or h < 40 then clipped = true end
+        end
+        if not clipped then error("no repaint was clipped to the requested rect") end
+    end))
 
-    check("session_pan_requests_newly_visible_area", function()
+    both_modes("session_pan_requests_newly_visible_area", function()
         local env = view_session("view_pan", {})
         local ok, err = pcall(function()
             local s, remote = env.s, env.s:get_remote()
@@ -3030,11 +3294,37 @@ local function main()
             end
         end)
         return env.done(ok, err)
-    end)
+    end, view_workers("view_pan_w", {}, function(v, s, remote)
+        zoom_quarter(remote)
+        s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+        attach_first_update(v)
+        v.idle(0.1)
+        -- stale pixels where the view is about to go (the plane is shared with the decode worker)
+        remote:get_plane():paintRect(60, 45, 100, 75, BB.COLOR_BLACK)
+        local before = #v.requests()
+        remote.view_x, remote.view_y = 80, 60
+        remote:set_canvas(160, 120)
+        local area = remote:visible_remote_rect(s.REQUEST_MARGIN)
+        s:set_view_area(area)
+        s:set_view_area(area) -- unchanged: nothing more
+        v.wait(function() return #v.requests() >= before + 2 end, "the forced update and the next request")
+        v.idle(0.2)
+        local reqs = v.requests()
+        if #reqs ~= before + 2 or reqs[before + 1] ~= req_bytes(0, 60, 45, 100, 75) then
+            error("expected exactly one non-incremental request for the newly visible area")
+        end
+        if reqs[before + 2] ~= req_bytes(1, 60, 45, 100, 75) then
+            error("the follow-up incremental request must carry the new area")
+        end
+        local cok, cerr = check_plane(remote:get_plane(), 160, 120, function(x, y)
+            if x >= 60 and y >= 45 then return pattern_pixel("gradient", x, y, 160, 120) end
+        end)
+        if not cok then error(cerr) end
+    end))
 
     -- Not attached (the viewer is closed): the newly visible area is only queued; attach's
     -- whole-screen request covers it.
-    check("session_view_area_queued_while_detached", function()
+    both_modes("session_view_area_queued_while_detached", function()
         local env = view_session("view_detached", {})
         local ok, err = pcall(function()
             local s, remote = env.s, env.s:get_remote()
@@ -3056,7 +3346,29 @@ local function main()
             if s.forced then error("the whole-screen request covers the owed area") end
         end)
         return env.done(ok, err)
-    end)
+    end, view_workers("view_detached_w", {}, function(v, s, remote)
+        zoom_quarter(remote)
+        s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+        attach_first_update(v)
+        s:detach()
+        v.idle(0.1)
+        local before = #v.requests()
+        remote.view_x, remote.view_y = 80, 60
+        remote:set_canvas(160, 120)
+        s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+        v.idle(0.3)
+        if #v.requests() ~= before then error("nothing may be sent while detached") end
+        s:attach(v.app)
+        v.wait(function() return #v.requests() >= before + 1 end, "the attach's request")
+        v.idle(0.3)
+        local reqs = v.requests()
+        if reqs[before + 1] ~= req_bytes(0, 0, 0, 160, 120) then
+            error("attach must send exactly its whole-screen request")
+        end
+        for i = before + 2, #reqs do
+            if reqs[i]:byte(2) == 0 then error("the whole-screen request covers the owed area") end
+        end
+    end))
 
     check("session_forced_area_waits_while_held", function()
         local env = view_session("view_hold", {})
@@ -4152,6 +4464,65 @@ local function main()
             return true
         end)
 
+        -- The scale worker drains every pending message before it renders, not one read's worth.
+        check("latest_view_wins_across_reads", function()
+            local Worker = require("vnc/worker")
+            local chunk = Worker.READ_CHUNK
+            Worker.READ_CHUNK = 64 -- (the workers inherit it: a G line or so per read)
+            local ok0, s, _, mpid = pcall(worker_session, "wk_latest_reads", { encoding = "raw", pattern = "quadrants" })
+            Worker.READ_CHUNK = chunk
+            if not ok0 then return nil, s end
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                link_pids(link)
+                local g = {}
+                for i = 1, 10 do g[i] = g_line(i, 0.25 + i * 0.05, 100, 75) end
+                link.scale:send(table.concat(g, "\n")) -- one write, many reads
+                local last, seen = wait_c(link, function(l) return l == "C 10 full" end, 5)
+                if not last then error("no C 10 full: " .. table.concat(seen, " | ")) end
+                wait_c(link, function() return false end, 0.3, seen)
+                if #seen ~= 1 then error("rendered views: " .. table.concat(seen, " | ")) end
+            end)
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- A render that fails in the scale worker reaches the session as its error.
+        check("scale_render_error_is_a_session_error", function()
+            local s, states, mpid = worker_session("wk_render_err", { encoding = "raw", pattern = "quadrants" })
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                link_pids(link)
+                -- a canvas larger than the shared canvas memory: the renderer refuses it
+                link.scale:send(string.format("G 1 1 0 0 2000 2000 %d 0 smooth 1 0", BB.TYPE_BBRGB32))
+                local deadline = socket.gettime() + 3
+                while s:get_state() ~= "error" and socket.gettime() < deadline do
+                    link:poll()
+                    socket.sleep(0.01)
+                end
+                if s:get_state() ~= "error" then error("state " .. tostring(s:get_state())) end
+                if not tostring(s:get_error()):find("render failed", 1, true) then
+                    error("the error is not the scale worker's: " .. tostring(s:get_error()))
+                end
+                local errors = 0
+                for _, st in ipairs(states) do if st == "error" then errors = errors + 1 end end
+                if errors ~= 1 then error("on_state('error') " .. errors .. " times") end
+            end)
+            for _, p in ipairs({ link and link.decode.pid, link and link.scale.pid }) do
+                if p then ffi.C.kill(p, 9); wait_gone(p, 2) end
+            end
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
         check("decode_rects_reach_the_canvas", function()
             local Scaler = require("vnc/scaler")
             -- An 80x80 desktop: the mock's 40x40 repaint box at (0, 0) is exactly its top-left quadrant.
@@ -4217,6 +4588,136 @@ local function main()
             s:disconnect()
             stop_mock(mpid)
             if not ok then return nil, why end
+            return true
+        end)
+
+        check("detached_workers_read_nothing_and_resync_on_attach", function()
+            local env = proxy_env()
+            local s, mpid
+            local ok, err = pcall(function()
+                local log
+                s, mpid, log = proxy_session(env, "wk_detach", { encoding = "raw", pattern = "quadrants",
+                    alt_pattern = "checker", repaint = 0.1, persist = true })
+                local remote = s:get_remote()
+                local target, shows = canvas_probe(remote, 200, 150)
+                local app = proxy_app()
+                s:attach(app)
+                local bad = wait_canvas(env, shows, "quadrants", 5)
+                if bad then error("attached: the canvas is not the picture: " .. bad) end
+                if not app.dirty[1] then error("the app was not told of the new canvas") end
+                s:detach()
+                -- (a repaint decoded just before the detach may still be on its way)
+                local link = s.workers
+                env.run_until(function() link.scale:poll(); return false end, 0.3)
+                os.execute("kill -USR1 " .. mpid)
+                if not wait_for_log(log, "PATTERN checker", 5) then error("the mock did not switch") end
+                -- detached: the decode worker reads nothing, so the scale worker reports nothing
+                local seen = {}
+                local deadline = socket.gettime() + 1
+                repeat
+                    env.step()
+                    for _, l in ipairs((link.scale:poll())) do seen[#seen + 1] = l end
+                    socket.sleep(0.01)
+                until socket.gettime() > deadline
+                for _, l in ipairs(seen) do
+                    if l:match("^C ") then error("a C while detached: " .. l) end
+                end
+                local n = #app.dirty
+                s:attach(app)
+                bad = wait_canvas(env, shows, "checker", 5)
+                if bad then error("attach did not resynchronise: " .. bad) end
+                if #app.dirty == n then error("the app was not told of the resynchronised canvas") end
+                target:free()
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        check("keys_reach_the_server_during_a_long_decode", function()
+            local env = proxy_env()
+            local s, mpid, log
+            local ok, err = pcall(function()
+                -- 400x300 Raw is 480 kB: in 8 kB pieces 20 ms apart it takes well over a second
+                s, mpid, log = proxy_session(env, "wk_keys", { encoding = "raw", pattern = "gradient",
+                    width = 400, height = 300, split = 8192, input_during_send = true })
+                local remote = s:get_remote()
+                local target = BB.new(100, 75, BB.TYPE_BB8)
+                remote:fit_view(100, 75)
+                remote:draw_to(target, 0, 0, 100, 75, false)
+                s:attach(proxy_app())
+                -- the update is on its way once the request is in
+                if not wait_for_log(log, "INPUT FramebufferUpdateRequest incremental=0", 5) then
+                    error("no full update request")
+                end
+                env.run_until(function() return false end, 0.2)
+                local keys = { 0x61, 0x62, 0x63, 0x64, 0x65 }
+                for _, k in ipairs(keys) do
+                    s:send_key(k, true)
+                    s:send_key(k, false)
+                    env.run_until(function() return false end, 0.02)
+                end
+                if not env.run_until(function() return log_has(log, "UPDATE_SENT") end, 20) then
+                    error("the update never finished")
+                end
+                local text = read_file(log) or ""
+                local done_at = text:find("UPDATE_SENT", 1, true)
+                local pos = 1
+                for _, k in ipairs(keys) do
+                    local i = text:find(string.format("INPUT KeyEvent down=1 keysym=0x%x", k), pos, true)
+                    if not i then error(string.format("key 0x%x missing or out of order", k)) end
+                    if i > done_at then error(string.format("key 0x%x reached the server only after the update", k)) end
+                    pos = i
+                end
+                target:free()
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        check("desktop_resize_reconnects", function()
+            local env = proxy_env()
+            local s, mpid
+            local ok, err = pcall(function()
+                local log, states
+                -- the second update request (the first incremental one) gets a DesktopSize: 200x150 -> 232x166
+                s, mpid, log, states = proxy_session(env, "wk_resize", { encoding = "raw", pattern = "quadrants",
+                    resize_after = 2, resize_once = true, persist = true })
+                local remote = s:get_remote()
+                local first = s.workers
+                local app = proxy_app()
+                local target = BB.new(200, 150, BB.TYPE_BB8)
+                remote:draw_to(target, 0, 0, 200, 150, false)
+                s:attach(app)
+                if not env.run_until(function()
+                    return app.resized > 0 and s.workers ~= nil and s.workers ~= first and s:is_attached()
+                end, 10) then
+                    error(string.format("no reconnect: resized %d, state %s, workers %s (%s)", app.resized,
+                        tostring(s:get_state()), tostring(s.workers), tostring(s:get_error())))
+                end
+                local w, h = remote:get_size()
+                if w ~= 232 or h ~= 166 then error(string.format("size %dx%d", w, h)) end
+                if s:get_remote() ~= remote then error("the remote object was replaced") end
+                local _, shows = canvas_probe(remote, 200, 150)
+                local bad = wait_canvas(env, shows, "quadrants", 5)
+                if bad then error("the new desktop's canvas: " .. bad) end
+                env.run_until(function() return false end, 0.3)
+                if app.resized ~= 1 then error("on_remote_resized fired " .. app.resized .. " times") end
+                for _, st in ipairs(states) do
+                    if st == "error" then error("the session failed on the way: " .. tostring(s:get_error())) end
+                end
+                if log_count(log, "\nCONNECT\n") ~= 2 then error("expected two connections to the mock") end
+                target:free()
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
             return true
         end)
     end

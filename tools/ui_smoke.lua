@@ -8179,6 +8179,227 @@ check("a_second_finger_joining_a_long_press_only_ends_it", function()
     end
 end)
 
+-- ---------------------------------------------------------------- worker processes
+
+--[[--
+The real viewer over a real session with `worker_processes`, against tools/mock_vnc_server.py:
+the session forks the decode and scale workers after the handshake, the viewer only blits their
+canvas. `fn(env)` gets `env.app`, `env.session`, `env.log` (the mock's log), `env.pump(cond,
+timeout)` (runs UIManager's tasks and paints until `cond()`), `env.shows(pattern)` (nil when the
+panel shows the pattern as the remote's view scales it, else the first mismatching probe) and
+`env.canvas_at(x, y)` (the shared canvas' pixel). Nothing it started outlives it.
+]]
+local function with_worker_viewer(name, fn)
+    local socket = require("socket")
+    local ffi = require("ffi")
+    local Session = require("vnc/session")
+    local Workers = require("vnc/workers")
+    local Scaler = require("vnc/scaler")
+    local probe = assert(socket.bind("127.0.0.1", 0))
+    local _, port = probe:getsockname()
+    probe:close()
+    local log = data_dir .. "/" .. name .. ".log"
+    os.remove(log)
+    -- (a desktop of the screen's orientation: the viewer does not turn the screen)
+    local size = Screen:getSize()
+    local mw, mh = 400, 300
+    if size.w < size.h then mw, mh = 300, 400 end
+    local h = assert(io.popen(string.format("python3 %s/mock_vnc_server.py --port %d --encoding raw "
+        .. "--pattern quadrants --width %d --height %d --log %s --once > /dev/null 2>&1 & echo $!",
+        tool_dir, port, mw, mh, log), "r"))
+    local mock_pid = (h:read("*l") or ""):gsub("%s", "")
+    h:close()
+    local links = {}
+    local real_new, real_start = Session.new, Workers.start
+    local env = { log = log }
+    local function has(needle)
+        local f = io.open(log, "r")
+        if not f then return false end
+        local text = f:read("*a")
+        f:close()
+        return text:find(needle, 1, true) ~= nil
+    end
+    env.has = has
+    function env.pump(cond, timeout)
+        local deadline = socket.gettime() + (timeout or 5)
+        repeat
+            UIManager:_checkTasks()
+            UIManager:forceRePaint()
+            if cond() then return true end
+            socket.sleep(0.005)
+        until socket.gettime() > deadline
+        return cond() and true or false
+    end
+    local ok, err = pcall(function()
+        local deadline = socket.gettime() + 10
+        while not has("LISTENING") do
+            assert_true(socket.gettime() < deadline, "the mock server did not start")
+            socket.sleep(0.02)
+        end
+        Session.new = function(o) o.worker_processes = true; return real_new(o) end
+        Workers.start = function(s)
+            local link, e = real_start(s)
+            if link then links[#links + 1] = link end
+            return link, e
+        end
+        store:save_profile{ name = name, host = "127.0.0.1", port = port }
+        fresh_screen()
+        plugin:connect_profile(name)
+        assert_true(env.pump(function() return plugin.app ~= nil end, 10),
+            "the viewer did not open: " .. stack_desc())
+        local app = plugin.app
+        env.app, env.session = app, app.session
+        assert_true(env.session.workers ~= nil, "no worker processes")
+        app:set_toolbar_visible(false)
+        UIManager:forceRePaint()
+        function env.canvas_at(x, y)
+            return env.session.workers.canvas_bb:getPixel(x, y):getColorRGB32()
+        end
+        function env.shows(pattern)
+            local remote = app.remote
+            local W, H = remote:get_size()
+            local c = app.canvas
+            local plane = bb.new(W, H, bb.TYPE_BBRGB24)
+            for y = 0, H - 1 do
+                for x = 0, W - 1 do
+                    local left, top = x < W / 2, y < H / 2
+                    assert(pattern == "quadrants")
+                    local r, g, b
+                    if top then r, g, b = left and 255 or 0, left and 0 or 255, 0
+                    else r, g, b = left and 0 or 255, left and 0 or 255, 255 end
+                    plane:setPixel(x, y, bb.ColorRGB24(r, g, b))
+                end
+            end
+            -- (the canvas has the screen's type, or RGB24 for a type the scaler does not write)
+            local t = panel:getType()
+            if t ~= bb.TYPE_BB8 and t ~= bb.TYPE_BBRGB32 then t = bb.TYPE_BBRGB24 end
+            local exp = bb.new(c.w, c.h, t)
+            Scaler.render(exp, plane, remote:_render_view(), { x = 0, y = 0, w = c.w, h = c.h }, remote.scaling)
+            plane:free()
+            local bad
+            for i = 0, 4 do
+                for j = 0, 4 do
+                    local x, y = math.floor((c.w - 1) * (2 * i + 1) / 10), math.floor((c.h - 1) * (2 * j + 1) / 10)
+                    local want = exp:getPixel(x, y):getColor8().a
+                    local got = panel:getPixel(c.x + x, c.y + y):getColor8().a
+                    if not bad and math.abs(got - want) > 1 then
+                        bad = string.format("canvas (%d,%d): panel %d, expected %d", x, y, got, want)
+                    end
+                end
+            end
+            exp:free()
+            return bad
+        end
+        fn(env)
+    end)
+    Session.new, Workers.start = real_new, real_start
+    pcall(plugin.disconnect_session, plugin, name)
+    store:delete_profile(name)
+    -- the workers: their own process groups, not our children
+    for _, link in ipairs(links) do
+        for _, w in ipairs({ link.decode, link.scale }) do
+            local d = socket.gettime() + 2
+            while not w.pid and w.read_fd and socket.gettime() < d do w:poll(); socket.sleep(0.01) end
+            if w.pid then
+                ffi.C.kill(w.pid, 9)
+                while ffi.C.kill(w.pid, 0) == 0 and socket.gettime() < d do socket.sleep(0.01) end
+            end
+        end
+    end
+    if mock_pid ~= "" then os.execute("kill -9 " .. mock_pid .. " 2>/dev/null") end
+    if not ok then error(err, 0) end
+end
+
+check("worker_viewer_shows_the_remote", function()
+    with_worker_viewer("wk_view", function(env)
+        local bad
+        assert_true(env.pump(function() bad = env.shows("quadrants"); return bad == nil end, 10),
+            "the panel never showed the remote: " .. tostring(bad))
+        local c = env.app:canvas_geom()
+        local pos = Geom:new{ x = c.x + math.floor(c.w / 3), y = c.y + math.floor(c.h / 4) }
+        local rx, ry = env.app:_to_remote(pos.x, pos.y)
+        dispatch_gesture{ ges = "tap", pos = pos }
+        local want = string.format("INPUT PointerEvent mask=1 x=%d y=%d", rx, ry)
+        assert_true(env.pump(function() return env.has(want) end, 5), "the mock never saw " .. want)
+    end)
+end)
+
+check("pan_does_not_scale_on_the_ui_thread", function()
+    local Scaler = require("vnc/scaler")
+    with_worker_viewer("wk_pan", function(env)
+        local bad
+        assert_true(env.pump(function() bad = env.shows("quadrants"); return bad == nil end, 10),
+            "the panel never showed the remote: " .. tostring(bad))
+        local app, remote = env.app, env.app.remote
+        local real_render, calls = Scaler.render, 0
+        Scaler.render = function(...) calls = calls + 1; return real_render(...) end
+        local ok, err = pcall(function()
+            local c = app.canvas
+            for i = 1, 10 do
+                if i % 2 == 1 then
+                    remote:zoom_at(c.w / 2, c.h / 2, 1.2)
+                else
+                    remote:pan_by(-20, -15)
+                end
+                UIManager:setDirty(app, "ui")
+                UIManager:_checkTasks()
+                UIManager:forceRePaint()
+            end
+        end)
+        Scaler.render = real_render
+        assert_true(ok, err)
+        assert_true(calls == 0, "the UI process scaled " .. calls .. " time(s)")
+        assert_true(env.pump(function() bad = env.shows("quadrants"); return bad == nil end, 10),
+            "the panel never showed the panned view: " .. tostring(bad))
+    end)
+end)
+
+check("closing_a_dialog_mid_render_leaves_no_remnant", function()
+    local ConfirmBox = require("ui/widget/confirmbox")
+    with_worker_viewer("wk_dialog", function(env)
+        local bad
+        assert_true(env.pump(function() bad = env.shows("quadrants"); return bad == nil end, 10),
+            "the panel never showed the remote: " .. tostring(bad))
+        local app, link = env.app, env.session.workers
+        local box = ConfirmBox:new{ text = "A question over the viewer" }
+        UIManager:show(box)
+        UIManager:forceRePaint()
+        local d = box.movable.dimen
+        assert_true(d and d.w > 0, "the box has a place on screen")
+        local area = Geom:new{ x = d.x, y = d.y, w = d.w, h = d.h }
+        -- a zoom: the paint sends a new view, the box is closed before the scale worker's answer
+        -- is polled
+        local id0 = link.view_id
+        app.remote:zoom_at(app.canvas.w / 2, app.canvas.h / 2, 1.5)
+        UIManager:setDirty(app, "ui")
+        UIManager:forceRePaint()
+        assert_true(link.view_id ~= id0, "the zoom sent no new view")
+        UIManager:close(box)
+        UIManager:forceRePaint()
+        local id = tostring(link.view_id)
+        local seen = false
+        local real = app.on_framebuffer_dirty_canvas
+        app.on_framebuffer_dirty_canvas = function(self, rects)
+            seen = true
+            return real(self, rects)
+        end
+        assert_true(env.pump(function() return seen end, 10), "no canvas rects for view " .. id)
+        app.on_framebuffer_dirty_canvas = nil
+        UIManager:forceRePaint()
+        local c = app.canvas
+        local x0, y0 = math.max(area.x, c.x), math.max(area.y, c.y)
+        local x1, y1 = math.min(area.x + area.w, c.x + c.w), math.min(area.y + area.h, c.y + c.h)
+        assert_true(x1 > x0 and y1 > y0, "the box covered part of the canvas")
+        local stale = 0
+        for y = y0, y1 - 1, 3 do
+            for x = x0, x1 - 1, 3 do
+                if pixel_at(panel, x, y) ~= env.canvas_at(x - c.x, y - c.y) then stale = stale + 1 end
+            end
+        end
+        assert_true(stale == 0, stale .. " probed pixel(s) where the box was differ from the canvas")
+    end)
+end)
+
 if failures > 0 then
     print(string.format("%d check(s) failed", failures))
     os.exit(1)

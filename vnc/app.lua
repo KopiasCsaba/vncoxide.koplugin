@@ -573,6 +573,23 @@ for covers the whole canvas again.
 ]]
 function ViewerApp:on_framebuffer_dirty(rect)
     if not self.canvas or not self.remote then return end
+    local rects = rect.x and { rect } or rect
+    local canvas_rects = {}
+    for _i, r in ipairs(rects) do
+        -- exactly the canvas pixels the remote rect can change (filters reach past its edges)
+        local d = self.remote:canvas_rect_for(r)
+        if d then canvas_rects[#canvas_rects + 1] = d end
+    end
+    self:on_framebuffer_dirty_canvas(canvas_rects)
+end
+
+--[[--
+@{ViewerApp:on_framebuffer_dirty} for rects that are canvas rects already (relative to the canvas
+origin): what the scale worker reports while worker processes run (@{vnc.workers}).
+--- @tparam table rects list of `{x, y, w, h}`
+]]
+function ViewerApp:on_framebuffer_dirty_canvas(rects)
+    if not self.canvas or not self.remote then return end
     if self:_modal_above() then
         -- Nothing of ours is visible: keep the plane current, and flash the next frame that is.
         self._needs_flash = true
@@ -584,14 +601,9 @@ function ViewerApp:on_framebuffer_dirty(rect)
         UIManager:setDirty(self, "flashui")
         return
     end
-    local rects = rect.x and { rect } or rect
-    for _i, r in ipairs(rects) do
-        -- exactly the canvas pixels the remote rect can change (filters reach past its edges)
-        local d = self.remote:canvas_rect_for(r)
-        if d then
-            UIManager:setDirty(self, "ui", Geom:new{ x = self.canvas.x + d.x, y = self.canvas.y + d.y,
-                w = d.w, h = d.h })
-        end
+    for _i, d in ipairs(rects) do
+        UIManager:setDirty(self, "ui", Geom:new{ x = self.canvas.x + d.x, y = self.canvas.y + d.y,
+            w = d.w, h = d.h })
     end
 end
 

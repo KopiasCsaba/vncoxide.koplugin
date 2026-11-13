@@ -17,7 +17,10 @@ usage: mock_vnc_server.py [--port 5900] [--width 800] [--height 600]
                           [--security none|vnc|vnc-only] [--password secret]
                           [--encoding raw|hextile|rre|copyrect|trle|zrle|tight|mixed]
                           [--pattern quadrants|gradient|checker] [--repaint SECONDS]
-                          [--log FILE] [--resize-after N] [--once]
+                          [--log FILE] [--resize-after N] [--resize-once] [--once]
+                          [--alt-pattern P] [--split N] [--input-during-send]
+
+SIGUSR1 switches the served picture to ``--alt-pattern`` (logged as ``PATTERN <name>``).
 """
 
 import argparse
@@ -26,6 +29,7 @@ import binascii
 import ctypes
 import ctypes.util
 import os
+import signal
 import socket
 import struct
 import sys
@@ -46,6 +50,10 @@ JPEG_RECT = (8, 8, 32, 32)          # where the Tight cases put the JPEG sub-rec
 JPEG_AVG = (199, 40, 120)           # decoded average of tools/tight_jpeg.b64
 
 LOG_FH = None
+# The pattern SIGUSR1 switched to (--alt-pattern), for every connection from then on.
+PATTERN_OVERRIDE = None
+# --resize-once: the desktop size after the resize, kept for later connections.
+RESIZED = None
 
 
 def log(msg):
@@ -241,7 +249,7 @@ class Framebuffer:
         return self.codec.cpixel(rgb)
 
     def pix(self, x, y):
-        p = self.pattern
+        p = PATTERN_OVERRIDE or self.pattern
         if p == "gradient":
             return (x % 256, y % 256, (x ^ y) % 256)
         if p == "quadrants":
@@ -657,6 +665,7 @@ class ChunkedSock:
         self._sock = sock
         self._chunk = chunk
         self._delay = delay
+        self.on_gap = None  # called between two pieces (--input-during-send)
 
     def __getattr__(self, name):
         return getattr(self._sock, name)
@@ -666,6 +675,8 @@ class ChunkedSock:
             self._sock.sendall(data[i:i + self._chunk])
             if i + self._chunk < len(data):
                 time.sleep(self._delay)
+                if self.on_gap:
+                    self.on_gap()
 
 
 class Connection:
@@ -745,6 +756,10 @@ class MockServer:
         self.requested = (0, 0, args.width, args.height)
         self.jpeg_blob = load_jpeg_blob()
         self.advertised = set()
+        # client messages read while an update was being sent, handled once it is out
+        self.deferred = []
+        if args.resize_once and RESIZED:
+            self.fb.w, self.fb.h = RESIZED
 
     # ------------------------------------------------------------ handshake
 
@@ -803,13 +818,16 @@ class MockServer:
         advertised = set()
         encoding_checked = False
 
+        if self.args.input_during_send and isinstance(conn.sock, ChunkedSock):
+            conn.sock.on_gap = lambda: self.input_during_send(conn)
+
         while True:
             if (self.args.repaint and self.pending_incremental
                     and time.monotonic() - self.last_repaint >= self.args.repaint):
                 self.send_repaint(conn, zrle, trle, hextile, tight)
                 self.last_repaint = time.monotonic()
 
-            msg = conn.try_message()
+            msg = self.deferred.pop(0) if self.deferred else conn.try_message()
             if msg is None:
                 continue
             t, data = msg
@@ -843,7 +861,8 @@ class MockServer:
                 if not encoding_checked:
                     raise ValueError("client requested an update before SetEncodings")
                 self.requests += 1
-                if self.args.resize_after and self.requests == self.args.resize_after:
+                if (self.args.resize_after and self.requests == self.args.resize_after
+                        and not (self.args.resize_once and RESIZED)):
                     self.send_resize(conn)
                     self.pending_incremental = False
                 elif inc:
@@ -871,6 +890,23 @@ class MockServer:
             elif t == 6:
                 length = struct.unpack(">I", data[4:8])[0]
                 log("INPUT ClientCutText len=%d" % length)
+
+    def input_during_send(self, conn):
+        """Between two pieces of an update: logs the key and pointer events that arrived (so a
+        log shows input that reached the server while the update was still going out); any
+        other message waits until the update is out."""
+        while True:
+            msg = conn.try_message()
+            if msg is None:
+                return
+            t, data = msg
+            if t == 4:
+                log("INPUT KeyEvent down=%d keysym=0x%x" % (data[1], struct.unpack(">I", data[4:8])[0]))
+            elif t == 5:
+                x, y = struct.unpack(">HH", data[2:6])
+                log("INPUT PointerEvent mask=%d x=%d y=%d" % (data[1], x, y))
+            else:
+                self.deferred.append(msg)
 
     def check_encodings(self, advertised):
         need = {
@@ -925,6 +961,8 @@ class MockServer:
             eid = {"raw": RAW, "rre": RRE, "hextile": HEXTILE, "trle": TRLE, "zrle": ZRLE}[enc]
             rects.append(self._rect(eid, x, y, w, h, encoders))
         conn.sock.sendall(bytes([0, 0]) + struct.pack(">H", len(rects)) + b"".join(rects))
+        if self.args.input_during_send:
+            log("UPDATE_SENT")
 
     def _tight_rects(self, tight):
         rects = []
@@ -971,8 +1009,11 @@ class MockServer:
         return rects
 
     def send_resize(self, conn):
+        global RESIZED
         self.fb.w += 32
         self.fb.h += 16
+        if self.args.resize_once:
+            RESIZED = (self.fb.w, self.fb.h)
         log("RESIZE %d %d" % (self.fb.w, self.fb.h))
         conn.sock.sendall(bytes([0, 0]) + struct.pack(">H", 1)
                           + struct.pack(">HHHHi", 0, 0, self.fb.w, self.fb.h, DESKTOP_SIZE))
@@ -1023,7 +1064,21 @@ def main():
                     help="write server messages in chunks of this many bytes, with a short "
                          "pause between them (exercises the client's partial-read handling)")
     ap.add_argument("--once", action="store_true", help="exit after the first connection")
+    ap.add_argument("--resize-once", action="store_true",
+                    help="with --resize-after: resize only once; later connections get the new size")
+    ap.add_argument("--alt-pattern", default=None, choices=["quadrants", "gradient", "checker"],
+                    help="the pattern SIGUSR1 switches to")
+    ap.add_argument("--input-during-send", action="store_true",
+                    help="with --split: log key and pointer events that arrive while an update is "
+                         "still being sent (and UPDATE_SENT once a full update is out)")
     args = ap.parse_args()
+
+    if args.alt_pattern:
+        def switch(_sig, _frame):
+            global PATTERN_OVERRIDE
+            PATTERN_OVERRIDE = args.alt_pattern
+            log("PATTERN %s" % args.alt_pattern)
+        signal.signal(signal.SIGUSR1, switch)
 
     if args.log:
         LOG_FH = open(args.log, "a")

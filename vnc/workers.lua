@@ -15,7 +15,7 @@ inherits the socket and the protocol state and decodes updates into the remote p
 - UI → scale: `G <id> <scale> <view_x> <view_y> <cw> <ch> <btype> <dither 0|1> <mode
   smooth|sharp> <contrast> <invert 0|1>` (the view; latest wins), `Q`.
 - scale → UI: `H <pid>`, `C <id> full` | `C <id> <x> <y> <w> <h> [...]` (canvas rects of view
-  `<id>` written).
+  `<id>` written), `E <message>` (a render failed; exits after).
 
 The decode worker never touches Wi-Fi, the screen or UIManager's loop: a failure only sends `E`.
 
@@ -36,6 +36,8 @@ local Workers = {
     DECODE_CPU_PER_TICK = 0.05,
     -- More rects than this waiting for the scale worker recompute the whole canvas instead.
     MAX_STALE_RECTS = 1024,
+    -- Seconds between the UI process' poll ticks of the workers' messages while attached.
+    UI_POLL = 0.01,
 }
 
 --- Bytes of the shared canvas: any canvas up to the screen, of any type up to 4 bytes per pixel,
@@ -208,15 +210,19 @@ local function scale_main(ctx, dfd, plane, canvas_mem)
     while true do
         poll_fds(pfd, 2, -1)
         if pfd[0].revents ~= 0 then
+            -- Everything pending, not just one read's worth: the latest view wins.
             local lines = ctx.recv(0)
-            if not lines then break end
-            for i = #lines, 1, -1 do -- latest wins
-                local v = lines[i]:sub(1, 2) == "G " and parse_view(lines[i])
-                if v then
-                    view, new_view = v, true
-                    break
+            while lines and lines[1] do
+                for i = #lines, 1, -1 do
+                    local v = lines[i]:sub(1, 2) == "G " and parse_view(lines[i])
+                    if v then
+                        view, new_view = v, true
+                        break
+                    end
                 end
+                lines = ctx.recv(0)
             end
+            if not lines then break end
         end
         if pfd[1].revents ~= 0 then
             local data = Worker.read_some(dfd, Worker.READ_CHUNK)
@@ -241,8 +247,12 @@ local function scale_main(ctx, dfd, plane, canvas_mem)
                 all_stale = true
             end
             rview.x, rview.y, rview.scale = view.x, view.y, view.scale
-            local res = renderer:render(plane, rview, view.mode, view.cw, view.ch, view.btype, view.dither,
-                stale[1] and stale or nil, all_stale)
+            local ok, res = pcall(renderer.render, renderer, plane, rview, view.mode, view.cw, view.ch,
+                view.btype, view.dither, stale[1] and stale or nil, all_stale)
+            if not ok then
+                ctx.send("E render failed: " .. tostring(res):gsub("\n", " "))
+                break
+            end
             if new_view or res == "full" then
                 ctx.send("C " .. view.id .. " full")
             elseif res then
@@ -280,8 +290,8 @@ function Link:stop()
 end
 
 --[[--
-Never blocks. Drains both workers: `B` rings the app's bell; `E`, or either worker's end
-closing, stops the link and fails the session (`_fail`: state "error", Wi-Fi restored by the UI
+Never blocks. Drains both workers: `B` rings the app's bell; `E` (from either worker), or either
+worker's end closing, stops the link and fails the session (`_fail`: state "error", Wi-Fi restored by the UI
 process); `Z` stops the link (the decode worker exits after it). Returns the scale worker's `C`
 lines and a `Z` line, in arrival order, for the caller.
 ]]
@@ -304,7 +314,11 @@ function Link:poll()
     gone = eof
     lines, eof = self.scale:poll()
     for _, l in ipairs(lines) do
-        if l:sub(1, 2) == "C " then out[#out + 1] = l end
+        if l:sub(1, 2) == "C " then
+            out[#out + 1] = l
+        elseif l:sub(1, 1) == "E" and not err then
+            err = l:sub(3)
+        end
     end
     gone = gone or eof
     if resized then

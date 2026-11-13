@@ -27,6 +27,9 @@ local UIManager = require("ui/uimanager")
 -- Wi-Fi, so that merely loading the plugin at startup stays cheap.
 local NetworkMgr
 
+-- (required lazily: vnc/workers requires this module)
+local function Workers() return require("vnc/workers") end
+
 local Session = {}
 Session.__index = Session
 
@@ -269,8 +272,10 @@ function Session:connect(callback)
 
     local net = self:_net()
     local wifi_on = net:isWifiOn()
-    -- While retrying, Wi-Fi we turned on earlier is still on: keep the duty to turn it off.
-    local keeps_duty = self.keep_wifi and self.wifi_was_on == false
+    -- While retrying (or reconnecting after a desktop resize), Wi-Fi we turned on earlier is
+    -- still on: keep the duty to turn it off.
+    local keeps_duty = (self.keep_wifi or self._keep_duty_once) and self.wifi_was_on == false
+    self._keep_duty_once = nil
     if not keeps_duty then self.wifi_was_on = wifi_on end
     if wifi_on and self:_link_up() then
         self:_do_connect(attempt)
@@ -786,6 +791,14 @@ function Session:attach(app)
     if self.attached then return end
     self.attached = true
     self.last_poll = nil -- the time spent detached is not a blocked poll
+    local link = self.workers
+    if link then
+        -- the decode worker resumes reading and resynchronises with a full update
+        UIManager:scheduleIn(Workers().UI_POLL, self._poll_task)
+        link.decode:send("R")
+        link.decode:send("F")
+        return
+    end
     UIManager:scheduleIn(self.poll_interval or Session.POLL_INTERVAL, self._poll_task)
     -- Non-incremental full area: resynchronises after a detach, and absorbs anything the
     -- server pushed while we were not reading.
@@ -799,6 +812,8 @@ function Session:detach()
     self.attached = false
     self.app = nil
     self.dirty = nil
+    -- (the decode worker stops reading the socket, as the in-process poll task would)
+    if self.workers then self.workers.decode:send("S") end
 end
 
 --- One tick's work, free of UIManager and the app: pumps the connection, releases a
@@ -836,6 +851,7 @@ end
 --- The poll task (scheduled as `_poll_task`, which `UIManager:unschedule` can cancel).
 function Session:_poll()
     if not self.attached then return end
+    if self.workers then return self:_poll_workers() end
     if Util.timing_enabled() then
         local now = Session._now()
         if self.last_poll and now - self.last_poll > 2 * Session.POLL_INTERVAL then
@@ -872,15 +888,88 @@ function Session:_poll()
     end
 end
 
+--[[--
+The poll task while the workers run (@{vnc.workers}): drains their messages. The scale worker's
+canvas rects of the view the viewer last asked for (`link.view_id`, see
+@{vnc.framebuffer.Remote:draw_to}) become one `app:on_framebuffer_dirty_canvas(rects)` per tick
+(those of an older view are dropped: that view's paint is already superseded); `B` rings the
+bell; a worker's error or end fails the session (`Link:poll`); a desktop resize reconnects.
+]]
+function Session:_poll_workers()
+    local link = self.workers
+    local out = link:poll()
+    local current = link.view_id and tostring(link.view_id)
+    local rects, full, rw, rh
+    for _, l in ipairs(out) do
+        if l:sub(1, 2) == "C " then
+            local id, rest = l:match("^C (%d+) (.*)$")
+            if id and id == current and not full then
+                if rest == "full" then
+                    full = true
+                else
+                    for x, y, w, h in rest:gmatch("(%d+) (%d+) (%d+) (%d+)") do
+                        rects = Util.add_rect(rects or {},
+                            { x = tonumber(x), y = tonumber(y), w = tonumber(w), h = tonumber(h) })
+                    end
+                end
+            end
+        else
+            local w, h = l:match("^Z (%d+) (%d+)$")
+            if w then rw, rh = tonumber(w), tonumber(h) end
+        end
+    end
+    if rw then return self:_reconnect_resized(rw, rh) end
+    if self.workers ~= link then return end -- the session failed (Link:poll ran _fail)
+    if full then rects = { { x = 0, y = 0, w = link.view_cw, h = link.view_ch } } end
+    if rects and self.app and self.app.on_framebuffer_dirty_canvas then
+        self.app:on_framebuffer_dirty_canvas(rects)
+    end
+    -- the app callback may have rescheduled the task (see `poll_soon`): keep exactly one
+    UIManager:unschedule(self._poll_task)
+    if self.attached and self.workers == link then
+        UIManager:scheduleIn(Workers().UI_POLL, self._poll_task)
+    end
+end
+
+--[[--
+The decode worker reported a new desktop size (`Z`) and exited: the plane is the UI process'
+and cannot change under the workers, so the session connects again, which brings a plane of the
+new size and new workers. On success the app it showed is attached again and told of the new
+size; a failure fails the session. Wi-Fi stays as it is (this session keeps any duty to turn it
+off).
+]]
+function Session:_reconnect_resized(w, h)
+    logger.info("vnc: remote desktop resized to", w, h, "- reconnecting")
+    local app = self.app
+    self:_teardown_connection()
+    -- (the connection is gone: connect() refuses a session that is still "connected")
+    self.state = "disconnected"
+    self._keep_duty_once = true
+    self:connect(function(ok, err)
+        if not ok then
+            if self.state ~= "error" then self:_fail(err) end
+            return
+        end
+        -- (a viewer closed meanwhile detached: then there is nobody to tell)
+        if app and self.app == app then
+            self:attach(app)
+            app:on_remote_resized(self.remote:get_size())
+        end
+    end)
+end
+
 --- Moves the next poll tick to `poll_interval` from now (attached sessions only).
 function Session:poll_soon()
     if not self.attached then return end
     UIManager:unschedule(self._poll_task)
-    UIManager:scheduleIn(self.poll_interval or Session.POLL_INTERVAL, self._poll_task)
+    local interval = self.poll_interval or Session.POLL_INTERVAL
+    if self.workers then interval = Workers().UI_POLL end
+    UIManager:scheduleIn(interval, self._poll_task)
 end
 
---- Closes the socket and frees the protocol, keeping the plane for display.
+--- Closes the socket and frees the protocol (or stops the workers), keeping the plane for display.
 function Session:_teardown_connection()
+    if self.workers then self.workers:stop() end
     UIManager:unschedule(self._poll_task)
     UIManager:unschedule(self._connect_task)
     UIManager:unschedule(self._wifi_task)
@@ -975,12 +1064,16 @@ end
 --- @treturn boolean true once the handshake is over: before that (the protocol exists from the dial
 ---   on) nothing may be queued, or it would go out in the middle of the handshake
 function Session:_live()
-    return self.proto ~= nil and self._phase == nil
+    return self.workers ~= nil or (self.proto ~= nil and self._phase == nil)
 end
 
 --- Queues a non-incremental update request for the whole framebuffer.
 --- Safe to call from protocol callbacks (it never flushes).
 function Session:request_full_update()
+    if self.workers then
+        self.workers.decode:send("F")
+        return
+    end
     if not self:_live() or not self.remote then return end
     local w, h = self.remote:get_size()
     self.forced = nil -- covered
@@ -1044,6 +1137,16 @@ covers it.
 --- @tparam table|nil rect `{x, y, w, h}` in remote coordinates; nil means the whole framebuffer
 ]]
 function Session:set_view_area(rect)
+    local link = self.workers
+    if link then
+        -- (the decode worker keeps the area; an unchanged one is not sent again)
+        local l = rect and string.format("V %d %d %d %d", rect.x, rect.y, rect.w, rect.h) or "V -"
+        if l ~= link.sent_view_area then
+            link.sent_view_area = l
+            link.decode:send(l)
+        end
+        return
+    end
     local whole = self:_whole_area()
     if not whole then return end
     local new = rect and Util.intersect_rect(rect, whole) or whole
@@ -1072,6 +1175,10 @@ end
 --- Records key input: screen update requests are held until input has been quiet for
 --- `INPUT_QUIET` (pointer taps and drags do not count).
 function Session:note_input(what)
+    if self.workers then
+        self.workers.decode:send("N " .. (what or "key"))
+        return
+    end
     self.last_input = Session._now()
     if Util.timing_enabled() then logger.dbg("vnc-timing: input", what or "key") end
 end
@@ -1090,6 +1197,10 @@ end
 --- @tparam number y remote y
 --- @tparam number mask RFB pointer button mask
 function Session:send_pointer(x, y, mask)
+    if self.workers then
+        self.workers.decode:send(string.format("P %d %d %d", x, y, mask))
+        return
+    end
     if not self:_live() then return end
     self:_input_gap()
     self.proto:send_pointer(x, y, mask)
@@ -1099,6 +1210,11 @@ end
 --- @tparam number keysym X11 keysym
 --- @tparam boolean down
 function Session:send_key(keysym, down)
+    if self.workers then
+        -- (the decode worker notes the input and waits out the modifier gap itself)
+        self.workers.decode:send(string.format("K %d %d", keysym, down and 1 or 0))
+        return
+    end
     if not self:_live() then return end
     if down then self:note_input() end
     self:_input_gap(keysym, down)
@@ -1108,6 +1224,10 @@ end
 
 --- @tparam string text
 function Session:send_cut_text(text)
+    if self.workers then
+        self.workers.decode:send("T " .. #text, text)
+        return
+    end
     if not self:_live() then return end
     self.proto:send_cut_text(text)
     self:_flush_now()
