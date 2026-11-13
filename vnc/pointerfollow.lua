@@ -11,7 +11,10 @@ Matching RustDesk where the plan's sketch differed:
 - the room is measured from the view edge rounded to whole pixels (`roundToDouble`);
 - a pointer moving alone may reach the view edge itself (`r.right - _x`), not one pixel short of
   it; the clamp to the remote screen keeps it on the last pixel there.
-Not taken from RustDesk: `getPointInRemoteRect` drops a whole update whose target lies outside the
+Not taken from RustDesk:
+- the view's shift is capped by the unrounded room, so the view never passes the remote's edge
+  (RustDesk's rounded room lets it end up to half a pixel beyond);
+- `getPointInRemoteRect` drops a whole update whose target lies outside the
 remote on both axes (after snapping by 5 pixels); here each axis is clamped instead, so a pointer
 pushed past a corner of a picture panned beyond its edges still reaches that corner.
 
@@ -31,7 +34,7 @@ One axis of a pointer move, all in remote pixels.
 --- @treturn number, number the new pointer, and how far the view moves with it (0: it stays)
 ]]
 function PointerFollow.axis(cur, d, view_lo, view_hi, remote_lo, remote_hi)
-    local follow = false
+    local follow, dir = false, d
     if d > 0 then
         local room = remote_hi - round(view_hi)
         follow = cur + d > (view_lo + view_hi) / 2 and room > 0
@@ -42,7 +45,10 @@ function PointerFollow.axis(cur, d, view_lo, view_hi, remote_lo, remote_hi)
         d = math.max(d, follow and room or (view_lo - cur))
     end
     local new = math.max(remote_lo, math.min(cur + d, remote_hi - 1))
-    return new, follow and (new - cur) or 0
+    if not follow then return new, 0 end
+    -- (the room above is rounded, as in RustDesk; the view itself stops exactly at the edge)
+    if dir > 0 then return new, math.min(new - cur, remote_hi - view_hi) end
+    return new, math.max(new - cur, remote_lo - view_lo)
 end
 
 return PointerFollow

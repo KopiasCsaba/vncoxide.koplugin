@@ -5388,7 +5388,7 @@ check("pointer_follow_axis_rules", function()
     local PF = require("vnc/pointerfollow")
     local function is(cur, d, lo, hi, want_cur, want_shift, what)
         local c, s = PF.axis(cur, d, lo, hi, 0, 400)
-        assert_true(c == want_cur and s == want_shift,
+        assert_true(math.abs(c - want_cur) < 1e-9 and math.abs(s - want_shift) < 1e-9,
             string.format("%s: expected (%s,%s), got (%s,%s)", what, want_cur, want_shift, c, s))
     end
     is(150, 10, 100, 200, 160, 10, "+ from the centre, with room: together")
@@ -5403,6 +5403,21 @@ check("pointer_follow_axis_rules", function()
     is(110, -50, 100, 200, 60, -50, "- past the centre: together")
     is(150, 0, 100, 200, 150, 0, "d = 0: nothing")
     is(100, 50, -50, 450, 150, 0, "the whole remote visible: never follows")
+    -- (the room is rounded, as in RustDesk; the view's shift is capped by the exact room)
+    is(150.3, 500, 100.3, 200.3, 350.3, 199.7, "+ the view stops exactly at the edge, not past it")
+    is(150.7, -500, 100.7, 200.7, 49.7, -100.7, "- the same at the near edge")
+    -- many fractional moves, with the view following: it never leaves the remote
+    local seed = 12345
+    local function rnd() seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 end
+    local span, cur, lo = 137.37, 200, 131.31
+    for i = 1, 20000 do
+        local d = (rnd() - 0.5) * 60
+        local shift
+        cur, shift = PF.axis(cur, d, lo, lo + span, 0, 400)
+        lo = lo + shift
+        assert_true(lo >= 0 and lo + span <= 400 and cur >= 0 and cur <= 399,
+            string.format("step %d: view [%g,%g], pointer %g", i, lo, lo + span, cur))
+    end
 end)
 
 --- A Mouse-mode viewer zoomed to `factor` (default 2) times the fit, centred, the pointer at the
@@ -5464,8 +5479,8 @@ check("follow_corner_and_back", function()
     local s = remote:get_scale()
     local sw, sh = remote.cw / s, remote.ch / s
     local function inside()
-        assert_true(remote.view_x >= -0.5 and remote.view_y >= -0.5
-            and remote.view_x + sw <= 400.5 and remote.view_y + sh <= 300.5,
+        assert_true(remote.view_x >= 0 and remote.view_y >= 0
+            and remote.view_x + sw <= 400 + 1e-9 and remote.view_y + sh <= 300 + 1e-9,
             string.format("the view stays on the remote: (%g,%g)", remote.view_x, remote.view_y))
     end
     -- (one contact: its `pos` moves with its `relative`, off the screen too, so straight to the viewer)
@@ -5474,7 +5489,7 @@ check("follow_corner_and_back", function()
     inside()
     pan(10000)
     inside()
-    assert_true(math.abs(remote.view_x + sw - 400) <= 0.5 and math.abs(remote.view_y + sh - 300) <= 0.5,
+    assert_true(math.abs(remote.view_x + sw - 400) < 1e-9 and math.abs(remote.view_y + sh - 300) < 1e-9,
         string.format("the view at the remote's bottom-right: (%g,%g)", remote.view_x + sw, remote.view_y + sh))
     local e = last_pointer(sent)
     assert_true(e.x == 399 and e.y == 299, string.format("the pointer in the corner, got (%d,%d)", e.x, e.y))
@@ -5495,7 +5510,7 @@ check("follow_corner_and_back", function()
                 assert_true(math.abs(p - half) <= 10 * s + 1,
                     axis .. ": the view moves only once the pointer reached the centre: " .. p)
             elseif followed[axis] then
-                assert_true(v <= 0.5, axis .. ": once following, it keeps following to the edge")
+                assert_true(v < 0.5, axis .. ": once following, it keeps following to the edge")
             else
                 assert_true(p >= half - 1, axis .. ": the pointer alone, still past the centre: " .. p)
             end
@@ -5503,14 +5518,15 @@ check("follow_corner_and_back", function()
     end
     assert_true(followed.x and followed.y, "the view came back")
     local e2 = last_pointer(sent)
-    assert_true(remote.view_x <= 0.5 and remote.view_y <= 0.5 and e2.x == 0 and e2.y == 0,
+    -- (the rounded room may stop the view up to half a pixel short of the edge, as in RustDesk)
+    assert_true(remote.view_x < 0.5 and remote.view_y < 0.5 and e2.x == 0 and e2.y == 0,
         "and ended at the remote's top-left, the pointer in its corner")
     dispatch_gesture{ ges = "pan_release", pos = P }
     close_viewer(app, remote)
 end)
 
 check("drag_starts_with_offscreen_pointer_at_centre", function()
-    for _, how in ipairs{ "move", "long press drag" } do
+    for _, how in ipairs{ "move", "long press drag", "long press lift" } do
         local app, remote, sent = zoomed_mouse_app(4)
         local c = app.canvas
         local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
@@ -5523,6 +5539,10 @@ check("drag_starts_with_offscreen_pointer_at_centre", function()
         local n = #sent.pointer
         if how == "move" then
             dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 4, y = P.y }, relative = { x = 4, y = 0 } }
+        elseif how == "long press lift" then
+            dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
+            dispatch_gesture{ ges = "hold_release", pos = P }
         else
             dispatch_gesture{ ges = "hold", pos = P }
             confirm_hold(app)
@@ -5531,7 +5551,11 @@ check("drag_starts_with_offscreen_pointer_at_centre", function()
         local e = sent.pointer[n + 1]
         assert_true(e and e.mask == 0 and math.abs(e.x - cx) <= 1 and math.abs(e.y - cy) <= 1,
             string.format("%s: first to the view centre (%d,%d), got (%s,%s)", how, cx, cy, e and e.x, e and e.y))
-        if how ~= "move" then
+        if how == "long press lift" then
+            local p = sent.pointer[n + 2]
+            assert_true(#sent.pointer == n + 3 and p.mask == 4 and p.x == e.x and p.y == e.y,
+                "the right click there too")
+        elseif how ~= "move" then
             local p = sent.pointer[n + 2]
             assert_true(p.mask == 1 and p.x == e.x and p.y == e.y, "pressed there")
             dispatch_gesture{ ges = "hold_release", pos = P }

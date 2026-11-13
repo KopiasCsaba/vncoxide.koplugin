@@ -1044,6 +1044,8 @@ function ViewerApp:_hold_act(p)
     local ges = { ges = "hold", pos = p.pos }
     self:_end_stale_pointer_action()
     self._hold_active = self:get_pointer_mode() == "mouse" and "mouse_wait" or "touch_wait"
+    -- (Mouse mode: its lift and its drag act at the same visible spot)
+    if self._hold_active == "mouse_wait" then self:_mouse_pointer_into_view() end
     self._hold_pos = ges.pos
     self:_watch_release(ges.pos)
     return true
@@ -1060,7 +1062,6 @@ end
 --- and it is a drag from now on.
 function ViewerApp:_hold_drag_start()
     local kind = self._hold_active
-    if hold_on_pointer(kind) then self:_mouse_pointer_into_view() end
     local x, y = self:_hold_spot(kind)
     self:_press_armed()
     self:send_pointer(x, y, 1, "hold drag start")
@@ -1536,7 +1537,7 @@ function ViewerApp:_follow_settled()
 end
 
 --[[--
-A Mouse-mode move or drag starts: a pointer off the view (a two-finger pan or a zoom left it
+A Mouse-mode move or long press starts: a pointer off the view (a two-finger pan or a zoom left it
 behind) first goes to the view's centre, so that the move starts where it can be seen
 (RustDesk's `onOneFingerPanStart`).
 ]]
