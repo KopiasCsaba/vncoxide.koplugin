@@ -8,9 +8,9 @@ inherits the socket and the protocol state and decodes updates into the remote p
 
 - UI → decode: `K <keysym> <0|1>`, `P <x> <y> <mask>`, `V <x> <y> <w> <h>` | `V -`, `F`,
   `N <what>`, `T <len>` + bytes (cut text), `S` (detached: stop reading), `R` (attached:
-  resume), `Q`.
+  resume), `I <n>` (ping: answer at once, also while detached), `Q`.
 - decode → UI: `H <pid>`, `Z <w> <h>` (desktop resized; exits after), `B` (bell), `E <message>`
-  (error; exits after).
+  (error; exits after), `O <n>` (pong: the answer to `I <n>`).
 - decode → scale: `D <x> <y> <w> <h> [...]` (plane rects fully written).
 - UI → scale: `G <id> <scale> <view_x> <view_y> <cw> <ch> <btype> <dither 0|1> <mode
   smooth|sharp> <contrast> <invert 0|1>` (the view; latest wins), `Q`.
@@ -18,6 +18,13 @@ inherits the socket and the protocol state and decodes updates into the remote p
   `<id>` written), `E <message>` (a render failed; exits after).
 
 The decode worker never touches Wi-Fi, the screen or UIManager's loop: a failure only sends `E`.
+
+Liveness: while the UI polls (attached), `PING_AFTER` seconds with nothing from the decode worker
+send one `I <n>` (one outstanding at a time); no message from it within `DECODE_STALL` seconds of
+the ping fails the session as not responding (@{Link:_stalled}), so a worker that hangs while
+the user is idle shows the reconnect box instead of a frozen picture. A pong is no activity for
+the poll interval (@{Link:interval}): an idle session costs one ping and pong per `PING_AFTER`
+and stays at `Session.POLL_INTERVAL`.
 
 @module vnc.workers
 ]]
@@ -50,6 +57,8 @@ local Workers = {
     -- slower device without leaving a hung worker's frozen picture up for long.
     DECODE_STALL = 2,
     SCALE_STALL = 10,
+    -- Seconds of silence from the decode worker (while polled) before the UI pings it (`I`).
+    PING_AFTER = 1,
 }
 
 --- Bytes of the shared canvas: any canvas up to the screen, of any type up to 4 bytes per pixel,
@@ -81,7 +90,7 @@ end
 
 --- Applies the UI's commands through the session's own methods; returns the new reading flag
 --- (`S` clears it, `R` sets it).
-local function apply_commands(session, lines, reading)
+local function apply_commands(ctx, session, lines, reading)
     local i = 1
     while i <= #lines do
         local l = lines[i]
@@ -115,6 +124,9 @@ local function apply_commands(session, lines, reading)
         elseif l == "R" then
             reading = true
             session.attached = true
+        elseif op == "I" then
+            local n = l:match("^I (%d+)$")
+            if n then ctx.send("O " .. n) end
         end
         if session.state ~= "connected" then return reading end -- (a send failed: E went out)
         i = i + 1
@@ -163,12 +175,15 @@ local function decode_main(ctx, session, dfd)
     }
 
     if Workers._test_decode_stuck then Worker._stuck_forever() end
+    -- (test hook: hangs that many seconds from now, reading and answering nothing after)
+    local deaf_at = Workers._test_decode_deaf_after and Session._now() + Workers._test_decode_deaf_after
     local reading = session.attached and true or false
     local pfd = ffi.new("struct pollfd[2]")
     pfd[0].fd, pfd[0].events = ctx.read_fd, C.POLLIN
     pfd[1].fd, pfd[1].events = session.fd, C.POLLIN
     local busy = false
     while true do
+        if deaf_at and Session._now() >= deaf_at then Worker._stuck_forever() end
         local ms
         if not reading then
             ms = -1
@@ -183,7 +198,7 @@ local function decode_main(ctx, session, dfd)
         if pfd[0].revents ~= 0 then
             local lines = ctx.recv(0)
             if not lines then return end -- Q, or the UI is gone
-            reading = apply_commands(session, lines, reading)
+            reading = apply_commands(ctx, session, lines, reading)
             if session.state ~= "connected" then return end
         end
         if reading then
@@ -314,10 +329,17 @@ function Link:stop()
     SharedMem.free(self.canvas_mem.ptr, self.canvas_mem.bytes)
 end
 
--- Takes the decode worker's lines into `st` (`err`, `resized`); `B` rings the app's bell.
+-- Takes the decode worker's lines into `st` (`err`, `resized`, `pong`: the highest `O` id, `busy`:
+-- a line other than a pong); `B` rings the app's bell.
 local function take_decode(session, lines, st)
     for _, l in ipairs(lines) do
         local op = l:sub(1, 1)
+        if op == "O" then
+            local n = tonumber(l:match("^O (%d+)$"))
+            if n and n > (st.pong or 0) then st.pong = n end
+        else
+            st.busy = true
+        end
         if op == "B" then
             if session.app and session.app.on_bell then session.app:on_bell() end
         elseif op == "E" then
@@ -332,7 +354,8 @@ end
 --[[--
 Never blocks. Drains both workers: `B` rings the app's bell; `E` (from either worker), either
 worker's end closing, or a worker not responding (`DECODE_STALL`: the UI's queued commands stay
-unread; `SCALE_STALL`: no `C` at all while a `G` is unanswered) stops the link and fails the
+unread, or a ping goes unanswered; `SCALE_STALL`: no `C` at all while a `G` is unanswered;
+see @{Link:_stalled}) stops the link and fails the
 session (`_fail`: state "error", Wi-Fi restored by the UI process); `Z` stops the link (the decode
 worker exits after it). Returns the scale worker's `C` lines and a `Z` line, in arrival order, for
 the caller.
@@ -342,6 +365,13 @@ function Link:poll()
     if self.stopped then return out end
     local session = self.session
     local now = Session._now()
+    -- A gap between ticks (a blocked UI thread, a detach, a suspend) is no worker's silence: the
+    -- decode watchdogs measure from this tick.
+    if self.polled_at and now - self.polled_at > Workers.PING_AFTER then
+        if self.ping_at then self.ping_at = now end
+        self.decode_since = nil
+    end
+    self.polled_at = now
     local st = {}
     local dlines, deof = self.decode:poll()
     take_decode(session, dlines, st)
@@ -364,7 +394,15 @@ function Link:poll()
         dlines, deof = self.decode:poll()
         take_decode(session, dlines, st)
     end
-    if dlines[1] or slines[1] then self.active_at = now end
+    if dlines[1] then
+        self.heard_at = now
+        if st.pong then
+            self.pong_id = math.max(self.pong_id or 0, st.pong)
+            if st.pong >= (self.ping_id or 0) then self.ping_at = nil end
+        end
+    end
+    -- (a pong alone is no activity: an idle session keeps the idle interval)
+    if st.busy or slines[1] then self.active_at = now end
     if st.resized then
         self:stop()
         out[#out + 1] = st.resized
@@ -379,30 +417,49 @@ function Link:poll()
 end
 
 --[[--
-The watchdogs, after a tick's reads and writes: the decode worker's message when the commands
-queued for it have not moved for `DECODE_STALL` seconds, the scale worker's when no `C` arrived
+The watchdogs, after a tick's reads and writes: the scale worker's message when no `C` arrived
 for `SCALE_STALL` seconds while a `G` (`view_id`, see @{vnc.framebuffer.Remote:draw_to}) is
-unanswered; else nil. `answered`: a `C` arrived this tick.
+unanswered; a decode worker's stall when the commands queued for it have not moved for
+`DECODE_STALL` seconds, or nothing at all came from it for `DECODE_STALL` seconds after a ping.
+Sends that ping (`I <n>`, one outstanding at a time) once nothing came from the decode worker for
+`PING_AFTER` seconds. A decode worker blocked writing `D` lines to a hung scale worker stalls
+too: when a `G` has also been unanswered for `DECODE_STALL` seconds by then, the scale worker's
+message is returned, else the decode worker's. Nil when nothing stalled. `answered`: a `C`
+arrived this tick.
 ]]
 function Link:_stalled(now, answered)
-    local d = self.decode
-    if d:pending() > 0 then
-        if self.decode_since == nil or self.decode_written ~= d.written then
-            self.decode_since, self.decode_written = now, d.written
-        elseif now - self.decode_since > Workers.DECODE_STALL then
-            return "decode worker not responding"
-        end
-    else
-        self.decode_since = nil
-    end
+    local scale_stuck = false
     if self.view_id and (self.answered_id or 0) < self.view_id then
         if self.scale_since == nil or answered then
             self.scale_since = now
         elseif now - self.scale_since > Workers.SCALE_STALL then
             return "scale worker not responding"
         end
+        scale_stuck = now - self.scale_since > Workers.DECODE_STALL
     else
         self.scale_since = nil
+    end
+    local stalled = false
+    local d = self.decode
+    if d:pending() > 0 then
+        if self.decode_since == nil or self.decode_written ~= d.written then
+            self.decode_since, self.decode_written = now, d.written
+        elseif now - self.decode_since > Workers.DECODE_STALL then
+            stalled = true
+        end
+    else
+        self.decode_since = nil
+    end
+    self.heard_at = self.heard_at or now
+    if self.ping_at then
+        if now - math.max(self.ping_at, self.heard_at) > Workers.DECODE_STALL then stalled = true end
+    elseif now - self.heard_at >= Workers.PING_AFTER then
+        self.ping_id = (self.ping_id or 0) + 1
+        self.ping_at = now
+        d:send("I " .. self.ping_id)
+    end
+    if stalled then
+        return scale_stuck and "scale worker not responding" or "decode worker not responding"
     end
     return nil
 end

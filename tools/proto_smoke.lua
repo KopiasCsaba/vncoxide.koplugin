@@ -4866,6 +4866,210 @@ local function main()
             return true
         end)
 
+        -- An idle decode worker answers the UI's pings (`I`/`O`): with no input and no update at
+        -- all the session stays connected well past PING_AFTER + DECODE_STALL.
+        check("idle_decode_worker_answers_pings", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local s, mpid
+            local ok, err = pcall(function()
+                local states, _log
+                s, mpid, _log, states = proxy_session(env, "wk_ping_idle", { encoding = "raw", pattern = "quadrants" })
+                local link = s.workers
+                local target, shows = canvas_probe(s:get_remote(), 200, 150)
+                s:attach(proxy_app())
+                local bad = wait_canvas(env, shows, "quadrants", 5)
+                if bad then error("the canvas: " .. bad) end
+                target:free()
+                local t0 = socket.gettime()
+                env.run_until(function() return s:get_state() ~= "connected" end, 3.5)
+                if s:get_state() ~= "connected" then
+                    error(string.format("state %s (%s) after %.2f s", tostring(s:get_state()),
+                        tostring(s:get_error()), socket.gettime() - t0))
+                end
+                if s.workers ~= link then error("the link changed") end
+                if (link.pong_id or 0) < 2 then error("pongs answered: " .. tostring(link.pong_id)) end
+                for _, st in ipairs(states) do
+                    if st == "error" then error("the session failed on the way") end
+                end
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- A decode worker that hangs while the user is idle (no input, nothing queued for it):
+        -- the unanswered ping fails the session within PING_AFTER + DECODE_STALL (plus ticks).
+        check("decode_worker_hung_while_idle_fails_the_session", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local s, mpid
+            local hang = 1.5
+            local ok, err = pcall(function()
+                Workers._test_decode_deaf_after = hang
+                local ok0, s0, mpid0 = pcall(proxy_session, env, "wk_ping_hung", { encoding = "raw", pattern = "quadrants" })
+                local hang_at = socket.gettime() + hang -- (the worker was forked before this)
+                Workers._test_decode_deaf_after = nil
+                if not ok0 then error(s0) end
+                s, mpid = s0, mpid0
+                s:attach(proxy_app())
+                env.run_until(function() return s:get_state() == "error" end, hang + 5)
+                local t = socket.gettime() - hang_at
+                if s:get_state() ~= "error" then error(string.format("no session error %.2f s after the hang", t)) end
+                if s:get_error() ~= "decode worker not responding" then error("error " .. tostring(s:get_error())) end
+                if t > 3.5 then error(string.format("failed only %.2f s after the hang", t)) end
+                -- (hang_at is a little after the real hang: the fork came first)
+                if t < Workers.DECODE_STALL - 0.5 then error(string.format("failed %.2f s after the hang", t)) end
+                if s.workers ~= nil then error("the link was not cleared") end
+            end)
+            Workers._test_decode_deaf_after = nil
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- A pong is no activity: while idle the poll stays at Session.POLL_INTERVAL as the pongs
+        -- come in (one ping per PING_AFTER of silence).
+        check("pongs_keep_the_idle_poll_interval", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local Session = load_session()
+            local s, mpid
+            local function next_poll()
+                for _, t in ipairs(env.tasks) do
+                    if t.fn == s._poll_task then return t.d end
+                end
+            end
+            local ok, err = pcall(function()
+                s, mpid = proxy_session(env, "wk_ping_interval", { encoding = "raw", pattern = "quadrants" })
+                local link = s.workers
+                local target, shows = canvas_probe(s:get_remote(), 200, 150)
+                s:attach(proxy_app())
+                local bad = wait_canvas(env, shows, "quadrants", 5)
+                if bad then error("the canvas: " .. bad) end
+                target:free()
+                if not env.run_until(function() return next_poll() == Session.POLL_INTERVAL end, Workers.ACTIVE_FOR + 2) then
+                    error("idle poll interval " .. tostring(next_poll()))
+                end
+                local seen, pongs, wrong = link.pong_id or 0, 0, nil
+                env.run_until(function()
+                    if (link.pong_id or 0) ~= seen then
+                        seen, pongs = link.pong_id, pongs + 1
+                        local d, i = next_poll(), link:interval()
+                        if d ~= Session.POLL_INTERVAL or i ~= Session.POLL_INTERVAL then
+                            wrong = string.format("after pong %d: next poll %s, interval %s", seen, tostring(d), tostring(i))
+                        end
+                    end
+                    return wrong ~= nil
+                end, 2.5)
+                if wrong then error(wrong) end
+                if pongs < 1 then error("no pong in 2.5 s idle") end
+                if pongs > 3 then error(pongs .. " pongs in 2.5 s idle") end
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- The watchdog's verdicts on a link's state: an unanswered ping blames the decode worker,
+        -- unless a G has also been unanswered for DECODE_STALL (the decode worker then likely
+        -- blocks writing to a hung scale worker); a gap between ticks restarts the ping's clock.
+        check("ping_watchdog_blames_the_right_worker", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local Session = load_session()
+            local s, mpid
+            local ok, err = pcall(function()
+                s, mpid = proxy_session(env, "wk_ping_blame", { encoding = "raw", pattern = "quadrants" })
+                local link = s.workers
+                local now = Session._now()
+                local saved = { link.view_id, link.answered_id, link.scale_since, link.ping_id, link.ping_at, link.heard_at }
+                local function set(view_id, scale_since, ping_at, heard_at)
+                    link.view_id, link.answered_id, link.scale_since = view_id, 0, scale_since
+                    link.ping_id, link.ping_at, link.heard_at = 7, ping_at, heard_at
+                end
+                local res = {}
+                set(nil, nil, now - 2.5, now - 3.5)
+                res[1] = link:_stalled(now, false)
+                set(1, now - 2.5, now - 2.5, now - 3.5)
+                res[2] = link:_stalled(now, false)
+                set(1, now - 0.2, now - 2.5, now - 3.5)
+                res[3] = link:_stalled(now, false)
+                set(nil, nil, now - 1.5, now - 2.5)
+                res[4] = link:_stalled(now, false) or "nil"
+                set(nil, nil, nil, now - 1.1)
+                res[5] = link:_stalled(now, false) or "nil"
+                local sent = link.ping_id == 8 and link.ping_at == now
+                link.view_id, link.answered_id, link.scale_since, link.ping_id, link.ping_at, link.heard_at = unpack(saved, 1, 6)
+                local want = { "decode worker not responding", "scale worker not responding",
+                    "decode worker not responding", "nil", "nil" }
+                for i = 1, 5 do
+                    if res[i] ~= want[i] then error(string.format("case %d: %s", i, tostring(res[i]))) end
+                end
+                if not sent then error("no ping sent after PING_AFTER of silence") end
+                -- a tick after a long gap: the outstanding ping's clock restarts (no failure)
+                s:attach(proxy_app())
+                env.run_until(function() return false end, 0.2)
+                link.ping_id, link.ping_at = (link.ping_id or 0) + 100, Session._now() - 10
+                link.polled_at = Session._now() - 10
+                link:poll()
+                if s:get_state() ~= "connected" then error("failed after a gap: " .. tostring(s:get_error())) end
+                if not link.ping_at or Session._now() - link.ping_at > 0.5 then error("the ping's clock was not restarted") end
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- The in-process session (worker_processes off) has no link and no ping: idle past
+        -- PING_AFTER + DECODE_STALL it stays connected, its poll at Session.POLL_INTERVAL.
+        check("in_process_idle_session_has_no_ping", function()
+            local env = proxy_env()
+            local Session = load_session()
+            local s, mpid
+            local function next_poll()
+                for _, t in ipairs(env.tasks) do
+                    if t.fn == s._poll_task then return t.d end
+                end
+            end
+            local ok, err = pcall(function()
+                local port, log
+                mpid, port, log = start_mock{ name = "wk_ping_inproc", encoding = "raw", pattern = "quadrants" }
+                s = Session.new{
+                    profile = { host = "127.0.0.1", port = port, password = "", name = "wk_ping_inproc" },
+                    worker_processes = false,
+                    network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+                }
+                local connected, cerr
+                s:connect(function(c, e) connected, cerr = c, e end)
+                env.run_until(function() return connected ~= nil end, 10)
+                if not connected then error("connect failed: " .. tostring(cerr)) end
+                if s.workers then error("a worker link in-process") end
+                local dirty = 0
+                s:attach({ on_framebuffer_dirty = function() dirty = dirty + 1 end })
+                env.run_until(function() return dirty > 0 end, 5)
+                if dirty == 0 then error("no update") end
+                env.run_until(function() return s:get_state() ~= "connected" end, 3.5)
+                if s:get_state() ~= "connected" then error("state " .. tostring(s:get_state()) .. ": " .. tostring(s:get_error())) end
+                if s.workers then error("a worker link in-process") end
+                if next_poll() ~= Session.POLL_INTERVAL then error("poll interval " .. tostring(next_poll())) end
+                if not log_has(log, "CONNECT") then error("no connection in the mock's log") end
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
         -- A scale worker that never answers a G is a session error after SCALE_STALL.
         check("hung_scale_worker_fails_the_session", function()
             local env = proxy_env()

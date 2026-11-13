@@ -194,9 +194,10 @@ the pipes carry only small messages, so a big update no longer blocks the UI thr
 and scale. vnc/renderer.lua holds the scaling the in-process path shares. Messages (the table in
 vnc/workers.lua's header is the source):
   UI -> decode    K <keysym> <0|1>; P <x> <y> <mask>; V <x> <y> <w> <h> | V -; F; N <what>;
-                  T <len> + bytes (cut text); S (detached: stop reading); R (attached: resume); Q
+                  T <len> + bytes (cut text); S (detached: stop reading); R (attached: resume);
+                  I <n> (ping; answered at once, also while detached); Q
   decode -> UI    H <pid>; Z <w> <h> (desktop resized; the worker exits after); B (bell);
-                  E <message> (error; exits after)
+                  E <message> (error; exits after); O <n> (pong: the answer to I <n>)
   decode -> scale D <x> <y> <w> <h> [...] (plane rects fully written)
   UI -> scale     G <id> <scale> <view_x> <view_y> <cw> <ch> <btype> <dither> <mode> <contrast>
                   <invert> (the view; latest wins); Q
@@ -213,6 +214,16 @@ cannot be trusted). Watchdogs (Link:poll): commands queued for the decode worker
 for Workers.DECODE_STALL (2 s), or no C at all for Workers.SCALE_STALL (10 s; a full 1264x1680 render
 measured 31-270 ms on emulated ARMv7) while a G is unanswered, stop the link and fail the
 session ("decode/scale worker not responding"): the viewer's reconnect box, never a frozen picture.
+The queued-commands check alone misses a decode worker that hangs while the user is idle (nothing
+queued), so the UI also pings: after Workers.PING_AFTER (1 s) with no message at all from the
+decode worker it sends one I <n> (one outstanding at a time); no message within DECODE_STALL of
+the ping fails the session the same way (a hang shows the box ~3 s after the last message). Any
+decode message counts as alive. A decode worker blocked writing D lines to a hung scale worker
+stalls the ping too: if a G has also been unanswered for DECODE_STALL by then, the message names
+the scale worker. A gap between UI ticks longer than PING_AFTER (blocked UI thread, detach,
+suspend) restarts the ping's and the queue check's clocks rather than counting as silence. A
+pong is no activity for the poll interval: an idle attached session costs one ping and pong per
+~1 s and stays at Session.POLL_INTERVAL (pings go out only from attached ticks).
 A scale worker EOF in the tick that read the decode pipe before its Z re-reads the decode pipe
 once (resize, not crash). The UI polls every Workers.UI_POLL (10 ms) while a message arrived in
 the last Workers.ACTIVE_FOR (0.5 s) or a G is unanswered, else every Session.POLL_INTERVAL; the
