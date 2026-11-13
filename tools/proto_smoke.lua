@@ -3429,6 +3429,42 @@ local function main()
         end
     end))
 
+    -- The same with the decode worker taking attach's messages one at a time (a slow device
+    -- can wake between two pipe writes): the area owed while detached must still be covered by
+    -- the whole-screen request, not go out on its own first.
+    check("session_view_area_queued_while_detached_workers_one_message_per_wakeup", view_workers(
+        "view_detached_w1", {}, function(v, s, remote)
+        zoom_quarter(remote)
+        s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+        attach_first_update(v)
+        s:detach()
+        v.idle(0.1)
+        local before = #v.requests()
+        remote.view_x, remote.view_y = 80, 60
+        remote:set_canvas(160, 120)
+        s:set_view_area(remote:visible_remote_rect(s.REQUEST_MARGIN))
+        v.idle(0.3)
+        local decode = s.workers.decode
+        local real_send = decode.send
+        decode.send = function(h, ...)
+            local r = real_send(h, ...)
+            socket.sleep(0.3) -- the worker handles this message before the next is written
+            return r
+        end
+        local ok, err = pcall(s.attach, s, v.app)
+        decode.send = nil
+        if not ok then error(err) end
+        v.wait(function() return #v.requests() >= before + 1 end, "the attach's request")
+        v.idle(0.3)
+        local reqs = v.requests()
+        if reqs[before + 1] ~= req_bytes(0, 0, 0, 160, 120) then
+            error("attach must send exactly its whole-screen request")
+        end
+        for i = before + 2, #reqs do
+            if reqs[i]:byte(2) == 0 then error("the whole-screen request covers the owed area") end
+        end
+    end))
+
     check("session_forced_area_waits_while_held", function()
         local env = view_session("view_hold", {})
         local Session = load_session()

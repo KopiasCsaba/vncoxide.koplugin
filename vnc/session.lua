@@ -804,11 +804,13 @@ function Session:attach(app)
     self.last_poll = nil -- the time spent detached is not a blocked poll
     local link = self.workers
     if link then
-        -- the decode worker resumes reading and resynchronises with a full update
+        -- the decode worker resynchronises with a full update and resumes reading. F goes
+        -- first: the worker may wake between the two writes, and resumed alone it would send
+        -- an area owed since the detach on its own before the full request that covers it
         self._worker_wait = Workers().UI_POLL
         UIManager:scheduleIn(self._worker_wait, self._poll_task)
-        link.decode:send("R")
         link.decode:send("F")
+        link.decode:send("R")
         return
     end
     UIManager:scheduleIn(self.poll_interval or Session.POLL_INTERVAL, self._poll_task)
