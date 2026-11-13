@@ -31,7 +31,7 @@ local PxFmt = require("vnc/pxfmt")
 local Util = require("vnc/util")
 local ZStream = require("vnc/zstream")
 
-local band, bor, rshift, lshift = bit.band, bit.bor, bit.rshift, bit.lshift
+local band, bor, rshift, lshift, tobit = bit.band, bit.bor, bit.rshift, bit.lshift, bit.tobit
 
 pcall(ffi.cdef, "void *memmove(void *dst, const void *src, size_t n);")
 
@@ -182,8 +182,11 @@ end
 --- Base pointer and stride of a viewport (rect-local pixel (x, y) is at base + y * stride + x * 3).
 local function vp_base(vp)
     -- tonumber: `stride` is a size_t, i.e. a boxed uint64 on 64-bit builds (every offset computed
-    -- from it would be one too); on 32-bit ARM it already is a number
-    return ffi.cast(u8p, vp.data), tonumber(vp.stride)
+    -- from it would be one too); on 32-bit ARM it already is a number, but a double. tobit makes it
+    -- an integer: ARM's LuaJIT keeps integers and doubles apart (dual-number mode), and a row offset
+    -- `row * stride` that is a double in one row and an integer when a trace was recorded fails that
+    -- trace's entry check, so the column loop ran interpreted (Tight's filters: 4-5x slower)
+    return ffi.cast(u8p, vp.data), tobit(tonumber(vp.stride))
 end
 
 --[[--
@@ -836,15 +839,16 @@ local function tight_palette(vp, data, len, w, h, pal, num_colors)
             return nil, string.format("Tight: palette(2) got %d bytes, need %d", len, row_bytes * h)
         end
         local r0, g0, b0, r1, g1, b1 = pal[0], pal[1], pal[2], pal[3], pal[4], pal[5]
+        -- (row offsets, not row pointers: a pointer made per row and used in the column loop's
+        -- trace is boxed, i.e. allocated, every row)
         for row = 0, h - 1 do
-            local src = data + row * row_bytes
-            local out = base + row * stride
+            local so, ro = row * row_bytes, row * stride
             for col = 0, w - 1 do
-                local o = col * 3
-                if band(rshift(src[rshift(col, 3)], 7 - band(col, 7)), 1) ~= 0 then
-                    out[o], out[o + 1], out[o + 2] = r1, g1, b1
+                local o = ro + col * 3
+                if band(rshift(data[so + rshift(col, 3)], 7 - band(col, 7)), 1) ~= 0 then
+                    base[o], base[o + 1], base[o + 2] = r1, g1, b1
                 else
-                    out[o], out[o + 1], out[o + 2] = r0, g0, b0
+                    base[o], base[o + 1], base[o + 2] = r0, g0, b0
                 end
             end
         end
@@ -853,15 +857,14 @@ local function tight_palette(vp, data, len, w, h, pal, num_colors)
             return nil, string.format("Tight: palette(%d) got %d bytes, need %d", num_colors, len, w * h)
         end
         for row = 0, h - 1 do
-            local src = data + row * w
-            local out = base + row * stride
+            local so, ro = row * w, row * stride
             for col = 0, w - 1 do
-                local idx = src[col]
+                local idx = data[so + col]
                 if idx >= num_colors then
                     return nil, string.format("Tight: palette index %d out of range (%d entries)", idx, num_colors)
                 end
-                local q, o = idx * 3, col * 3
-                out[o], out[o + 1], out[o + 2] = pal[q], pal[q + 1], pal[q + 2]
+                local q, o = idx * 3, ro + col * 3
+                base[o], base[o + 1], base[o + 2] = pal[q], pal[q + 1], pal[q + 2]
             end
         end
     end
@@ -887,17 +890,17 @@ local function tight_gradient_bpp(cv, fmt, vp, src, len, w, h)
     local big = cv.big
     local base, stride = vp_base(vp)
     for row = 0, h - 1 do
-        local out = base + row * stride
-        local sp = src + row * w * nb
+        local ro = row * stride
+        local so = row * w * nb
         -- left and upper-left neighbours; the first column predicts from the pixel above
         local lr, lg, lb, ulr, ulg, ulb = prev[0], prev[1], prev[2], 0, 0, 0
         for col = 0, w - 1 do
             local v
             if nb == 2 then
-                local s = sp + col * 2
-                if big then v = bor(lshift(s[0], 8), s[1]) else v = bor(lshift(s[1], 8), s[0]) end
+                local s = so + col * 2
+                if big then v = bor(lshift(src[s], 8), src[s + 1]) else v = bor(lshift(src[s + 1], 8), src[s]) end
             else
-                v = sp[col]
+                v = src[so + col]
             end
             local o = col * 3
             local ur, ug, ub = prev[o], prev[o + 1], prev[o + 2]
@@ -912,7 +915,8 @@ local function tight_gradient_bpp(cv, fmt, vp, src, len, w, h)
             local pg = band(rshift(v, gs) + eg, gm)
             local pb = band(rshift(v, bs) + eb, bm)
             cur[o], cur[o + 1], cur[o + 2] = pr, pg, pb
-            out[o], out[o + 1], out[o + 2] = rl[pr], gl[pg], bl[pb]
+            local d = ro + o
+            base[d], base[d + 1], base[d + 2] = rl[pr], gl[pg], bl[pb]
             lr, lg, lb, ulr, ulg, ulb = pr, pg, pb, ur, ug, ub
         end
         prev, cur = cur, prev
@@ -928,22 +932,25 @@ local function tight_gradient(vp, data, len, w, h)
     local base, stride = vp_base(vp)
     local n = w * 3
     for row = 0, h - 1 do
-        local d = data + row * n
-        local cur = base + row * stride
+        local dd = row * n           -- offsets (see tight_palette)
+        local co = row * stride
         -- the row above as already decoded (all zero above the first row)
-        local prev = row > 0 and cur - stride or nil
-        for c = 0, 2 do
-            cur[c] = band((prev and prev[c] or 0) + d[c], 255)
-        end
-        if prev then
+        if row > 0 then
+            local po = co - stride
+            for c = 0, 2 do
+                base[co + c] = band(base[po + c] + data[dd + c], 255)
+            end
             for o = 3, n - 1 do
-                local est = prev[o] + cur[o - 3] - prev[o - 3]
+                local est = base[po + o] + base[co + o - 3] - base[po + o - 3]
                 if est > 255 then est = 255 elseif est < 0 then est = 0 end
-                cur[o] = band(est + d[o], 255)
+                base[co + o] = band(est + data[dd + o], 255)
             end
         else
+            for c = 0, 2 do
+                base[co + c] = band(data[dd + c], 255)
+            end
             for o = 3, n - 1 do
-                cur[o] = band(cur[o - 3] + d[o], 255)
+                base[co + o] = band(base[co + o - 3] + data[dd + o], 255)
             end
         end
     end
@@ -1057,8 +1064,10 @@ function Encodings.decode_tight(ctx)
             pal = ffi.new("uint8_t[?]", 256 * 3)
             ctx.streams.tight_pal = pal
         end
-        local p = r:ptr(num_colors * cb)
+        local p
         for i = 0, num_colors - 1 do
+            -- (the read in the first iteration, not right before the loop: see decode_hextile)
+            if i == 0 then p = r:ptr(num_colors * cb) end
             pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2] = wire_rgb(cv, p + i * cb, cb)
         end
         bits = num_colors == 2 and 1 or 8
