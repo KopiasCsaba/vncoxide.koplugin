@@ -162,6 +162,13 @@ Worker.read_some = read_some
 local function stuck_forever()
     while true do socket.sleep(1) end
 end
+-- (for vnc.workers' test hooks: a worker that hangs)
+Worker._stuck_forever = stuck_forever
+
+--- Sets FD_CLOEXEC on `fd`: a program the UI process may exec does not inherit it.
+function Worker.cloexec(fd)
+    C.fcntl(fd, C.F_SETFD, ffi.cast("int", C.FD_CLOEXEC))
+end
 
 local function child_main(main_fn, keep_fds, write_fd, read_fd)
     local keep = { [0] = true, [1] = true, [2] = true, [read_fd] = true, [write_fd] = true }
@@ -231,6 +238,10 @@ function Worker.spawn(name, main_fn, keep_fds)
     -- (fcntl is variadic: the flags go as a C int, not a Lua number's double.)
     local flags = C.fcntl(write_fd, C.F_GETFL)
     C.fcntl(write_fd, C.F_SETFL, ffi.cast("int", bit.bor(flags, C.O_NONBLOCK)))
+    -- Nor does anything the UI process runs inherit the pipes: a program it starts keeping a
+    -- write end open would hide the worker's end from it (and the worker's from the UI).
+    Worker.cloexec(read_fd)
+    Worker.cloexec(write_fd)
     return setmetatable({
         name = name,
         read_fd = read_fd,
@@ -239,6 +250,7 @@ function Worker.spawn(name, main_fn, keep_fds)
         eof = false,
         queue = {}, -- unsent strings, oldest first
         sent = 0,   -- bytes of queue[1] already written
+        written = 0, -- bytes written to the pipe in all (the watchdog's progress mark)
     }, Handle)
 end
 
@@ -261,6 +273,7 @@ function Handle:_flush()
             end
         else
             self.sent = self.sent + n
+            self.written = self.written + n
             if self.sent == #s then
                 table.remove(q, 1)
                 self.sent = 0

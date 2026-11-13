@@ -321,7 +321,13 @@ function Session:_finish_connect(ok, err)
     local cb = self._connect_cb
     self._connect_cb = nil
     if ok and self.worker_processes and not self.workers then
-        local pok, link, werr = pcall(function() return require("vnc/workers").start(self) end)
+        local pok, link, werr, lost = pcall(function() return require("vnc/workers").start(self) end)
+        if pok and not link and lost then
+            -- (a worker may have held the socket: the connection fails, the callback hears of it)
+            self._connect_cb = cb
+            self:_fail(werr)
+            return
+        end
         if not (pok and link) then
             logger.warn("vnc: worker processes not started, decoding in-process:", pok and werr or link)
         end
@@ -796,7 +802,8 @@ function Session:attach(app)
     local link = self.workers
     if link then
         -- the decode worker resumes reading and resynchronises with a full update
-        UIManager:scheduleIn(Workers().UI_POLL, self._poll_task)
+        self._worker_wait = Workers().UI_POLL
+        UIManager:scheduleIn(self._worker_wait, self._poll_task)
         link.decode:send("R")
         link.decode:send("F")
         return
@@ -853,16 +860,18 @@ end
 --- The poll task (scheduled as `_poll_task`, which `UIManager:unschedule` can cancel).
 function Session:_poll()
     if not self.attached then return end
-    if self.workers then return self:_poll_workers() end
     if Util.timing_enabled() then
         local now = Session._now()
-        if self.last_poll and now - self.last_poll > 2 * Session.POLL_INTERVAL then
+        -- (in worker mode against the interval the last tick scheduled: `Link:interval`)
+        local expect = self.workers and (self._worker_wait or Workers().UI_POLL) or Session.POLL_INTERVAL
+        if self.last_poll and now - self.last_poll > 2 * expect then
             logger.dbg(string.format("vnc-timing: poll gap ms=%.1f", (now - self.last_poll) * 1000))
         end
         self.last_poll = now
     else
         self.last_poll = nil
     end
+    if self.workers then return self:_poll_workers() end
     local status, rects = self:_service()
     if status == "error" or status == "done" then
         UIManager:unschedule(self._poll_task)
@@ -938,7 +947,8 @@ function Session:_poll_workers()
     -- the app callback may have rescheduled the task (see `poll_soon`): keep exactly one
     UIManager:unschedule(self._poll_task)
     if self.attached and self.workers == link then
-        UIManager:scheduleIn(Workers().UI_POLL, self._poll_task)
+        self._worker_wait = link:interval()
+        UIManager:scheduleIn(self._worker_wait, self._poll_task)
     end
 end
 
@@ -974,7 +984,10 @@ function Session:poll_soon()
     if not self.attached then return end
     UIManager:unschedule(self._poll_task)
     local interval = self.poll_interval or Session.POLL_INTERVAL
-    if self.workers then interval = Workers().UI_POLL end
+    if self.workers then
+        interval = Workers().UI_POLL
+        self._worker_wait = interval
+    end
     UIManager:scheduleIn(interval, self._poll_task)
 end
 

@@ -120,6 +120,7 @@ local function start_mock(opts)
     if opts.resize_after then table.insert(cmd, "--resize-after"); table.insert(cmd, tostring(opts.resize_after)) end
     if opts.split then table.insert(cmd, "--split"); table.insert(cmd, tostring(opts.split)) end
     if opts.resize_once then table.insert(cmd, "--resize-once") end
+    if opts.resize_same then table.insert(cmd, "--resize-same") end
     if opts.alt_pattern then table.insert(cmd, "--alt-pattern"); table.insert(cmd, opts.alt_pattern) end
     if opts.input_during_send then table.insert(cmd, "--input-during-send") end
     -- (`persist`: it serves later connections too, e.g. a reconnect)
@@ -412,7 +413,7 @@ local function proxy_env()
     local real_si, real_un, real_start = UIManager.scheduleIn, UIManager.unschedule, Workers.start
     local env = { tasks = {}, links = {} }
     UIManager.scheduleIn = function(_, delay, fn, ...)
-        env.tasks[#env.tasks + 1] = { t = socket.gettime() + delay, fn = fn, args = { ... }, n = select("#", ...) }
+        env.tasks[#env.tasks + 1] = { t = socket.gettime() + delay, d = delay, fn = fn, args = { ... }, n = select("#", ...) }
     end
     UIManager.unschedule = function(_, fn)
         for i = #env.tasks, 1, -1 do
@@ -420,9 +421,9 @@ local function proxy_env()
         end
     end
     Workers.start = function(session)
-        local link, err = real_start(session)
+        local link, err, lost = real_start(session)
         if link then env.links[#env.links + 1] = link end
-        return link, err
+        return link, err, lost
     end
     --- Runs the due tasks once.
     function env.step()
@@ -4281,6 +4282,24 @@ local function main()
             return true
         end)
 
+        -- The UI's pipe ends are close-on-exec: a program the UI process runs does not keep them.
+        check("worker_pipe_ends_are_close_on_exec", function()
+            local w = spawn_echo()
+            local bad
+            for _, fd in ipairs({ w.read_fd, w.write_fd }) do
+                local info = read_file("/proc/self/fdinfo/" .. fd) or ""
+                local flags = tonumber(info:match("flags:%s*(%d+)") or "", 8)
+                -- O_CLOEXEC as fdinfo shows it (octal 02000000)
+                if not flags or bit.band(flags, 0x80000) == 0 then
+                    bad = string.format("fd %d flags %s", fd, tostring(info:match("flags:%s*(%d+)")))
+                end
+            end
+            poll_until(w, has_hello, 2)
+            kill_worker(w)
+            if bad then return nil, bad end
+            return true
+        end)
+
         -- The renderer over caller-given memory: what canvas() returns is what that memory holds.
         check("renderer_dithered_output_is_in_canvas_mem", function()
             local Renderer = require("vnc/renderer")
@@ -4768,6 +4787,285 @@ local function main()
                 if log_count(log, "\nCONNECT\n") ~= 2 then error("expected two connections to the mock") end
                 target:free()
             end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- A DesktopSize of the current size is no resize: the workers carry on (no reconnect),
+        -- and the full update the decode worker then requests keeps the picture right.
+        check("same_size_desktop_size_keeps_the_workers", function()
+            local env = proxy_env()
+            local s, mpid
+            local ok, err = pcall(function()
+                local log, states
+                s, mpid, log, states = proxy_session(env, "wk_resize_same", { encoding = "raw", pattern = "quadrants",
+                    resize_after = 2, resize_same = true, persist = true })
+                local remote = s:get_remote()
+                local first = s.workers
+                local app = proxy_app()
+                local _, shows = canvas_probe(remote, 200, 150)
+                s:attach(app)
+                if not wait_for_log(log, "RESIZE 200 150", 5) then error("the mock sent no DesktopSize") end
+                -- the full update requested after it
+                if not env.run_until(function()
+                    local text = read_file(log) or ""
+                    local at = text:find("RESIZE 200 150", 1, true)
+                    return at and text:find("incremental=0", at, true) ~= nil
+                end, 5) then error("no full update request after the DesktopSize") end
+                env.run_until(function() return false end, 0.5)
+                local bad = wait_canvas(env, shows, "quadrants", 5)
+                if bad then error("the canvas: " .. bad) end
+                if s.workers ~= first then error("the workers were replaced") end
+                if app.resized ~= 0 then error("on_remote_resized fired " .. app.resized .. " times") end
+                if log_count(log, "\nCONNECT\n") ~= 1 then error("the session reconnected") end
+                for _, st in ipairs(states) do
+                    if st == "error" then error("the session failed: " .. tostring(s:get_error())) end
+                end
+                local w, h = remote:get_size()
+                if w ~= 200 or h ~= 150 then error(string.format("size %dx%d", w, h)) end
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- A decode worker that stops reading its commands is a session error within
+        -- DECODE_STALL (plus a tick), not a frozen picture.
+        check("hung_decode_worker_fails_the_session", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local s, mpid, waited
+            local ok, err = pcall(function()
+                Workers._test_decode_stuck = true
+                local ok0, s0, mpid0 = pcall(proxy_session, env, "wk_hung_decode", { encoding = "raw", pattern = "quadrants" })
+                Workers._test_decode_stuck = nil
+                if not ok0 then error(s0) end
+                s, mpid = s0, mpid0
+                s:attach(proxy_app())
+                -- more than the pipe holds: the rest stays queued in the UI process
+                s:send_cut_text(string.rep("x", 256 * 1024))
+                if s.workers.decode:pending() == 0 then error("nothing stayed queued") end
+                local t0 = socket.gettime()
+                env.run_until(function() return s:get_state() == "error" end, Workers.DECODE_STALL + 3)
+                waited = socket.gettime() - t0
+                if s:get_state() ~= "error" then error("no session error after " .. waited .. " s") end
+                if s:get_error() ~= "decode worker not responding" then error("error " .. tostring(s:get_error())) end
+                if waited < Workers.DECODE_STALL then error("failed after only " .. waited .. " s") end
+                if s.workers ~= nil then error("the link was not cleared") end
+            end)
+            Workers._test_decode_stuck = nil
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- A scale worker that never answers a G is a session error after SCALE_STALL.
+        check("hung_scale_worker_fails_the_session", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local stall = Workers.SCALE_STALL
+            local s, mpid
+            local ok, err = pcall(function()
+                Workers._test_scale_stuck = true
+                Workers.SCALE_STALL = 1
+                local ok0, s0, mpid0 = pcall(proxy_session, env, "wk_hung_scale", { encoding = "raw", pattern = "quadrants" })
+                Workers._test_scale_stuck = nil
+                if not ok0 then error(s0) end
+                s, mpid = s0, mpid0
+                s:attach(proxy_app())
+                local target = BB.new(200, 150, BB.TYPE_BB8)
+                s:get_remote():draw_to(target, 0, 0, 200, 150, false) -- sends the G
+                target:free()
+                if not s.workers.view_id then error("no G sent") end
+                local t0 = socket.gettime()
+                env.run_until(function() return s:get_state() == "error" end, 4)
+                local waited = socket.gettime() - t0
+                if s:get_state() ~= "error" then error("no session error after " .. waited .. " s") end
+                if s:get_error() ~= "scale worker not responding" then error("error " .. tostring(s:get_error())) end
+                if waited < 1 then error("failed after only " .. waited .. " s") end
+            end)
+            Workers._test_scale_stuck = nil
+            Workers.SCALE_STALL = stall
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- The scale worker's end seen in the tick that read the decode worker's pipe before its
+        -- `Z` arrived: a resize, not a crash.
+        check("scale_eof_before_the_decode_z_is_a_resize", function()
+            local s, states, mpid = worker_session("wk_eof_z", { encoding = "raw", pattern = "quadrants" })
+            local link = s.workers
+            local out
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                link_pids(link)
+                local rd, rs = link.decode.poll, link.scale.poll
+                local n = 0
+                link.decode.poll = function(h)
+                    n = n + 1
+                    local _ = rd(h)
+                    if n == 1 then return {}, false end
+                    return { "Z 232 166" }, true
+                end
+                link.scale.poll = function(h) local _ = rs(h); return {}, true end
+                local pok, res = pcall(link.poll, link)
+                link.decode.poll, link.scale.poll = rd, rs
+                if not pok then error(res) end
+                out = res
+                for _, st in ipairs(states) do
+                    if st == "error" then error("reported as a failure: " .. tostring(s:get_error())) end
+                end
+                if out[#out] ~= "Z 232 166" then error("no Z handed on: " .. table.concat(out, " | ")) end
+                if not link.stopped then error("the link was not stopped") end
+            end)
+            for _, p in ipairs({ link and link.decode.pid, link and link.scale.pid }) do
+                if p then ffi.C.kill(p, 9); wait_gone(p, 2) end
+            end
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- A step failing after both forks fails the connection (a worker may hold the socket):
+        -- no in-process session on it, both workers stopped.
+        check("late_worker_start_failure_fails_the_connection", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local Worker = require("vnc/worker")
+            local Session = load_session()
+            Workers.canvas_bytes = function() return 400 * 400 * 4 end
+            local real_spawn = Worker.spawn
+            local handles = {}
+            Worker.spawn = function(...)
+                local h, e = real_spawn(...)
+                if h then handles[#handles + 1] = h end
+                return h, e
+            end
+            local s, mpid
+            local ok, err = pcall(function()
+                local port
+                mpid, port = start_mock{ name = "wk_late_fail", encoding = "raw", pattern = "quadrants" }
+                local states = {}
+                s = Session.new{
+                    profile = { host = "127.0.0.1", port = port, password = "", name = "wk_late_fail" },
+                    worker_processes = true,
+                    network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end },
+                    on_state = function(st) states[#states + 1] = st end,
+                }
+                Workers._test_fail_after_spawn = true
+                local connected, cerr
+                s:connect(function(c, e) connected, cerr = c, e end)
+                env.run_until(function() return connected ~= nil end, 10)
+                Workers._test_fail_after_spawn = nil
+                if connected ~= false then error("connect reported " .. tostring(connected)) end
+                if not tostring(cerr):find("test failure after the forks", 1, true) then error("error " .. tostring(cerr)) end
+                if s:get_state() ~= "error" then error("state " .. tostring(s:get_state())) end
+                if s.workers or s.proto or s.sock then error("the session kept a link, protocol or socket") end
+                if #handles ~= 2 then error(#handles .. " workers spawned") end
+                -- the stops' kill tasks run (they learn the pids if need be)
+                env.run_until(function() return false end, Worker.KILL_AFTER + 0.5)
+                for _, h in ipairs(handles) do
+                    if not h.pid then error(h.name .. " worker: no pid learnt") end
+                    if not wait_gone(h.pid, 2) then error(h.name .. " worker still running") end
+                end
+            end)
+            Workers._test_fail_after_spawn = nil
+            Worker.spawn = real_spawn
+            if s then s:disconnect() end
+            for _, h in ipairs(handles) do
+                if h.pid then ffi.C.kill(h.pid, 9); wait_gone(h.pid, 2) end
+            end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- Polling slows to Session.POLL_INTERVAL once the workers have been quiet for ACTIVE_FOR
+        -- with no G unanswered; a G makes it UI_POLL again.
+        check("idle_workers_poll_at_the_idle_interval", function()
+            local env = proxy_env()
+            local Workers = require("vnc/workers")
+            local Session = load_session()
+            local s, mpid
+            local function next_poll()
+                for _, t in ipairs(env.tasks) do
+                    if t.fn == s._poll_task then return t.d end
+                end
+            end
+            local ok, err = pcall(function()
+                s, mpid = proxy_session(env, "wk_idle", { encoding = "raw", pattern = "quadrants" })
+                local remote = s:get_remote()
+                local target, shows = canvas_probe(remote, 200, 150)
+                s:attach(proxy_app())
+                local bad = wait_canvas(env, shows, "quadrants", 5)
+                if bad then error("the canvas: " .. bad) end
+                if not env.run_until(function() return next_poll() == Session.POLL_INTERVAL end, Workers.ACTIVE_FOR + 2) then
+                    error("idle poll interval " .. tostring(next_poll()))
+                end
+                target:free()
+                -- an unanswered G, or a message less than ACTIVE_FOR ago: UI_POLL
+                local link = s.workers
+                local id, active = link.view_id, link.active_at
+                link.view_id = (link.answered_id or 0) + 1
+                local with_g = link:interval()
+                link.view_id = link.answered_id
+                link.active_at = Session._now()
+                local recent = link:interval()
+                link.active_at = Session._now() - Workers.ACTIVE_FOR - 0.1
+                local idle = link:interval()
+                link.view_id, link.active_at = id, active
+                if with_g ~= Workers.UI_POLL then error("with a G out " .. tostring(with_g)) end
+                if recent ~= Workers.UI_POLL then error("after a message " .. tostring(recent)) end
+                if idle ~= Session.POLL_INTERVAL then error("idle " .. tostring(idle)) end
+            end)
+            if s then s:disconnect() end
+            env.finish()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
+        -- The timing trace's poll gap in worker mode too.
+        check("worker_mode_logs_a_poll_gap", function()
+            local env = proxy_env()
+            local logger = require("logger")
+            local Util = require("vnc/util")
+            local real_dbg, real_on = logger.dbg, Util.timing_enabled
+            local lines = {}
+            local s, mpid
+            local ok, err = pcall(function()
+                s, mpid = proxy_session(env, "wk_gap", { encoding = "raw", pattern = "quadrants" })
+                logger.dbg = function(...)
+                    local parts = {}
+                    for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+                    lines[#lines + 1] = table.concat(parts, " ")
+                end
+                Util.timing_enabled = function() return true end
+                s:attach(proxy_app())
+                env.run_until(function() return false end, 0.2)
+                socket.sleep(0.4) -- the UI thread blocked
+                env.run_until(function() return false end, 0.2)
+                local gap
+                for _, l in ipairs(lines) do
+                    local ms = tonumber(l:match("vnc%-timing: poll gap ms=([%d.]+)"))
+                    if ms and ms >= 350 then gap = ms end
+                end
+                if not gap then error("no poll gap line: " .. table.concat(lines, " | ")) end
+            end)
+            logger.dbg, Util.timing_enabled = real_dbg, real_on
             if s then s:disconnect() end
             env.finish()
             stop_mock(mpid)

@@ -36,8 +36,20 @@ local Workers = {
     DECODE_CPU_PER_TICK = 0.05,
     -- More rects than this waiting for the scale worker recompute the whole canvas instead.
     MAX_STALE_RECTS = 1024,
-    -- Seconds between the UI process' poll ticks of the workers' messages while attached.
+    -- Seconds between the UI process' poll ticks of the workers' messages while attached and
+    -- active: a message arrived less than `ACTIVE_FOR` seconds ago, or a `G` is unanswered.
+    -- Otherwise the ticks are `Session.POLL_INTERVAL` apart (an idle reader sleeps longer).
     UI_POLL = 0.01,
+    ACTIVE_FOR = 0.5,
+    -- Watchdogs (Link:poll): seconds the decode worker may leave the UI's queued commands
+    -- unread, and the scale worker may leave a `G` without any `C`, before the session fails as
+    -- not responding. The decode worker reads its pipe between ticks of at most
+    -- `DECODE_CPU_PER_TICK`, so 2 s is long. A `G` costs at most one render of the whole canvas:
+    -- a full 1264x1680 render measured 31-270 ms on an emulated ARMv7 reader (the slowest figure
+    -- from before the scaler's integer stores), so 10 s leaves a wide margin for a loaded or
+    -- slower device without leaving a hung worker's frozen picture up for long.
+    DECODE_STALL = 2,
+    SCALE_STALL = 10,
 }
 
 --- Bytes of the shared canvas: any canvas up to the screen, of any type up to 4 bytes per pixel,
@@ -129,9 +141,20 @@ local function decode_main(ctx, session, dfd)
     end
     -- The plane is the UI's: a new desktop size cannot be written here. Report it and exit before
     -- anything of the new size is decoded (the UI reconnects).
-    if session.remote then session.remote.resize = function() end end
+    -- A DesktopSize of the plane's own size is not a resize: as in-process, the plane stays and
+    -- the full update the session requests next repaints it. The incremental requests keep the
+    -- view area the UI last sent (the UI sends an unchanged one only once).
+    local area
+    if session.remote then
+        session.remote.resize = function() area = session.view_area end
+    end
     session.app = {
         on_remote_resized = function(_, w, h)
+            local r = session.remote
+            if r and r.w == w and r.h == h then
+                session.view_area = area
+                return
+            end
             ctx.send(string.format("Z %d %d", w, h))
             C._exit(0)
         end,
@@ -139,6 +162,7 @@ local function decode_main(ctx, session, dfd)
         on_framebuffer_dirty = function() end,
     }
 
+    if Workers._test_decode_stuck then Worker._stuck_forever() end
     local reading = session.attached and true or false
     local pfd = ffi.new("struct pollfd[2]")
     pfd[0].fd, pfd[0].events = ctx.read_fd, C.POLLIN
@@ -198,6 +222,7 @@ The scale worker's main function: `dfd` is the read end of the pipe from the dec
 `plane` the shared plane, `canvas_mem` the shared canvas memory.
 ]]
 local function scale_main(ctx, dfd, plane, canvas_mem)
+    if Workers._test_scale_stuck then Worker._stuck_forever() end
     local renderer = Renderer.new{ canvas_mem = canvas_mem }
     local dreader = Worker.Reader.new()
     local pfd = ffi.new("struct pollfd[2]")
@@ -289,48 +314,107 @@ function Link:stop()
     SharedMem.free(self.canvas_mem.ptr, self.canvas_mem.bytes)
 end
 
---[[--
-Never blocks. Drains both workers: `B` rings the app's bell; `E` (from either worker), or either
-worker's end closing, stops the link and fails the session (`_fail`: state "error", Wi-Fi restored by the UI
-process); `Z` stops the link (the decode worker exits after it). Returns the scale worker's `C`
-lines and a `Z` line, in arrival order, for the caller.
-]]
-function Link:poll()
-    local out = {}
-    if self.stopped then return out end
-    local session = self.session
-    local err, gone, resized
-    local lines, eof = self.decode:poll()
+-- Takes the decode worker's lines into `st` (`err`, `resized`); `B` rings the app's bell.
+local function take_decode(session, lines, st)
     for _, l in ipairs(lines) do
         local op = l:sub(1, 1)
         if op == "B" then
             if session.app and session.app.on_bell then session.app:on_bell() end
         elseif op == "E" then
-            err = l:sub(3)
-            if err == "" then err = "worker process exited" end
+            st.err = l:sub(3)
+            if st.err == "" then st.err = "worker process exited" end
         elseif op == "Z" then
-            resized = l
+            st.resized = l
         end
     end
-    gone = eof
-    lines, eof = self.scale:poll()
-    for _, l in ipairs(lines) do
+end
+
+--[[--
+Never blocks. Drains both workers: `B` rings the app's bell; `E` (from either worker), either
+worker's end closing, or a worker not responding (`DECODE_STALL`: the UI's queued commands stay
+unread; `SCALE_STALL`: no `C` at all while a `G` is unanswered) stops the link and fails the
+session (`_fail`: state "error", Wi-Fi restored by the UI process); `Z` stops the link (the decode
+worker exits after it). Returns the scale worker's `C` lines and a `Z` line, in arrival order, for
+the caller.
+]]
+function Link:poll()
+    local out = {}
+    if self.stopped then return out end
+    local session = self.session
+    local now = Session._now()
+    local st = {}
+    local dlines, deof = self.decode:poll()
+    take_decode(session, dlines, st)
+    local slines, seof = self.scale:poll()
+    local answered = false
+    for _, l in ipairs(slines) do
         if l:sub(1, 2) == "C " then
             out[#out + 1] = l
-        elseif l:sub(1, 1) == "E" and not err then
-            err = l:sub(3)
-            if err == "" then err = "worker process exited" end
+            local id = tonumber(l:match("^C (%d+)"))
+            if id and id > (self.answered_id or 0) then self.answered_id = id end
+            answered = true
+        elseif l:sub(1, 1) == "E" and not st.err then
+            st.err = l:sub(3)
+            if st.err == "" then st.err = "worker process exited" end
         end
     end
-    gone = gone or eof
-    if resized then
+    if seof and not deof and not st.err and not st.resized then
+        -- The scale worker ends when the decode worker does, which sends `Z` before it exits on
+        -- a resize: that `Z` may have arrived after this tick read the decode worker's pipe.
+        dlines, deof = self.decode:poll()
+        take_decode(session, dlines, st)
+    end
+    if dlines[1] or slines[1] then self.active_at = now end
+    if st.resized then
         self:stop()
-        out[#out + 1] = resized
-    elseif err or gone then
+        out[#out + 1] = st.resized
+        return out
+    end
+    local err = st.err or ((deof or seof) and "worker process exited") or self:_stalled(now, answered)
+    if err then
         self:stop()
-        session:_fail(err or "worker process exited")
+        session:_fail(err)
     end
     return out
+end
+
+--[[--
+The watchdogs, after a tick's reads and writes: the decode worker's message when the commands
+queued for it have not moved for `DECODE_STALL` seconds, the scale worker's when no `C` arrived
+for `SCALE_STALL` seconds while a `G` (`view_id`, see @{vnc.framebuffer.Remote:draw_to}) is
+unanswered; else nil. `answered`: a `C` arrived this tick.
+]]
+function Link:_stalled(now, answered)
+    local d = self.decode
+    if d:pending() > 0 then
+        if self.decode_since == nil or self.decode_written ~= d.written then
+            self.decode_since, self.decode_written = now, d.written
+        elseif now - self.decode_since > Workers.DECODE_STALL then
+            return "decode worker not responding"
+        end
+    else
+        self.decode_since = nil
+    end
+    if self.view_id and (self.answered_id or 0) < self.view_id then
+        if self.scale_since == nil or answered then
+            self.scale_since = now
+        elseif now - self.scale_since > Workers.SCALE_STALL then
+            return "scale worker not responding"
+        end
+    else
+        self.scale_since = nil
+    end
+    return nil
+end
+
+--- Seconds to the next poll tick: `UI_POLL` while active (a message arrived less than
+--- `ACTIVE_FOR` ago, or a `G` is unanswered), else `Session.POLL_INTERVAL`.
+function Link:interval()
+    if (self.view_id and (self.answered_id or 0) < self.view_id)
+            or (self.active_at and Session._now() - self.active_at < Workers.ACTIVE_FOR) then
+        return Workers.UI_POLL
+    end
+    return Session.POLL_INTERVAL
 end
 
 local function close_pipe(fds)
@@ -344,8 +428,11 @@ Forks the scale worker and the decode worker for a session that just completed i
 process gives up its copy of the connection (the socket descriptor is closed without a shutdown,
 the protocol state freed), keeps the plane and the "connected" state, and sets
 `session.workers` and `session.remote.worker_link` to the link.
---- @treturn table|nil link `{decode, scale, canvas_mem = {ptr, bytes}}`, or nil and an error
----   (nothing changed then: the session carries on in-process)
+--- @treturn table|nil link `{decode, scale, canvas_mem = {ptr, bytes}}`, or nil, an error and
+---   whether the connection is lost: false when nothing changed (the session may carry on
+---   in-process), true when a step failed after the decode worker was forked (the workers are
+---   stopped; the worker may have read from the socket or hold it, so the protocol state cannot be
+---   trusted and the connection must fail)
 ]]
 function Workers.start(session)
     local remote, sock, fd = session.remote, session.sock, session.fd
@@ -364,6 +451,9 @@ function Workers.start(session)
         return nil, "pipe failed: " .. ffi.string(C.strerror(ffi.errno()))
     end
     local rd, wr = fds[0], fds[1]
+    -- (only the workers, which never exec, keep these)
+    Worker.cloexec(rd)
+    Worker.cloexec(wr)
     local plane = remote.plane
 
     -- The scale worker first: it never sees the socket, so failing on the decode worker leaves
@@ -386,25 +476,37 @@ function Workers.start(session)
         SharedMem.free(ptr, bytes)
         return nil, "decode worker: " .. tostring(err)
     end
-    -- Only the workers hold the pipe between them: either one dying is seen by the other.
-    close_pipe(fds)
-
     local link = setmetatable({ session = session, decode = decode, scale = scale,
         canvas_mem = canvas_mem }, Link)
-    -- The connection is the decode worker's now. LuaSocket's close (and its __gc) close the
-    -- descriptor it holds, so it is set to -1 first; the descriptor is closed here without a
-    -- shutdown, which would end the connection for the worker too.
-    sock:setfd(-1)
-    sock:close()
-    C.close(fd)
-    session.sock, session.fd = nil, nil
-    session.proto:free()
-    session.proto = nil
-    session:_rx_free()
-    session.tx, session.need, session.done = {}, nil, false
-    session.in_update, session.tm, session.dirty = false, nil, nil
-    session.workers = link
-    remote.worker_link = link
+    local released, closed = false, false
+    local ok, perr = pcall(function()
+        if Workers._test_fail_after_spawn then error("test failure after the forks", 0) end
+        -- Only the workers hold the pipe between them: either one dying is seen by the other.
+        close_pipe(fds)
+        -- The connection is the decode worker's now. LuaSocket's close (and its __gc) close the
+        -- descriptor it holds, so it is set to -1 first; the descriptor is closed here without a
+        -- shutdown, which would end the connection for the worker too.
+        sock:setfd(-1)
+        released = true
+        sock:close()
+        C.close(fd)
+        closed = true
+        session.sock, session.fd = nil, nil
+        session.proto:free()
+        session.proto = nil
+        session:_rx_free()
+        session.tx, session.need, session.done = {}, nil, false
+        session.in_update, session.tm, session.dirty = false, nil, nil
+        session.workers = link
+        remote.worker_link = link
+    end)
+    if not ok then
+        close_pipe(fds)
+        if released and not closed then C.close(fd) end
+        if released then session.sock, session.fd = nil, nil end
+        link:stop()
+        return nil, "starting the worker processes failed: " .. tostring(perr), true
+    end
     logger.info("vnc: decoding in worker processes")
     return link
 end

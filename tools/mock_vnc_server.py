@@ -17,7 +17,7 @@ usage: mock_vnc_server.py [--port 5900] [--width 800] [--height 600]
                           [--security none|vnc|vnc-only] [--password secret]
                           [--encoding raw|hextile|rre|copyrect|trle|zrle|tight|mixed]
                           [--pattern quadrants|gradient|checker] [--repaint SECONDS]
-                          [--log FILE] [--resize-after N] [--resize-once] [--once]
+                          [--log FILE] [--resize-after N] [--resize-once] [--resize-same] [--once]
                           [--alt-pattern P] [--split N] [--input-during-send]
 
 SIGUSR1 switches the served picture to ``--alt-pattern`` (logged as ``PATTERN <name>``).
@@ -1010,8 +1010,9 @@ class MockServer:
 
     def send_resize(self, conn):
         global RESIZED
-        self.fb.w += 32
-        self.fb.h += 16
+        if not self.args.resize_same:
+            self.fb.w += 32
+            self.fb.h += 16
         if self.args.resize_once:
             RESIZED = (self.fb.w, self.fb.h)
         log("RESIZE %d %d" % (self.fb.w, self.fb.h))
@@ -1064,6 +1065,8 @@ def main():
                     help="write server messages in chunks of this many bytes, with a short "
                          "pause between them (exercises the client's partial-read handling)")
     ap.add_argument("--once", action="store_true", help="exit after the first connection")
+    ap.add_argument("--resize-same", action="store_true",
+                    help="with --resize-after: the DesktopSize keeps the current size")
     ap.add_argument("--resize-once", action="store_true",
                     help="with --resize-after: resize only once; later connections get the new size")
     ap.add_argument("--alt-pattern", default=None, choices=["quadrants", "gradient", "checker"],
