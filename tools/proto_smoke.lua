@@ -4739,9 +4739,13 @@ local function main()
                 local target, shows = canvas_probe(remote, 200, 150)
                 local app = proxy_app()
                 s:attach(app)
+                -- (the scale worker writes the shared canvas before it sends its C line: the
+                -- picture can show a moment before the app is told, so both are waited for)
                 local bad = wait_canvas(env, shows, "quadrants", 5)
                 if bad then error("attached: the canvas is not the picture: " .. bad) end
-                if not app.dirty[1] then error("the app was not told of the new canvas") end
+                if not env.run_until(function() return app.dirty[1] ~= nil end, 5) then
+                    error("the app was not told of the new canvas")
+                end
                 s:detach()
                 -- (a repaint decoded just before the detach may still be on its way)
                 local link = s.workers
@@ -4763,7 +4767,9 @@ local function main()
                 s:attach(app)
                 bad = wait_canvas(env, shows, "checker", 5)
                 if bad then error("attach did not resynchronise: " .. bad) end
-                if #app.dirty == n then error("the app was not told of the resynchronised canvas") end
+                if not env.run_until(function() return #app.dirty > n end, 5) then
+                    error("the app was not told of the resynchronised canvas")
+                end
                 target:free()
             end)
             if s then s:disconnect() end
