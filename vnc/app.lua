@@ -893,7 +893,7 @@ end
 
 --[[--
 Hybrid mode's drag: it scrolls the remote (`_scroll_by_drag`, HYBRID_SCROLL_STEP per notch, at the
-finger) and never presses a button. `start` is where the contact came down; the pan's `relative`
+spot where the drag began) and never presses a button. `start` is where the contact came down; the pan's `relative`
 is its offset from there, so the movement since the previous event is the difference.
 ]]
 ViewerApp.HYBRID_SCROLL_STEP = 1 / 30
@@ -965,7 +965,10 @@ function ViewerApp:_end_quick_drag(ges)
     if ges and (ges.ges == "swipe" or ges.ges == "multiswipe") then
         self._mouse_moving = nil
         -- (a swipe's pos is where the contact came down, its end_pos the lift)
-        self:_hybrid_end(ges.end_pos)
+        -- (only the swipe of the contact that is dragging feeds its tail)
+        local g = self._hybrid_pan
+        local same = g and ges.pos and math.abs(g.start.x - ges.pos.x) <= 1 and math.abs(g.start.y - ges.pos.y) <= 1
+        self:_hybrid_end(same and ges.end_pos or nil)
         self:_follow_settled()
         if self._drag_active then self:_end_pointer_action("swipe end") end
     end

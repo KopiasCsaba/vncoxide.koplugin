@@ -43,7 +43,7 @@ Help.ROWS = {
 Help.ROWS.hybrid = rows_for{
     { _("Tap"), _("Left click at the finger") },
     { _("Long press"), _("Lift without moving: right click at the finger; move: drag with the left button") },
-    { _("Drag"), _("Scroll the remote (mouse wheel at the finger); the content follows the finger") },
+    { _("Drag"), _("Scroll the remote (mouse wheel where the drag began); the content follows the finger") },
     { _("Two-finger long press"), _("Left click between the fingers, then the keyboard") },
 }
 

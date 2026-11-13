@@ -7562,6 +7562,19 @@ check("hybrid_flick_and_release_tails_scroll", function()
     close_viewer(app, remote)
 end)
 
+check("hybrid_swipe_of_another_contact_sends_no_notches", function()
+    local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
+    local step = Screen:getHeight() * app.HYBRID_SCROLL_STEP
+    local start = Geom:new{ x = 300, y = 500, w = 0, h = 0 }
+    dispatch_gesture{ ges = "pan", relative = { x = 0, y = 1 }, start_pos = start, pos = Geom:new{ x = 300, y = 501 } }
+    assert_true(app._hybrid_pan and #sent.pointer == 0, "a stale drag from an earlier contact")
+    dispatch_gesture{ ges = "swipe", direction = "north", pos = Geom:new{ x = 100, y = 700, w = 0, h = 0 },
+        end_pos = Geom:new{ x = 100, y = 700 - 5 * step, w = 0, h = 0 } }
+    assert_true(#sent.pointer == 0, "no notches, got " .. #sent.pointer .. " events")
+    assert_true(app._hybrid_pan == nil, "just cleared")
+    close_viewer(app, remote)
+end)
+
 check("hybrid_drag_whose_release_a_popup_took_does_not_block_the_toolbar_swipe", function()
     local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
     local c = app.canvas
