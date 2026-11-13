@@ -1357,6 +1357,135 @@ local function main()
         })
     end)
 
+    -- Decoder edge and error paths: packed palette tiles, Hextile/RRE malformed or cut streams.
+    local function decode_raw(enc, w, h, data, depth, wrap)
+        local Util = require("vnc/util")
+        local plane = BB.new(w, h, BB.TYPE_BBRGB24)
+        local streams = Encodings.new_streams()
+        local ok, res = pcall(Encodings.decode, { x = 0, y = 0, w = w, h = h, encoding = enc,
+            r = Util.mem_reader(wrap and wrap(data) or data), plane = plane,
+            vp = plane:viewport(0, 0, w, h), streams = streams, fmt = PxFmt.for_depth(depth or 24) })
+        Encodings.free_streams(streams)
+        return ok and res or nil, plane
+    end
+
+    local function packed_palette_case(enc, wrap)
+        math.randomseed(7)
+        for _ = 1, 300 do
+            local w, h, ps = math.random(1, 16), math.random(1, 16), math.random(2, 16)
+            local bpp = ps == 2 and 1 or (ps <= 4 and 2 or 4)
+            local rb = bit.rshift(w * bpp + 7, 3)
+            local pal, t = {}, { string.char(ps) }
+            for i = 0, ps - 1 do
+                pal[i] = { math.random(0, 255), math.random(0, 255), math.random(0, 255) }
+                t[#t + 1] = string.char(pal[i][1], pal[i][2], pal[i][3])
+            end
+            local inject = math.random() < 0.3 and ps < bit.lshift(1, bpp)
+            local idx, expbad = {}, false
+            for y = 0, h - 1 do
+                local bytes = {}
+                for b = 0, rb - 1 do bytes[b] = 0 end
+                idx[y] = {}
+                for x = 0, w - 1 do
+                    local v = math.random(0, ps - 1)
+                    if inject and math.random() < 0.05 then
+                        v = math.random(ps, bit.lshift(1, bpp) - 1)
+                        expbad = true
+                    end
+                    idx[y][x] = v
+                    local bp = x * bpp
+                    local bi = bit.rshift(bp, 3)
+                    bytes[bi] = bit.bor(bytes[bi], bit.lshift(v, 8 - bpp - bit.band(bp, 7)))
+                end
+                local used = w * bpp % 8 -- random padding bits must be ignored
+                if used > 0 then
+                    bytes[rb - 1] = bit.bor(bytes[rb - 1], bit.band(math.random(0, 255), bit.lshift(1, 8 - used) - 1))
+                end
+                for b = 0, rb - 1 do t[#t + 1] = string.char(bytes[b]) end
+            end
+            local ok, plane = decode_raw(enc, w, h, table.concat(t), 24, wrap)
+            local what = string.format("%dx%d palette %d", w, h, ps)
+            if expbad then
+                plane:free()
+                if ok then return nil, "bad palette index accepted: " .. what end
+            else
+                if not ok then plane:free(); return nil, "valid tile rejected: " .. what end
+                for y = 0, h - 1 do
+                    for x = 0, w - 1 do
+                        local c, p = pal[idx[y][x]], plane:getPixel(x, y)
+                        if p:getR() ~= c[1] or p:getG() ~= c[2] or p:getB() ~= c[3] then
+                            plane:free(); return nil, string.format("%s: pixel %d,%d wrong", what, x, y)
+                        end
+                    end
+                end
+                plane:free()
+            end
+        end
+        return true
+    end
+
+    check("encodings_trle_packed_palette_tiles", function()
+        return packed_palette_case(Encodings.TRLE)
+    end)
+
+    check("encodings_zrle_packed_palette_tiles", function()
+        local ZStream = require("vnc/zstream")
+        local Util = require("vnc/util")
+        return packed_palette_case(Encodings.ZRLE, function(data)
+            local d = ZStream.new_deflate()
+            local z = assert(d:deflate(data, #data))
+            d:free()
+            return Util.writer():u32(#z):raw(z):tostring()
+        end)
+    end)
+
+    check("encodings_hextile_malformed_tiles_error", function()
+        local p = "\7\7\7\7"
+        for name, data in pairs({
+            ["no background"] = string.char(0x08) .. string.char(0),
+            ["fg with coloured"] = string.char(2 + 4 + 8 + 16) .. p .. p .. string.char(1) .. p .. "\0\0",
+            ["subrect without fg"] = string.char(2 + 8) .. p .. string.char(1, 0),
+        }) do
+            local ok, plane = decode_raw(Encodings.HEXTILE, 16, 16, data)
+            plane:free()
+            if ok then return nil, name .. " accepted" end
+        end
+        return true
+    end)
+
+    check("encodings_hextile_and_rre_cut_streams_error", function()
+        local Util = require("vnc/util")
+        for _, d in ipairs({ 8, 16, 24 }) do
+            local nb = d == 24 and 4 or d / 8
+            local px = string.rep("\7", nb)
+            -- 20x20 = 4 tiles: bg+fg+2 subrects; bg+coloured(3); carried bg with count 0; bg only
+            local hx = string.char(2 + 4 + 8) .. px .. px .. string.char(2, 0x00, 0xFF, 0x34, 0x21)
+                .. string.char(2 + 8 + 16) .. px .. string.char(3) .. px .. string.char(0x11, 0x22)
+                .. px .. string.char(0xFF, 0xFF) .. px .. string.char(0xE0, 0x0F)
+                .. string.char(8 + 16) .. string.char(0)
+                .. string.char(2) .. px
+            local ok, plane = decode_raw(Encodings.HEXTILE, 20, 20, hx, d)
+            plane:free()
+            if not ok then return nil, d .. " bpp: full hextile stream rejected" end
+            local rre = Util.writer():u32(3):tostring() .. string.rep("\1", nb)
+            for _ = 1, 3 do rre = rre .. string.rep("\2", nb) .. string.char(0, 1, 0, 2, 0xFF, 0xFF, 0, 3) end
+            ok, plane = decode_raw(Encodings.RRE, 20, 20, rre, d)
+            plane:free()
+            if not ok then return nil, d .. " bpp: full RRE stream rejected" end
+            for k = 0, #hx - 1 do
+                ok, plane = decode_raw(Encodings.HEXTILE, 20, 20, hx:sub(1, k), d)
+                plane:free()
+                if ok then return nil, string.format("hextile %d bpp cut at %d decoded", d, k) end
+            end
+            for k = 0, #rre - 1 do
+                ok, plane = decode_raw(Encodings.RRE, 20, 20, rre:sub(1, k), d)
+                plane:free()
+                if ok then return nil, string.format("RRE %d bpp cut at %d decoded", d, k) end
+            end
+        end
+        return true
+    end)
+
     check("encodings_tight_no_zlib_with_explicit_filter", function()
         -- libvncserver at compression level 0 sends mono/indexed rects as control 0x0E: "no zlib"
         -- plus an explicit (palette) filter; small data comes inline, larger with a compact length

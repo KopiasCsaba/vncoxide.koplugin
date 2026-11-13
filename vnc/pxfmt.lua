@@ -86,6 +86,7 @@ local pixel_luts = {}
 local function pixel_lut(fmt, size)
     -- remembered on the format table too: the shared-table key below is a table and a string per
     -- call, and the decoders convert row by row (and tile by tile)
+    -- (a format table is never edited in place: a new format is a new table, as `_conv` assumes)
     local own = fmt._pixel_lut
     if own and own.size == size then return own.lut end
     local key = table.concat({ size, fmt.red_max, fmt.green_max, fmt.blue_max,
