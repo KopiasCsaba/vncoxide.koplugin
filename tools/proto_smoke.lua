@@ -4706,6 +4706,85 @@ local function main()
             return true
         end)
 
+        -- A `G` without the screen's rotation and inversion (the format before them) still parses
+        -- and renders the plain canvas; with them the shared memory holds the canvas in that
+        -- physical layout; a malformed tail is no view at all.
+        check("g_view_rotation_tail_is_optional", function()
+            local Scaler = require("vnc/scaler")
+            local SharedMem = require("vnc/sharedmem")
+            local W, H = 200, 150
+            local s, _, mpid = worker_session("wk_gtail", { encoding = "raw", pattern = "gradient", width = W, height = H })
+            local link = s.workers
+            local ok, err = pcall(function()
+                if not link then error("no workers started") end
+                link_pids(link)
+                local cw, ch = 100, 75
+                local plane = BB.new(W, H, BB.TYPE_BBRGB24)
+                for y = 0, H - 1 do
+                    for x = 0, W - 1 do
+                        plane:setPixel(x, y, BB.ColorRGB24(pattern_pixel("gradient", x, y, W, H)))
+                    end
+                end
+                local exp = BB.new(cw, ch, BB.TYPE_BB8)
+                Scaler.render(exp, plane, { x = 0, y = 0, scale = 0.5 }, { x = 0, y = 0, w = cw, h = ch }, "smooth")
+                plane:free()
+                -- the canvas memory read as `w` x `h` (unrotated) against `want`
+                local function differs(want, w, h)
+                    local got = SharedMem.bb(link.canvas_mem.ptr, w, h, BB.TYPE_BB8)
+                    for y = 0, h - 1 do
+                        for x = 0, w - 1 do
+                            local a, e = got:getPixel(x, y):getColor8().a, want:getPixel(x, y):getColor8().a
+                            if a ~= e then return string.format("(%d,%d) is %d, expected %d", x, y, a, e) end
+                        end
+                    end
+                end
+                local function settled(want, w, h)
+                    local deadline, bad = socket.gettime() + 5, nil
+                    repeat
+                        link.scale:poll()
+                        bad = differs(want, w, h)
+                        if not bad then return end
+                        socket.sleep(0.01)
+                    until socket.gettime() > deadline
+                    return bad
+                end
+                -- the old format
+                link.scale:send(g_line(1, 0.5, cw, ch))
+                link.decode:send("R")
+                link.decode:send("F")
+                if not wait_c(link, function(l) return l == "C 1 full" end, 5) then error("no C 1 full") end
+                local bad = settled(exp, cw, ch)
+                if bad then error("old-format view: canvas " .. bad) end
+                -- rotated and inverted: the screen's physical rows
+                local phys = BB.new(ch, cw, BB.TYPE_BB8)
+                phys:setRotation(1)
+                phys:invertblitFrom(exp, 0, 0, 0, 0, cw, ch)
+                phys:setRotation(0)
+                link.scale:send(g_line(2, 0.5, cw, ch) .. " 1 1")
+                if not wait_c(link, function(l) return l == "C 2 full" end, 5) then error("no C 2 full") end
+                bad = differs(phys, ch, cw)
+                phys:free()
+                if bad then error("view with rotation 1, inverted: canvas " .. bad) end
+                -- malformed tails: ignored
+                for _, tail in ipairs({ " 4 0", " 1 2", " 1", " 1 1 0" }) do
+                    link.scale:send(g_line(3, 0.5, cw, ch) .. tail)
+                end
+                local c3, seen = wait_c(link, function(l) return l:match("^C 3") end, 0.4)
+                if c3 then error("a malformed tail was rendered: " .. table.concat(seen, " | ")) end
+                -- the old format again: back to the plain layout
+                link.scale:send(g_line(4, 0.5, cw, ch))
+                if not wait_c(link, function(l) return l == "C 4 full" end, 5) then error("no C 4 full") end
+                bad = differs(exp, cw, ch)
+                exp:free()
+                if bad then error("old-format view after a rotated one: canvas " .. bad) end
+            end)
+            end_link(s)
+            s:disconnect()
+            stop_mock(mpid)
+            if not ok then return nil, err end
+            return true
+        end)
+
         -- The scale worker drains every pending message before it renders, not one read's worth.
         check("latest_view_wins_across_reads", function()
             local Worker = require("vnc/worker")

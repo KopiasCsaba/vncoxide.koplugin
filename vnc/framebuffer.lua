@@ -379,7 +379,8 @@ local CANVAS_TYPES = { [BB.TYPE_BB8] = true, [BB.TYPE_BBRGB24] = true, [BB.TYPE_
 
 --[[--
 Worker mode: sends the view to the scale worker as `G <id> ...` unless it is the one last sent.
-Each view id's canvas geometry (`"cw ch btype"`) is kept in `link.view_geoms`; the session sets
+Each view id's canvas geometry (`"cw ch btype"`, plus `" srot sinv"` for a canvas in a rotated or
+inverted screen's physical layout) is kept in `link.view_geoms`; the session sets
 `link.canvas_geom` to the geometry of the last view the scale worker reported (`C`), i.e. the
 layout the shared canvas memory holds.
 --- @treturn string the geometry this paint needs

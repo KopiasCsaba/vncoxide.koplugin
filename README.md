@@ -397,6 +397,11 @@ goes. Turn on Developer options -> Enable debug logging, reproduce the lag, then
 `crash.log` in KOReader's folder (`koreader/crash.log`) for lines starting with `vnc-timing:`
 (`grep vnc-timing crash.log`). They report decode time, paint time, key/wheel presses and gaps where
 the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logging off.
+A `vnc-timing: paint` line also gives the toolbar's share (`toolbar_ms`), the CPU time of the
+paint (`cpu_ms`; well below `ms` means the time went elsewhere, e.g. waiting), the screen buffer
+as `bb=<type>/rot<rotation>/inv<0|1>` (a rotated or inverted one, such as night mode, makes
+KOReader's blit slower) and whether KOReader's C blitter is on (`cbb=true|false`); `blit_ms`
+(dithered paints, and every paint with background processes) is the canvas blit itself.
 
 ## Server compatibility
 

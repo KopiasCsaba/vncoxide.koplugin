@@ -13,7 +13,9 @@ inherits the socket and the protocol state and decodes updates into the remote p
   (error; exits after), `O <n>` (pong: the answer to `I <n>`).
 - decode → scale: `D <x> <y> <w> <h> [...]` (plane rects fully written).
 - UI → scale: `G <id> <scale> <view_x> <view_y> <cw> <ch> <btype> <dither 0|1> <mode
-  smooth|sharp> <contrast> <invert 0|1>` (the view; latest wins), `Q`.
+  smooth|sharp> <contrast> <invert 0|1> [<srot 0-3> <sinv 0|1>]` (the view; latest wins; the
+  optional tail: the screen buffer's rotation and inversion, for a canvas in its physical
+  layout), `Q`.
 - scale → UI: `H <pid>`, `C <id> full` | `C <id> <x> <y> <w> <h> [...]` (canvas rects of view
   `<id>` written), `E <message>` (a render failed; exits after).
 

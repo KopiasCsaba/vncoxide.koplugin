@@ -202,9 +202,20 @@ vnc/workers.lua's header is the source):
                   E <message> (error; exits after); O <n> (pong: the answer to I <n>)
   decode -> scale D <x> <y> <w> <h> [...] (plane rects fully written)
   UI -> scale     G <id> <scale> <view_x> <view_y> <cw> <ch> <btype> <dither> <mode> <contrast>
-                  <invert> (the view; latest wins); Q
+                  <invert> [<srot> <sinv>] (the view; latest wins); Q
   scale -> UI     H <pid>; C <id> full | C <id> <x> <y> <w> <h> [...] (canvas rects of view <id>);
                   E <message> (a render failed; exits after)
+Physical-layout canvas: KOReader's blitFrom goes per pixel in Lua whenever the source's and the
+destination's invert flags differ (night mode on PocketBook inverts Screen.bb in software) and takes
+the slow rotated C blit for a rotated Screen.bb, so a full-canvas paint cost hundreds of ms on the
+UI thread. When the screen buffer is of the canvas type and rotated or inverted, Remote:draw_to
+sends its rotation and inversion as the optional G tail <srot> <sinv> (part of the view key and of
+the canvas geometry, so a rotation or night-mode change never blits memory laid out for the old one;
+the area keeps what it shows until that view's C). The scale worker renders privately and
+Workers._to_physical blits (rotating, invertblitFrom for inversion) into the shared memory in the
+screen's physical layout; the UI then copies it through an unrotated, uninverted view of the screen
+memory at bb:getPhysicalRect(canvas), a straight row copy. An unrotated, uninverted screen and a G
+without the tail take the plain layout as before; Remote.NO_NATIVE (tests) forces the old path.
 Resize: the plane is the UI's and a worker cannot change its size, so on a new desktop size the
 decode worker sends Z and exits before decoding anything of the new size; the UI then reconnects
 (a fresh handshake and fresh workers). A DesktopSize of the plane's own size is no resize: the

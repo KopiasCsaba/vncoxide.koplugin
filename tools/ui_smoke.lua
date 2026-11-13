@@ -8744,9 +8744,10 @@ the session forks the decode and scale workers after the handshake, the viewer o
 canvas. `fn(env)` gets `env.app`, `env.session`, `env.log` (the mock's log), `env.pump(cond,
 timeout)` (runs UIManager's tasks and paints until `cond()`), `env.shows(pattern)` (nil when the
 panel shows the pattern as the remote's view scales it, else the first mismatching probe) and
-`env.canvas_at(x, y)` (the shared canvas' pixel). Nothing it started outlives it.
+`env.canvas_at(x, y)` (the shared canvas' pixel). Nothing it started outlives it. `pattern`: the
+mock's picture (default "quadrants", the only one `env.shows` knows).
 ]]
-local function with_worker_viewer(name, fn)
+local function with_worker_viewer(name, fn, pattern)
     local socket = require("socket")
     local ffi = require("ffi")
     local Session = require("vnc/session")
@@ -8762,8 +8763,8 @@ local function with_worker_viewer(name, fn)
     local mw, mh = 400, 300
     if size.w < size.h then mw, mh = 300, 400 end
     local h = assert(io.popen(string.format("python3 %s/mock_vnc_server.py --port %d --encoding raw "
-        .. "--pattern quadrants --width %d --height %d --log %s --once > /dev/null 2>&1 & echo $!",
-        tool_dir, port, mw, mh, log), "r"))
+        .. "--pattern %s --width %d --height %d --log %s --once > /dev/null 2>&1 & echo $!",
+        tool_dir, port, pattern or "quadrants", mw, mh, log), "r"))
     local mock_pid = (h:read("*l") or ""):gsub("%s", "")
     h:close()
     local links = {}
@@ -8998,6 +8999,268 @@ check("closing_a_dialog_mid_render_leaves_no_remnant", function()
         end
         assert_true(stale == 0, stale .. " probed pixel(s) where the box was differ from the canvas")
     end)
+end)
+
+--[[--
+Screen buffers that are rotated or inverted (KOReader's night mode inverts the screen buffer in
+software on PocketBook): in worker mode the scale worker writes the canvas in their physical
+layout and the paint is a straight copy of rows. Helpers over a @{with_worker_viewer} env: the
+viewer's remote drawn into buffers of our own, with the real workers.
+]]
+local function physical_helpers(env)
+    local socket = require("socket")
+    local ffi = require("ffi")
+    local remote, link = env.app.remote, env.session.workers
+    local h = {}
+    -- the gradient fully decoded (the plane is the one the decode worker writes)
+    local W, H = remote:get_size()
+    assert_true(env.pump(function()
+        return remote:get_plane():getPixel(W - 1, H - 1):getColor8().a ~= 0
+    end, 10), "the desktop was never decoded")
+    -- the `G` lines the paints send
+    h.sent = {}
+    local real_send = link.scale.send
+    link.scale.send = function(w, l)
+        if l:sub(1, 2) == "G " then h.sent[#h.sent + 1] = l end
+        return real_send(w, l)
+    end
+    function h.restore() link.scale.send = real_send end
+    --- Waits for the scale worker's `C` for the view last sent (the session's poll, no repaint).
+    function h.wait_answer()
+        local deadline = socket.gettime() + 5
+        while (link.answered_id or 0) < (link.view_id or 0) do
+            assert_true(socket.gettime() < deadline, "no C for view " .. tostring(link.view_id))
+            env.session:_poll_workers()
+            socket.sleep(0.002)
+        end
+        env.session:_poll_workers()
+    end
+    --- Paints the canvas into `target` until the scale worker has rendered it. `native = false`:
+    --- the old path (`Remote.NO_NATIVE`). Returns the `G` line sent and how many views of the
+    --- target's memory the final paint made (1 on the physical-layout path, 0 on the old one).
+    function h.paint(target, cx, cy, cw, ch, dither, native)
+        local Remote = require("vnc/framebuffer")
+        Remote.NO_NATIVE = not native or nil
+        local n0 = #h.sent
+        local ok, err = pcall(function()
+            remote:draw_to(target, cx, cy, cw, ch, dither)
+            h.wait_answer()
+        end)
+        local views, real_new = 0, bb.new
+        if ok then
+            bb.new = function(w, hh, t, data, ...)
+                if data ~= nil and data == target.data then views = views + 1 end
+                return real_new(w, hh, t, data, ...)
+            end
+            ok, err = pcall(remote.draw_to, remote, target, cx, cy, cw, ch, dither)
+            bb.new = real_new
+        end
+        Remote.NO_NATIVE = nil
+        if not ok then error(err, 0) end
+        return h.sent[#h.sent] ~= h.sent[n0] and h.sent[#h.sent] or nil, views
+    end
+    --- A buffer of `pw` x `ph` physical pixels, rotation `rot`, inverted or not, holding a pattern
+    --- (so a paint outside its canvas shows).
+    function h.target(btype, pw, ph, rot, inv)
+        local t = bb.new(pw, ph, btype)
+        for y = 0, ph - 1 do
+            for x = 0, pw - 1 do t:setPixel(x, y, bb.Color8((x * 7 + y * 3) % 256)) end
+        end
+        t:setRotation(rot)
+        if inv then t:setInverse(1) end
+        return t
+    end
+    local function bytes_of(t)
+        local bpp = ({ [bb.TYPE_BB8] = 1, [bb.TYPE_BBRGB24] = 3, [bb.TYPE_BBRGB32] = 4 })[t:getType()]
+        return ffi.cast("uint8_t*", t.data), tonumber(t.stride), bpp
+    end
+    --- The first physical byte where `a` and `b` (same physical size and type) differ, or nil.
+    function h.mem_diff(a, b)
+        local pa, sa, bpp = bytes_of(a)
+        local pb, sb = bytes_of(b)
+        for y = 0, tonumber(a.h) - 1 do
+            local ra, rb = pa + y * sa, pb + y * sb
+            for x = 0, tonumber(a.w) * bpp - 1 do
+                if ra[x] ~= rb[x] then
+                    return string.format("physical (%d,%d): %d, expected %d", math.floor(x / bpp), y, ra[x], rb[x])
+                end
+            end
+        end
+    end
+    --- A copy of the physical memory of `t`.
+    function h.snapshot(t)
+        local s = bb.new(tonumber(t.w), tonumber(t.h), t:getType())
+        local ps, ss, bpp = bytes_of(s)
+        local pt, st = bytes_of(t)
+        for y = 0, tonumber(t.h) - 1 do ffi.copy(ps + y * ss, pt + y * st, tonumber(t.w) * bpp) end
+        return s
+    end
+    --- Distinct values in the logical rect of `t` (a canvas that is one colour proves nothing).
+    function h.distinct(t, cx, cy, cw, ch)
+        local seen, n = {}, 0
+        for y = cy, cy + ch - 1, 3 do
+            for x = cx, cx + cw - 1, 3 do
+                local v = t:getPixel(x, y):getColorRGB32()
+                local k = v.r * 65536 + v.g * 256 + v.b
+                if not seen[k] then seen[k], n = true, n + 1 end
+            end
+        end
+        return n
+    end
+    return h
+end
+
+check("worker_canvas_in_the_screens_physical_layout_matches_the_old_paint", function()
+    with_worker_viewer("wk_phys", function(env)
+        local h = physical_helpers(env)
+        local ok, err = pcall(function()
+            local PW, PH = 170, 124
+            local kinds = {
+                { "BB8", bb.TYPE_BB8, false }, { "BB8 dithered", bb.TYPE_BB8, true },
+                { "RGB32", bb.TYPE_BBRGB32, false }, { "RGB24", bb.TYPE_BBRGB24, false },
+            }
+            for _, k in ipairs(kinds) do
+                for rot = 0, 3 do
+                    for _, inv in ipairs({ false, true }) do
+                        for _, offset in ipairs({ false, true }) do
+                            local what = string.format("%s rot %d%s%s", k[1], rot, inv and " inverted" or "",
+                                offset and " offset canvas" or "")
+                            local lw, lh = PW, PH
+                            if rot % 2 == 1 then lw, lh = PH, PW end
+                            local cx, cy, cw, ch = 0, 0, lw, lh
+                            if offset then cx, cy, cw, ch = 13, 7, lw - 31, lh - 22 end
+                            local old = h.target(k[2], PW, PH, rot, inv)
+                            local new = h.target(k[2], PW, PH, rot, inv)
+                            local g_old, v_old = h.paint(old, cx, cy, cw, ch, k[3], false)
+                            local g_new, v_new = h.paint(new, cx, cy, cw, ch, k[3], true)
+                            local plain = rot == 0 and not inv
+                            assert_true(g_old and not g_old:find(" %d %d %d %d [01] %a+ %S+ [01] [0-3] [01]$"),
+                                what .. ": the old path sent " .. tostring(g_old))
+                            assert_true(v_old == 0, what .. ": the old path made a view of the screen memory")
+                            if plain then
+                                -- unrotated, uninverted: the old path unchanged
+                                assert_true(g_new == nil, what .. ": a view other than the old path's: " .. tostring(g_new))
+                                assert_true(v_new == 0, what .. ": a view of the screen memory")
+                            else
+                                local tail = string.format(" %d %d", rot, inv and 1 or 0)
+                                assert_true(g_new and g_new:sub(-#tail) == tail,
+                                    what .. ": the view sent " .. tostring(g_new))
+                                assert_true(v_new == 1, what .. ": not the physical-layout paint")
+                            end
+                            assert_true(h.distinct(old, cx, cy, cw, ch) > 3, what .. ": a canvas of few colours")
+                            local bad = h.mem_diff(new, old)
+                            old:free(); new:free()
+                            assert_true(bad == nil, what .. ": " .. tostring(bad))
+                        end
+                    end
+                end
+            end
+        end)
+        h.restore()
+        if not ok then error(err, 0) end
+    end, "gradient")
+end)
+
+check("a_screen_rotation_or_inversion_change_never_blits_the_old_layout", function()
+    with_worker_viewer("wk_phys_turn", function(env)
+        local h = physical_helpers(env)
+        local ok, err = pcall(function()
+            local PW, PH = 170, 124
+            local function logical(rot) if rot % 2 == 1 then return PH, PW end return PW, PH end
+            -- { from rot, inverted }, { to rot, inverted }: the same canvas size before and after
+            local turns = {
+                { { 0, true }, { 2, true } }, { { 1, false }, { 3, false } }, { { 1, false }, { 1, true } },
+                { { 3, true }, { 1, true } }, { { 0, true }, { 0, false } }, { { 0, false }, { 2, false } },
+                { { 2, false }, { 0, true } },
+            }
+            for _, turn in ipairs(turns) do
+                local a, b = turn[1], turn[2]
+                local what = string.format("rot %d%s -> rot %d%s", a[1], a[2] and " inverted" or "",
+                    b[1], b[2] and " inverted" or "")
+                local lw, lh = logical(b[1])
+                local want = h.target(bb.TYPE_BB8, PW, PH, b[1], b[2])
+                h.paint(want, 0, 0, lw, lh, false, false)
+                local t = h.target(bb.TYPE_BB8, PW, PH, a[1], a[2])
+                h.paint(t, 0, 0, lw, lh, false, true)
+                -- the screen's content changes (a rotation repaints it all): grey, then the turn
+                t:paintRect(0, 0, lw, lh, bb.COLOR_GRAY_7)
+                local before = h.snapshot(t)
+                t:setRotation(b[1])
+                t:setInverse(b[2] and 1 or 0)
+                -- painted before the scale worker answered the new view
+                env.app.remote:draw_to(t, 0, 0, lw, lh, false)
+                local bad = h.mem_diff(t, before)
+                before:free()
+                assert_true(bad == nil, what .. ": painted before the new render: " .. tostring(bad))
+                h.wait_answer()
+                env.app.remote:draw_to(t, 0, 0, lw, lh, false)
+                bad = h.mem_diff(t, want)
+                t:free(); want:free()
+                assert_true(bad == nil, what .. ": after the new render: " .. tostring(bad))
+            end
+        end)
+        h.restore()
+        if not ok then error(err, 0) end
+    end, "gradient")
+end)
+
+check("night_mode_viewer_paints_what_the_old_path_paints", function()
+    -- the real viewer over an inverted, upside-down screen buffer (same logical size)
+    with_worker_viewer("wk_phys_night", function(env)
+        local Remote = require("vnc/framebuffer")
+        local h = physical_helpers(env)
+        local sbb = Screen.bb
+        local rot0, inv0 = sbb:getRotation(), sbb:getInverse()
+        local ok, err = pcall(function()
+            local app = env.app
+            for _, st in ipairs({ { 0, 1 }, { 2, 0 }, { 2, 1 } }) do
+                local what = string.format("screen rot %d inverse %d", st[1], st[2])
+                sbb:setRotation(st[1])
+                sbb:setInverse(st[2])
+                local function painted(native)
+                    Remote.NO_NATIVE = not native or nil
+                    local link = env.session.workers
+                    UIManager:setDirty(app, "ui")
+                    UIManager:forceRePaint()
+                    local done = env.pump(function()
+                        return (link.answered_id or 0) >= link.view_id and link.canvas_geom == link.view_geoms[link.view_id]
+                    end, 5)
+                    UIManager:setDirty(app, "ui")
+                    UIManager:forceRePaint()
+                    Remote.NO_NATIVE = nil
+                    assert_true(done, what .. ": no render")
+                    return h.snapshot(sbb), link.view_key
+                end
+                local old, k_old = painted(false)
+                local new, k_new = painted(true)
+                local tail = string.format(" %d %d", st[1], st[2])
+                assert_true(k_new:sub(-#tail) == tail and k_old:sub(-#tail) ~= tail,
+                    what .. ": views " .. k_old .. " / " .. k_new)
+                local bad = h.mem_diff(new, old)
+                old:free(); new:free()
+                assert_true(bad == nil, what .. ": " .. tostring(bad))
+            end
+        end)
+        Remote.NO_NATIVE = nil
+        sbb:setRotation(rot0)
+        sbb:setInverse(inv0)
+        h.restore()
+        if not ok then error(err, 0) end
+    end, "gradient")
+end)
+
+check("paint_timing_line_reports_toolbar_cpu_and_screen_buffer", function()
+    local lines = capture_dbg(true, function()
+        local app, remote = new_app()
+        app:set_toolbar_visible(true)
+        app:paintTo(Screen.bb, 0, 0)
+        app:onCloseWidget()
+        remote:free()
+    end)
+    local joined = table.concat(lines, "\n")
+    local want = string.format(" toolbar_ms=%%d+%%.%%d cpu_ms=%%d+%%.%%d bb=%d/rot%d/inv%d cbb=%%a+",
+        Screen.bb:getType(), Screen.bb:getRotation(), Screen.bb:getInverse())
+    assert_true(joined:find("vnc%-timing: paint ms=[^\n]*" .. want), "paint line: " .. joined)
 end)
 
 if failures > 0 then
