@@ -6263,7 +6263,7 @@ check("toolbar_long_press_shows_a_tooltip_and_does_nothing_else", function()
         local Toolbar = require("vnc/toolbar")
         local want = {
             toggle = "Collapse toolbar", display = "Display settings", zoom = "Zoom: fit, 1:1, your own view",
-            mode = "Pointer mode: touch or mouse", keyboard = "Keyboard (drag onto a field to click it and type)", rotate = "Rotate the screen",
+            mode = "Pointer mode: touch, mouse or hybrid", keyboard = "Keyboard (drag onto a field to click it and type)", rotate = "Rotate the screen",
             scroll_up = "Scroll up",
             scroll_down = "Scroll down", brightness = "Frontlight", contrast = "Contrast of the remote picture",
             invert = "Invert the remote picture", close = "Disconnect", more = "Menu",
@@ -7513,9 +7513,8 @@ check("hybrid_drag_scrolls", function()
     assert_true(#sent.pointer == 6, "3 notches (press and release), got " .. #sent.pointer)
     for i, e in ipairs(sent.pointer) do
         assert_true(e.mask == (i % 2 == 1 and 16 or 0), "wheel down, event " .. i .. " mask " .. e.mask)
-        -- (each notch goes where the finger is at its pan event: from the press up to 3 steps' travel)
-        assert_true(e.x == rx and e.y <= ry and e.y >= ry - 3 * Screen:getHeight() * app.HYBRID_SCROLL_STEP * 2 / app.remote:get_scale() * 1.01,
-            string.format("at the finger (%d,%d), got (%d,%d)", rx, ry, e.x, e.y))
+        -- (every notch goes where the drag began, though the finger has moved on)
+        assert_true(e.x == rx and e.y == ry, string.format("at the start (%d,%d), got (%d,%d)", rx, ry, e.x, e.y))
     end
     assert_true(remote.view_x == vx and remote.view_y == vy, "the view did not move")
     assert_true(app:has_pointer_action() == false, "no button held")
@@ -7531,6 +7530,71 @@ check("hybrid_drag_scrolls", function()
     clear_sent(sent)
     hybrid_drag(start, 0, Screen:getHeight() / 60)
     assert_true(#sent.pointer == 0, "under a notch: nothing, got " .. take_masks(sent))
+    close_viewer(app, remote)
+end)
+
+--- Whether the pointer events sent so far are exactly `n` wheel notches (press, release) of `mask`.
+local function only_notches(sent, n, mask)
+    if #sent.pointer ~= 2 * n then return false end
+    for i, e in ipairs(sent.pointer) do
+        if e.mask ~= (i % 2 == 1 and mask or 0) then return false end
+    end
+    return true
+end
+
+check("hybrid_flick_and_release_tails_scroll", function()
+    local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
+    local step = Screen:getHeight() * app.HYBRID_SCROLL_STEP
+    local start = Geom:new{ x = 300, y = 500, w = 0, h = 0 }
+    -- one notch's worth by pan events, then a swipe whose lift is 3 notches from the start
+    dispatch_gesture{ ges = "pan", relative = { x = 0, y = -step }, start_pos = start, pos = Geom:new{ x = 300, y = 500 - step } }
+    assert_true(only_notches(sent, 1, 16), "one notch by the pan")
+    dispatch_gesture{ ges = "swipe", direction = "north", pos = start,
+        end_pos = Geom:new{ x = 300, y = 500 - 3 * step, w = 0, h = 0 } }
+    assert_true(only_notches(sent, 3, 16), "3 notches in all, got " .. #sent.pointer .. " events")
+    assert_true(app._hybrid_pan == nil and not app:_one_finger_busy(), "the drag is over")
+    clear_sent(sent)
+    -- a release beyond the last pan position
+    dispatch_gesture{ ges = "pan", relative = { x = 0, y = -step }, start_pos = start, pos = Geom:new{ x = 300, y = 500 - step } }
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = 300, y = 500 - 3 * step, w = 0, h = 0 } }
+    assert_true(only_notches(sent, 3, 16), "release tail: 3 notches in all, got " .. #sent.pointer .. " events")
+    assert_true(app._hybrid_pan == nil, "the drag is over")
+    close_viewer(app, remote)
+end)
+
+check("hybrid_drag_whose_release_a_popup_took_does_not_block_the_toolbar_swipe", function()
+    local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 50, y = c.y + 80 }
+    local lift = finger_down(P)
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x, y = P.y + 40 }, relative = { x = 0, y = 40 } }
+    assert_true(app._hybrid_pan and scheduled_delay(app._release_watch_task) ~= nil, "under way and watched")
+    -- (the release went to a popup: we never see it)
+    lift()
+    run_scheduled(app._release_watch_task)
+    assert_true(app._hybrid_pan == nil, "the drag ended with the finger")
+    assert_true(not app.toolbar_visible, "no toolbar yet")
+    dispatch_gesture{ ges = "swipe", direction = "south", pos = Geom:new{ x = 10, y = 10 }, end_pos = Geom:new{ x = 10, y = 100 } }
+    assert_true(app.toolbar_visible == true, "the next top-zone swipe toggles the toolbar")
+    close_viewer(app, remote)
+end)
+
+check("hybrid_false_hold_then_pan_scrolls", function()
+    local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
+    local wire = wire_log(app)
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 60, y = c.y + 100 }
+    local t0 = time.now()
+    local step = Screen:getHeight() * app.HYBRID_SCROLL_STEP
+    dispatch_gesture{ ges = "hold", pos = Geom:new{ x = P.x, y = P.y }, time = t0 }
+    dispatch_gesture{ ges = "hold_release", pos = Geom:new{ x = P.x, y = P.y }, time = t0 + time.ms(15) }
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x, y = P.y - 2 * step }, relative = { x = 0, y = -2 * step },
+        time = t0 + time.ms(20) }
+    assert_true(only_notches(sent, 2, 16), "scrolls: 2 notches, nothing else; got " .. wire())
+    run_scheduled(app._false_hold_task)
+    assert_true(only_notches(sent, 2, 16), "the false hold sent nothing of its own")
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = P.x, y = P.y - 2 * step } }
+    assert_true(only_notches(sent, 2, 16) and app:has_pointer_action() == false, "still just the notches")
     close_viewer(app, remote)
 end)
 

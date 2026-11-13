@@ -898,24 +898,39 @@ is its offset from there, so the movement since the previous event is the differ
 ]]
 ViewerApp.HYBRID_SCROLL_STEP = 1 / 30
 
-function ViewerApp:_hybrid_pan_move(start, ges)
-    local rel = ges.relative or { x = 0, y = 0 }
-    local g = self._hybrid_pan
-    if g and (math.abs(g.sx - start.x) > 1 or math.abs(g.sy - start.y) > 1) then g = nil end -- a new contact
-    if not g then
-        self:_end_stale_pointer_action() -- a long press whose release never came
-        g = { sx = start.x, sy = start.y, x = 0, y = 0, wx = 0, wy = 0 }
-        self._hybrid_pan = g
-    end
+--- The Hybrid drag's finger is `rel` (offset from where it came down) now: scrolls by the
+--- movement since the previous event. The notches go to where the drag began.
+function ViewerApp:_hybrid_feed(g, rel)
     local dx, dy = rel.x - g.x, rel.y - g.y
     g.x, g.y = rel.x, rel.y
-    self:_scroll_by_drag(dx, dy, ges.pos, self.HYBRID_SCROLL_STEP, g)
+    self:_scroll_by_drag(dx, dy, g.start, self.HYBRID_SCROLL_STEP, g)
+end
+
+function ViewerApp:_hybrid_pan_move(start, ges)
+    local g = self._hybrid_pan
+    if g and (math.abs(g.start.x - start.x) > 1 or math.abs(g.start.y - start.y) > 1) then g = nil end -- a new contact
+    if not g then
+        self:_end_stale_pointer_action() -- a long press whose release never came
+        -- `wx`, `wy`: the movement not yet turned into wheel notches (see `_scroll_by_drag`)
+        g = { start = Geom:new{ x = start.x, y = start.y }, x = 0, y = 0, wx = 0, wy = 0 }
+        self._hybrid_pan = g
+        self:_watch_release(start) -- (a release a popup took must not leave the drag under way)
+    end
+    self:_hybrid_feed(g, ges.relative or { x = 0, y = 0 })
     return true
+end
+
+--- Ends the Hybrid drag, first scrolling by what the finger moved since its last pan event: the
+--- offset of its lift point `at` (a screen position) from where it came down.
+function ViewerApp:_hybrid_end(at)
+    local g = self._hybrid_pan
+    self._hybrid_pan = nil
+    if g and at then self:_hybrid_feed(g, { x = at.x - g.start.x, y = at.y - g.start.y }) end
 end
 
 function ViewerApp:onPanRelease(_, ges)
     if self._hybrid_pan then
-        self._hybrid_pan = nil
+        self:_hybrid_end(ges.pos)
         return true
     end
     if self._mouse_moving then
@@ -947,9 +962,10 @@ end
 
 --- Ends a drag of ours on the swipe that ended its contact (see `onSwipe`); no-op otherwise.
 function ViewerApp:_end_quick_drag(ges)
-    if ges and ges.ges == "swipe" then
+    if ges and (ges.ges == "swipe" or ges.ges == "multiswipe") then
         self._mouse_moving = nil
-        self._hybrid_pan = nil
+        -- (a swipe's pos is where the contact came down, its end_pos the lift)
+        self:_hybrid_end(ges.end_pos)
         self:_follow_settled()
         if self._drag_active then self:_end_pointer_action("swipe end") end
     end
@@ -1614,7 +1630,7 @@ contact) while the action is still under way, the action is ended here. Other fi
 it alive. When GestureDetector shows no finger down, or does not tell, nothing is watched.
 ]]
 function ViewerApp:_watch_release(start)
-    if not (self._drag_active or self._hold_active or self._mouse_moving) then return end
+    if not (self._drag_active or self._hold_active or self._mouse_moving or self._hybrid_pan) then return end
     local best, best_d
     for _i, f in ipairs(fingers_down() or {}) do
         local d = (start and f.start) and start:distance(f.start) or math.huge
@@ -1643,7 +1659,7 @@ end
 
 function ViewerApp:_release_watch_tick()
     self._release_watched = nil
-    if not (self._drag_active or self._hold_active or self._mouse_moving) then
+    if not (self._drag_active or self._hold_active or self._mouse_moving or self._hybrid_pan) then
         self._watched_finger = nil
         return
     end
@@ -1667,8 +1683,7 @@ function ViewerApp:_two_finger_move(start, rel)
     local sx, sy = start and start.x, start and start.y
     local g = self._two_finger_pan
     if not g or g.sx ~= sx or g.sy ~= sy then
-        -- `wx`, `wy`: the movement not yet turned into wheel notches (see `_scroll_by_drag`)
-        g = { sx = sx, sy = sy, x = 0, y = 0, wx = 0, wy = 0 }
+        g = { sx = sx, sy = sy, x = 0, y = 0 }
         self._two_finger_pan = g
     end
     local dx, dy = rel.x - g.x, rel.y - g.y
@@ -1676,22 +1691,13 @@ function ViewerApp:_two_finger_move(start, rel)
     return dx, dy
 end
 
---- Where drag-to-wheel notches go: the mouse pointer in Mouse mode, the fingers (`pos`) in Touch
---- mode (nil: the last pointer position, see `scroll_wheel`).
-function ViewerApp:_wheel_position(pos)
-    if self:get_pointer_mode() == "mouse" then return self:_mouse_pointer_px() end
-    if pos then return self:_to_remote(pos.x, pos.y) end
-end
-
 --[[--
-Turns a drag's movement into wheel notches, one per `step` (default a tenth) of the screen height
-(vertically) or width (sideways); what is left over waits in `g` (the drag's state: `wx`, `wy`,
-default the two-finger drag's) for the next move. The content follows the fingers, as on a phone:
-fingers going up scroll down, going left scroll right.
+Turns a drag's movement into wheel notches, one per `step` (a fraction) of the screen height
+(vertically) or width (sideways); what is left over waits in `g` (the drag's state: `wx`, `wy`)
+for the next move. The notches go to the remote position under screen position `pos`. The
+content follows the fingers, as on a phone: fingers going up scroll down, going left scroll right.
 ]]
 function ViewerApp:_scroll_by_drag(dx, dy, pos, step, g)
-    g = g or self._two_finger_pan
-    step = step or 1 / 10
     g.wx, g.wy = g.wx + dx, g.wy + dy
     -- whole steps, towards zero (the epsilon keeps an exact multiple of a fractional step whole)
     local function steps(v, step)
@@ -1702,7 +1708,7 @@ function ViewerApp:_scroll_by_drag(dx, dy, pos, step, g)
     local ny, nx = steps(g.wy, step_y), steps(g.wx, step_x)
     if ny == 0 and nx == 0 then return end
     g.wy, g.wx = g.wy - ny * step_y, g.wx - nx * step_x
-    local x, y = self:_wheel_position(pos)
+    local x, y = self:_to_remote(pos.x, pos.y)
     if ny ~= 0 then self:scroll_wheel(ny < 0 and 1 or -1, math.abs(ny), false, x, y) end
     if nx ~= 0 then self:scroll_wheel(nx < 0 and 1 or -1, math.abs(nx), true, x, y) end
 end
