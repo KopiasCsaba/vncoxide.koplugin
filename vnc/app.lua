@@ -37,6 +37,7 @@ local time = require("ui/time")
 
 local Keyboard = require("vnc/keyboard")
 local Keysyms = require("vnc/keysyms")
+local PointerFollow = require("vnc/pointerfollow")
 local Reconnect = require("vnc/reconnect")
 local Settings = require("vnc/settings")
 local Toolbar = require("vnc/toolbar")
@@ -890,6 +891,7 @@ end
 function ViewerApp:onPanRelease(_, ges)
     if self._mouse_moving then
         self._mouse_moving = nil
+        self:_follow_settled()
         return true
     end
     if self._drag_active == nil then return nil end
@@ -918,6 +920,7 @@ end
 function ViewerApp:_end_quick_drag(ges)
     if ges and ges.ges == "swipe" then
         self._mouse_moving = nil
+        self:_follow_settled()
         if self._drag_active then self:_end_pointer_action("swipe end") end
     end
 end
@@ -1057,6 +1060,7 @@ end
 --- and it is a drag from now on.
 function ViewerApp:_hold_drag_start()
     local kind = self._hold_active
+    if hold_on_pointer(kind) then self:_mouse_pointer_into_view() end
     local x, y = self:_hold_spot(kind)
     self:_press_armed()
     self:send_pointer(x, y, 1, "hold drag start")
@@ -1297,6 +1301,7 @@ function ViewerApp:onHoldRelease(_, ges)
     self:send_pointer(rx, ry, 0, "hold drag end")
     self:_release_action_mods()
     self:_pointer_action_changed()
+    self:_follow_settled()
     return true
 end
 
@@ -1310,6 +1315,7 @@ function ViewerApp:_end_pointer_action(reason)
     self:_cancel_hold(reason)
     self._last_touch_tap = nil
     self._mouse_moving = nil
+    self:_follow_settled()
     if self._drag_active or self._hold_active then
         -- (a long press still waiting has nothing down)
         local pressed = self._drag_active or not hold_waits(self._hold_active)
@@ -1478,6 +1484,7 @@ function ViewerApp:_mouse_pan(ges)
     -- a move whose pan_release never came has its own start: a new contact is a new gesture
     if self._mouse_moving and self._mouse_start and self._mouse_start:distance(start) > 1 then
         self._mouse_moving = nil
+        self:_follow_settled()
     end
     if not self._mouse_moving then
         self:_end_stale_pointer_action()
@@ -1485,22 +1492,65 @@ function ViewerApp:_mouse_pan(ges)
         self:_watch_release(start)
         self._mouse_start = start
         self._mouse_rel = { x = 0, y = 0 }
+        self:_mouse_pointer_into_view()
     end
     self:_mouse_move(rel, 0)
     return true
 end
 
---- Moves the Mouse-mode pointer by the change of a gesture's `relative` since its previous event
---- (`_mouse_rel`), through the zoom and times the pointer speed, with buttons `mask` held.
+--[[--
+Moves the Mouse-mode pointer by the change of a gesture's `relative` since its previous event
+(`_mouse_rel`), through the zoom and times the pointer speed, with buttons `mask` held. Zoomed in,
+the view follows the pointer (`PointerFollow.axis`, RustDesk's rule): a view that moves paints
+"fast" and holds the area reports until the move ends (`_follow_settled`).
+]]
 function ViewerApp:_mouse_move(rel, mask)
     local prev = self._mouse_rel or { x = 0, y = 0 }
     self._mouse_rel = { x = rel.x, y = rel.y }
-    local k = self:pointer_speed() / self.remote:get_scale()
+    local r = self.remote
+    local s = r:get_scale()
+    local k = self:pointer_speed() / s
     local x, y = self:_mouse_pointer()
-    local w, h = self.remote:get_size()
-    self._mouse_x = math.max(0, math.min(x + (rel.x - prev.x) * k, w - 1))
-    self._mouse_y = math.max(0, math.min(y + (rel.y - prev.y) * k, h - 1))
+    local w, h = r:get_size()
+    local vx, vy = r.view_x, r.view_y
+    local sx, sy
+    self._mouse_x, sx = PointerFollow.axis(x, (rel.x - prev.x) * k, vx, vx + r.cw / s, 0, w)
+    self._mouse_y, sy = PointerFollow.axis(y, (rel.y - prev.y) * k, vy, vy + r.ch / s, 0, h)
+    if sx ~= 0 or sy ~= 0 then
+        r:set_view(s, vx + sx, vy + sy)
+        self:_note_user_view()
+        self:_view_move()
+        self._follow_moved = true
+        UIManager:setDirty(self, "fast")
+    end
     self:send_pointer(math.floor(self._mouse_x + 0.5), math.floor(self._mouse_y + 0.5), mask)
+end
+
+--- A Mouse-mode move or drag ended: if the view followed the pointer, it settled (its area is
+--- reported, the canvas refreshed "ui").
+function ViewerApp:_follow_settled()
+    if not self._follow_moved then return end
+    self._follow_moved = nil
+    self:_view_settled()
+    UIManager:setDirty(self, "ui")
+end
+
+--[[--
+A Mouse-mode move or drag starts: a pointer off the view (a two-finger pan or a zoom left it
+behind) first goes to the view's centre, so that the move starts where it can be seen
+(RustDesk's `onOneFingerPanStart`).
+]]
+function ViewerApp:_mouse_pointer_into_view()
+    local r = self.remote
+    local x, y = self:_mouse_pointer()
+    local v = r:visible_remote_rect(0)
+    if x >= v.x - 1 and x <= v.x + v.w + 1 and y >= v.y - 1 and y <= v.y + v.h + 1 then return end
+    local w, h = r:get_size()
+    local s = r:get_scale()
+    self._mouse_x = math.max(0, math.min(r.view_x + r.cw / (2 * s), w - 1))
+    self._mouse_y = math.max(0, math.min(r.view_y + r.ch / (2 * s), h - 1))
+    self:send_pointer(math.floor(self._mouse_x + 0.5), math.floor(self._mouse_y + 0.5), 0,
+        "pointer to the view centre")
 end
 
 --- Whether a canvas action still holds something down on the remote: a drag's or long press's

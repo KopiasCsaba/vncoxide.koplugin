@@ -35,7 +35,7 @@ Help.ROWS = {
     mouse = rows_for{
         { _("Tap"), _("Left click at the pointer, at once (two quick taps: double click)") },
         { _("Long press"), _("Lift without moving: right click at the pointer; move: drag with the left button") },
-        { _("Drag"), _("Move the pointer") },
+        { _("Drag"), _("Move the pointer; zoomed in, the picture follows it") },
         { _("Two-finger long press"), _("Left click at the pointer, then the keyboard") },
     },
 }

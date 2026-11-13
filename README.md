@@ -124,7 +124,7 @@ are greyed out there).
 | --- | --- | --- |
 | tap | left click at the finger | left click at the pointer, sent at once (two quick taps: a double click) |
 | long press | lift without moving: right click at the finger (sent at the lift); moving: drag with the left button held | the same, at the pointer (the finger's movement moves it) |
-| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed) |
+| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed); zoomed in, the view follows it once it passes the middle of the screen, until the view reaches the remote screen's edge (as in RustDesk); a pointer off the screen first jumps to its middle |
 | two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
 | two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |

@@ -5381,6 +5381,195 @@ check("mouse_pointer_is_clamped_after_the_remote_shrinks", function()
     close_viewer(app, remote)
 end)
 
+--[[ Mouse mode, zoomed in: the view follows the pointer (RustDesk's CursorModel.updatePan). Per
+axis, a pointer at or past the view centre moving outwards takes the view along while the view has
+room to the remote's edge; otherwise the pointer moves alone, kept inside the view and the remote. ]]
+check("pointer_follow_axis_rules", function()
+    local PF = require("vnc/pointerfollow")
+    local function is(cur, d, lo, hi, want_cur, want_shift, what)
+        local c, s = PF.axis(cur, d, lo, hi, 0, 400)
+        assert_true(c == want_cur and s == want_shift,
+            string.format("%s: expected (%s,%s), got (%s,%s)", what, want_cur, want_shift, c, s))
+    end
+    is(150, 10, 100, 200, 160, 10, "+ from the centre, with room: together")
+    is(150, 500, 100, 200, 350, 200, "+ with room: as far as the room")
+    is(350, 100, 300, 400, 399, 0, "+ at the far edge: the pointer alone, clamped")
+    is(180, -10, 100, 200, 170, 0, "- from beside the centre: the pointer alone")
+    is(155, -10, 100, 200, 145, -10, "- across the centre: together")
+    is(150, -10, 100, 200, 140, -10, "- from the centre, with room: together")
+    is(50, -100, 0, 100, 0, 0, "- at the near edge: the pointer alone, clamped")
+    is(120, 10, 100, 200, 130, 0, "+ from before the centre: the pointer alone")
+    is(190, 50, 100, 200, 240, 50, "+ past the centre: together")
+    is(110, -50, 100, 200, 60, -50, "- past the centre: together")
+    is(150, 0, 100, 200, 150, 0, "d = 0: nothing")
+    is(100, 50, -50, 450, 150, 0, "the whole remote visible: never follows")
+end)
+
+--- A Mouse-mode viewer zoomed to `factor` (default 2) times the fit, centred, the pointer at the
+--- remote's centre.
+local function zoomed_mouse_app(factor)
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    remote:set_scale(remote:get_scale() * (factor or 2))
+    return app, remote, sent
+end
+
+--- The pointer's place on the canvas (canvas pixels).
+local function pointer_on_canvas(app, remote)
+    local s = remote:get_scale()
+    return (app._mouse_x - remote.view_x) * s, (app._mouse_y - remote.view_y) * s
+end
+
+check("follow_keeps_the_pointer_centred", function()
+    for _, how in ipairs{ "move", "long press drag" } do
+        local app, remote, sent = zoomed_mouse_app()
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+        local x0, y0 = remote.view_x, remote.view_y
+        local modes = {}
+        local set_dirty = UIManager.setDirty
+        UIManager.setDirty = function(um, w, mode, ...)
+            if w == app then modes[#modes + 1] = mode end
+            return set_dirty(um, w, mode, ...)
+        end
+        local ges = how == "move" and "pan" or "hold_pan"
+        if how ~= "move" then
+            dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
+        end
+        for i = 1, 4 do
+            dispatch_gesture{ ges = ges, pos = Geom:new{ x = P.x + 50 * i, y = P.y }, relative = { x = 50 * i, y = 0 } }
+        end
+        assert_true(remote.view_x > x0 + 1 and remote.view_y == y0, how .. ": the view moved right: " .. remote.view_x - x0)
+        local px, py = pointer_on_canvas(app, remote)
+        assert_true(math.abs(px - remote.cw / 2) <= 1 and math.abs(py - remote.ch / 2) <= 1,
+            string.format("%s: the pointer stays at the canvas centre (%g,%g), at (%g,%g)", how, remote.cw / 2, remote.ch / 2, px, py))
+        local e = last_pointer(sent)
+        assert_true(e.x == math.floor(app._mouse_x + 0.5) and e.mask == (how == "move" and 0 or 1),
+            how .. ": and the remote knows: " .. e.x)
+        assert_true(#modes == 4 and modes[1] == "fast" and app._view_moving == true,
+            how .. ": each view change paints fast, the area held: " .. table.concat(modes, ","))
+        local Q = Geom:new{ x = P.x + 200, y = P.y }
+        dispatch_gesture{ ges = how == "move" and "pan_release" or "hold_release", pos = Q }
+        UIManager.setDirty = set_dirty
+        assert_true(modes[#modes] == "ui" and app._view_moving == false,
+            how .. ": the end settles the view: " .. table.concat(modes, ","))
+        close_viewer(app, remote)
+    end
+end)
+
+check("follow_corner_and_back", function()
+    local app, remote, sent = zoomed_mouse_app()
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+    local s = remote:get_scale()
+    local sw, sh = remote.cw / s, remote.ch / s
+    local function inside()
+        assert_true(remote.view_x >= -0.5 and remote.view_y >= -0.5
+            and remote.view_x + sw <= 400.5 and remote.view_y + sh <= 300.5,
+            string.format("the view stays on the remote: (%g,%g)", remote.view_x, remote.view_y))
+    end
+    -- (one contact: its `pos` moves with its `relative`, off the screen too, so straight to the viewer)
+    local function pan(rel) app:onPan(nil, { ges = "pan", pos = Geom:new{ x = P.x + rel, y = P.y + rel }, relative = { x = rel, y = rel } }) end
+    pan(5000)
+    inside()
+    pan(10000)
+    inside()
+    assert_true(math.abs(remote.view_x + sw - 400) <= 0.5 and math.abs(remote.view_y + sh - 300) <= 0.5,
+        string.format("the view at the remote's bottom-right: (%g,%g)", remote.view_x + sw, remote.view_y + sh))
+    local e = last_pointer(sent)
+    assert_true(e.x == 399 and e.y == 299, string.format("the pointer in the corner, got (%d,%d)", e.x, e.y))
+    -- back up-left, in small steps: the pointer alone until the centre, then both
+    local step = 10 * s / 1.25 -- 10 remote pixels a step
+    local rel, followed = 10000, { x = false, y = false }
+    for _ = 1, 100 do
+        local before = { x = remote.view_x, y = remote.view_y }
+        rel = rel - step
+        pan(rel)
+        inside()
+        local px, py = pointer_on_canvas(app, remote)
+        for _, a in ipairs{ { "x", px, remote.cw / 2, remote.view_x }, { "y", py, remote.ch / 2, remote.view_y } } do
+            local axis, p, half, v = a[1], a[2], a[3], a[4]
+            if v ~= before[axis] then
+                followed[axis] = true
+                -- (as in RustDesk, the step that crosses the centre moves both by all of it)
+                assert_true(math.abs(p - half) <= 10 * s + 1,
+                    axis .. ": the view moves only once the pointer reached the centre: " .. p)
+            elseif followed[axis] then
+                assert_true(v <= 0.5, axis .. ": once following, it keeps following to the edge")
+            else
+                assert_true(p >= half - 1, axis .. ": the pointer alone, still past the centre: " .. p)
+            end
+        end
+    end
+    assert_true(followed.x and followed.y, "the view came back")
+    local e2 = last_pointer(sent)
+    assert_true(remote.view_x <= 0.5 and remote.view_y <= 0.5 and e2.x == 0 and e2.y == 0,
+        "and ended at the remote's top-left, the pointer in its corner")
+    dispatch_gesture{ ges = "pan_release", pos = P }
+    close_viewer(app, remote)
+end)
+
+check("drag_starts_with_offscreen_pointer_at_centre", function()
+    for _, how in ipairs{ "move", "long press drag" } do
+        local app, remote, sent = zoomed_mouse_app(4)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+        -- the view at the remote's top-left: the pointer (the remote's centre) off the canvas
+        remote:set_view(remote:get_scale(), 0, 0)
+        local s = remote:get_scale()
+        assert_true(200 > remote.cw / s + 1 or 150 > remote.ch / s + 1, "the pointer is off the view")
+        local cx = math.floor(remote.cw / s / 2 + 0.5)
+        local cy = math.floor(remote.ch / s / 2 + 0.5)
+        local n = #sent.pointer
+        if how == "move" then
+            dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 4, y = P.y }, relative = { x = 4, y = 0 } }
+        else
+            dispatch_gesture{ ges = "hold", pos = P }
+            confirm_hold(app)
+            dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 4, y = P.y }, relative = { x = 4, y = 0 } }
+        end
+        local e = sent.pointer[n + 1]
+        assert_true(e and e.mask == 0 and math.abs(e.x - cx) <= 1 and math.abs(e.y - cy) <= 1,
+            string.format("%s: first to the view centre (%d,%d), got (%s,%s)", how, cx, cy, e and e.x, e and e.y))
+        if how ~= "move" then
+            local p = sent.pointer[n + 2]
+            assert_true(p.mask == 1 and p.x == e.x and p.y == e.y, "pressed there")
+            dispatch_gesture{ ges = "hold_release", pos = P }
+        else
+            dispatch_gesture{ ges = "pan_release", pos = P }
+        end
+        close_viewer(app, remote)
+    end
+end)
+
+check("two_finger_pan_keeps_the_pointer", function()
+    local app, remote, sent = zoomed_mouse_app()
+    local x, y = app:_mouse_pointer()
+    local vx = remote.view_x
+    local n = #sent.pointer
+    app:onTwoFingerPan(nil, { relative = { x = -100, y = 0 }, start_pos = { x = 300, y = 300 } })
+    app:onTwoFingerPanRelease(nil, {})
+    assert_true(remote.view_x ~= vx, "the view moved")
+    local x2, y2 = app:_mouse_pointer()
+    assert_true(x2 == x and y2 == y, "the pointer stays")
+    assert_true(#sent.pointer == n, "nothing sent")
+    close_viewer(app, remote)
+end)
+
+check("fit_view_does_not_follow", function()
+    local app, remote, sent = new_app(400, 300, { mode = "mouse" })
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+    local vx, vy = remote.view_x, remote.view_y
+    dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x + 40, y = P.y + 30 }, relative = { x = 40, y = 30 } }
+    app:onPan(nil, { ges = "pan", pos = Geom:new{ x = P.x + 4000, y = P.y + 3000 }, relative = { x = 4000, y = 3000 } })
+    assert_true(remote.view_x == vx and remote.view_y == vy, "the view stays")
+    local e = last_pointer(sent)
+    assert_true(e.x == 399 and e.y == 299, string.format("the pointer moved to the corner, got (%d,%d)", e.x, e.y))
+    dispatch_gesture{ ges = "pan_release", pos = P }
+    close_viewer(app, remote)
+end)
+
 
 --[[ A finger down on GestureDetector's books: a contact that began at screen position `pos` (the
 test runs upright, so screen and touch coordinates are the same). Returns a function lifting it. ]]
