@@ -7,8 +7,7 @@ of the remote desktop ends up behind the keyboard. A compact toolbar (`vnc.toolb
 top; a **swipe down** in KOReader's own top screen zone (the `DTAP_ZONE_MENU` area) shows or hides
 it, and a tap on the bar never reaches the remote. Everywhere else taps are *never* taken away from
 the remote desktop. What a tap, a long press and a one-finger drag do depends on the pointer mode:
-Touch acts at the finger, Mouse moves a pointer relatively (a tap's click is deferred by the
-double-tap interval so a double-tap-and-move can drag); two-finger drag, pinch/spread and
+Touch acts at the finger, Mouse moves a pointer relatively (a tap clicks at once); two-finger drag, pinch/spread and
 two-finger tap behave the same in both. Rotations and screen resizes go through KOReader's generic
 `SetRotationMode` / `ScreenResize` events, so that the keyboard is re-laid out for the new
 dimensions as well.
@@ -84,9 +83,6 @@ function ViewerApp:init()
     -- true while a two-finger pan/zoom moves the view: the visible area is reported once it ends
     self._view_moving = false
     self._view_settle_task = function() self:_view_settled() end
-    -- Mouse mode: a tap's click waits out the double-tap interval (see `_mouse_tap`)
-    self._deferred_click = nil
-    self._deferred_click_task = function() self:_deferred_click_due() end
     -- ends a drag or long press whose end went to a widget above us (see `_watch_release`)
     self._release_watch_task = function() self:_release_watch_tick() end
     -- keeps the idle clocks (dim, standby, suspend) from running out, see `_apply_keep_screen_on`
@@ -634,8 +630,6 @@ function ViewerApp:onCloseWidget()
     UIManager:unschedule(self._release_watch_task)
     self._release_watched = nil
     self._watched_finger = nil
-    -- a click still waiting for a possible second tap is not worth sending any more
-    self:_drop_deferred_click()
     -- a physical key still held down on the remote: its release will not reach a closed viewer
     for keysym, mods in pairs(self._keys_down or {}) do
         self.session:send_key(keysym, false)
@@ -734,7 +728,6 @@ end
 --- Sends a key. A drag or long press of ours still pending (its release was eaten by the
 --- on-screen keyboard or the menu) ends first, so its button and modifiers do not stay down.
 function ViewerApp:send_key(keysym, down)
-    self:_flush_deferred_click()
     self:_end_stale_pointer_action()
     self.session:send_key(keysym, down)
 end
@@ -870,8 +863,7 @@ function ViewerApp:onPan(_, ges)
     local start = Geom:new{ x = ges.pos.x - rel.x, y = ges.pos.y - rel.y }
     -- the rest of a long press InkView cut short: one gesture with it (see `onHoldRelease`)
     local held = self:_false_hold_followed_by(start, "pan")
-    if self._drag_active == "mouse" or self._mouse_moving
-            or (self._drag_active == nil and self:get_pointer_mode() == "mouse") then
+    if self._mouse_moving or (self._drag_active == nil and self:get_pointer_mode() == "mouse") then
         return self:_mouse_pan(ges)
     end
     -- a drag whose release never came has its own start: a new contact is a new gesture
@@ -899,16 +891,10 @@ end
 function ViewerApp:onPanRelease(_, ges)
     if self._mouse_moving then
         self._mouse_moving = nil
-        -- (a button drag is never a pointer move as well; should it be, the button still goes)
-        if self._drag_active == nil then return true end
+        return true
     end
     if self._drag_active == nil then return nil end
-    local rx, ry
-    if self._drag_active == "mouse" then
-        rx, ry = self._pointer_x, self._pointer_y -- the button lets go where the pointer is
-    else
-        rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
-    end
+    local rx, ry = self:_to_remote(ges.pos.x, ges.pos.y)
     self._drag_active = nil
     self:send_pointer(rx, ry, 0, "drag end")
     self:_release_action_mods()
@@ -959,13 +945,11 @@ function ViewerApp:onHold(_, ges)
     -- a new contact held right after a false hold: one continuous long press with it
     self:_false_hold_followed_by(ges.pos, "hold")
     self:_cancel_hold("new hold")
-    local mouse = self:get_pointer_mode() == "mouse"
     self._hold_pending = {
-        pos = ges.pos:copy(), time = ges.time, mode = mouse and "mouse" or "touch",
-        near_tap = mouse and self:_near_deferred_click(ges.pos) or false,
+        pos = ges.pos:copy(), time = ges.time,
+        mode = self:get_pointer_mode() == "mouse" and "mouse" or "touch",
     }
-    logger.dbg("vnc-hold:", "pending", ges.pos.x, ges.pos.y, self._hold_pending.mode,
-        self._hold_pending.near_tap and "near a tap" or "")
+    logger.dbg("vnc-hold:", "pending", ges.pos.x, ges.pos.y, self._hold_pending.mode)
     UIManager:scheduleIn(self.HOLD_CONFIRM, self._hold_confirm_task)
     return true
 end
@@ -978,8 +962,7 @@ function ViewerApp:_hold_confirm_due()
 end
 
 --- A pending long press is genuine: it acts now (`_hold_act`) - it waits for its lift or its
---- first move, or (Mouse mode, a tap pending near it) is a left-button drag. Nothing when the
---- canvas got covered meanwhile.
+--- first move. Nothing when the canvas got covered meanwhile.
 function ViewerApp:_hold_confirmed()
     local pending = self._hold_pending
     self._hold_pending = nil
@@ -1053,18 +1036,12 @@ local function hold_on_pointer(kind) return kind == "mouse_wait" or kind == "mou
 --[[--
 What a confirmed long press does (the pending record `p`: `pos`, `mode`): nothing yet - it waits
 for its lift, a right click there, or its first move, a left-button drag (see `hold_waits`).
-Mouse mode, a tap pending near it: a left-button drag at once (`_mouse_hold_drag`).
 ]]
 function ViewerApp:_hold_act(p)
     self._last_touch_tap = nil
     local ges = { ges = "hold", pos = p.pos }
-    local mouse = self:get_pointer_mode() == "mouse"
-    if mouse and self:_near_deferred_click(ges.pos) then
-        return self:_mouse_hold_drag(ges)
-    end
-    if mouse then self:_flush_deferred_click() end
     self:_end_stale_pointer_action()
-    self._hold_active = mouse and "mouse_wait" or "touch_wait"
+    self._hold_active = self:get_pointer_mode() == "mouse" and "mouse_wait" or "touch_wait"
     self._hold_pos = ges.pos
     self:_watch_release(ges.pos)
     return true
@@ -1091,24 +1068,6 @@ function ViewerApp:_hold_drag_start()
         self._hold_active = "touch_drag"
     end
     self:_pointer_action_changed()
-end
-
---[[--
-Mouse mode, a long press where a tap is still pending (tap, then press and hold): a drag with the
-left button from the pointer instead of a click and a right click. `hold_pan` moves the pointer
-the way a drag does (`onHoldPan`), and the lift lets go where the pointer is.
-]]
-function ViewerApp:_mouse_hold_drag(ges)
-    self:_drop_deferred_click()
-    self:_end_stale_pointer_action()
-    self:_press_armed()
-    local x, y = self:_mouse_pointer_px()
-    self:send_pointer(x, y, 1, "hold drag start")
-    self._hold_active = "mouse_drag"
-    self._mouse_rel = { x = 0, y = 0 }
-    self:_pointer_action_changed()
-    self:_watch_release(ges.pos)
-    return true
 end
 
 --[[--
@@ -1247,12 +1206,10 @@ end
 --[[--
 Click and type: a left click on the remote - at screen point `pos` (Mouse mode: the pointer moves
 there first), or with no `pos` at the Mouse-mode pointer - then the on-screen keyboard, saved like
-the keyboard button saves it (`keyboard_shown`). A click a Mouse-mode tap left pending goes first,
-the modifiers armed on the key strip go with this one, as with a tap. With the keyboard already up,
+the keyboard button saves it (`keyboard_shown`). The modifiers armed on the key strip go with this one, as with a tap. With the keyboard already up,
 or the "Send keys" panel in its place, only the click.
 ]]
 function ViewerApp:_click_and_type(pos)
-    self:_flush_deferred_click()
     self:_end_stale_pointer_action("click and type")
     self._last_touch_tap = nil
     local rx, ry
@@ -1377,7 +1334,6 @@ end
 
 --- Switches the pointer mode and stores it in the profile.
 function ViewerApp:set_pointer_mode(mode)
-    self:_flush_deferred_click()
     self:_end_pointer_action("mode switch")
     local profile = self.session:get_profile()
     local stored = self.plugin:update_profile_fields(profile.name, { pointer_mode = mode })
@@ -1398,7 +1354,6 @@ end
 --- Shows the help page (the current pointer mode's gestures first), replacing one still up.
 function ViewerApp:open_help()
     self:close_help(true)
-    self:_flush_deferred_click()
     self:_end_stale_pointer_action("help") -- (it could take the drag's release)
     local viewer
     viewer = TextViewer:new{
@@ -1431,31 +1386,11 @@ end
 
 -- ---------------------------------------------------------------- mouse mode
 
---- Seconds a Mouse-mode click waits for a second tap or a drag: KOReader's double-tap interval.
-function ViewerApp.mouse_click_delay()
-    local gd = Device.input and Device.input.gesture_detector or require("device/gesturedetector")
-    return time.to_s(gd.ges_double_tap_interval)
-end
-
--- A finger that came down near a pending tap and is still down when the click falls due may still
--- become its second tap, drag or long press (it can take longer than the double-tap interval to
--- cross the pan threshold, and a long press always does): the click waits for it, re-checked every
--- MOUSE_CLICK_RECHECK seconds, but never longer than `mouse_click_wait_cap` after the tap.
+-- How long a false hold waits for a finger that came down near it (it may yet turn into its pan or
+-- tap): re-checked every MOUSE_CLICK_RECHECK seconds, see `_false_hold_due`.
 ViewerApp.MOUSE_CLICK_RECHECK = 0.05
-ViewerApp.MOUSE_CLICK_WAIT_MARGIN = 0.25
 
---[[--
-Seconds after a tap that its click waits at most for a finger that came down near it: such a
-finger landed by the time the click fell due (the double-tap interval) at the latest, and turns
-into a long press KOReader's hold interval after landing; plus MOUSE_CLICK_WAIT_MARGIN.
-]]
-function ViewerApp:mouse_click_wait_cap()
-    local gd = Device.input and Device.input.gesture_detector or require("device/gesturedetector")
-    return ViewerApp.mouse_click_delay() + time.to_s(gd.ges_hold_interval) + self.MOUSE_CLICK_WAIT_MARGIN
-end
-
---- How near (screen pixels) a second tap or a drag's start must land to a pending tap to count
---- as its double tap.
+--- How near (screen pixels) a contact must land to a false hold to continue it.
 function double_tap_radius() return Screen:scaleByDPI(50) end
 
 --[[--
@@ -1533,99 +1468,34 @@ function ViewerApp:_mouse_click(n, only)
     self:_release_action_mods()
 end
 
---- Sends the click a Mouse-mode tap left pending now; no-op when there is none. It takes the
---- modifiers armed when its tap came: one armed since is for the next action.
-function ViewerApp:_flush_deferred_click()
-    local pending = self._deferred_click
-    if not pending then return end
-    self:_drop_deferred_click()
-    self:_mouse_click(1, pending.mods)
-end
-
---[[--
-The pending click falls due: it goes now, unless a finger that came down near its tap is still
-down (see `mouse_click_wait_cap`): then it waits for that finger's gesture a little longer.
-]]
-function ViewerApp:_deferred_click_due()
-    local pending = self._deferred_click
-    if not pending then return end
-    -- (a long press near it still unconfirmed, or a false one awaiting its follow-up, decides it)
-    local hold = self._hold_pending or self._false_hold
-    if (hold and hold.near_tap) or (time.now() < pending.deadline
-            and finger_down_near(pending.pos, double_tap_radius())) then
-        UIManager:scheduleIn(self.MOUSE_CLICK_RECHECK, self._deferred_click_task)
-        return
-    end
-    self:_flush_deferred_click()
-end
-
---- Forgets the click a Mouse-mode tap left pending, without sending it.
-function ViewerApp:_drop_deferred_click()
-    self._deferred_click = nil
-    UIManager:unschedule(self._deferred_click_task)
-end
-
---- Whether a screen position is near enough to the pending tap to make a double tap with it.
-function ViewerApp:_near_deferred_click(pos)
-    local pending = self._deferred_click
-    return pending ~= nil and pending.pos:distance(pos) <= double_tap_radius()
-end
-
---[[--
-Mouse-mode tap: the click goes to the pointer, not the finger, and waits out the double-tap
-interval (longer while a finger that came down near it is still down, see `_deferred_click_due`) -
-a drag (`_mouse_pan`) or a long press (`_mouse_hold_drag`) starting there in the meantime turns it
-into a button drag instead, so the remote never sees click-then-press. A second tap there is a double click, at once.
-]]
-function ViewerApp:_mouse_tap(ges)
+--- Mouse-mode tap: the click goes to the pointer, not the finger, at once (two quick taps are a
+--- double click).
+function ViewerApp:_mouse_tap(_ges)
     self:_end_stale_pointer_action()
-    if self:_near_deferred_click(ges.pos) then
-        self:_drop_deferred_click()
-        self:_mouse_click(2)
-        return true
-    end
-    self:_flush_deferred_click()
-    local source = self:_armed_source()
-    self._deferred_click = { pos = ges.pos:copy(), deadline = time.now() + time.s(self:mouse_click_wait_cap()),
-                             mods = source and source:armed_names() or {} }
-    UIManager:scheduleIn(ViewerApp.mouse_click_delay(), self._deferred_click_task)
+    self:_mouse_click(1)
     return true
 end
 
 --[[--
 Mouse-mode one-finger drag: moves the pointer by the finger's movement, converted to remote
-pixels through the zoom and times the pointer speed. Starting where a tap is still pending
-(double tap & move), it drags with the left button held instead, from the pointer.
+pixels through the zoom and times the pointer speed.
 ]]
 function ViewerApp:_mouse_pan(ges)
     local rel = ges.relative or { x = 0, y = 0 }
     -- (`relative` is the delta since the contact began, so this is where its finger came down)
     local start = Geom:new{ x = ges.pos.x - rel.x, y = ges.pos.y - rel.y }
-    -- a move or drag whose pan_release never came has its own start: a new contact is a new gesture
-    if (self._mouse_moving or self._drag_active == "mouse") and self._mouse_start
-            and self._mouse_start:distance(start) > 1 then
-        if self._drag_active then self:_end_pointer_action("stale drag") end
+    -- a move whose pan_release never came has its own start: a new contact is a new gesture
+    if self._mouse_moving and self._mouse_start and self._mouse_start:distance(start) > 1 then
         self._mouse_moving = nil
     end
-    if self._drag_active == nil and not self._mouse_moving then
+    if not self._mouse_moving then
         self:_end_stale_pointer_action()
-        if self:_near_deferred_click(start) then
-            self:_drop_deferred_click()
-            -- armed modifiers stay down for the whole drag, as in Touch mode
-            self:_press_armed()
-            local x, y = self:_mouse_pointer_px()
-            self:send_pointer(x, y, 1, "drag start")
-            self._drag_active = "mouse"
-            self:_pointer_action_changed()
-        else
-            self:_flush_deferred_click()
-            self._mouse_moving = true
-        end
+        self._mouse_moving = true
         self:_watch_release(start)
         self._mouse_start = start
         self._mouse_rel = { x = 0, y = 0 }
     end
-    self:_mouse_move(rel, self._drag_active == "mouse" and 1 or 0)
+    self:_mouse_move(rel, 0)
     return true
 end
 
@@ -1753,7 +1623,6 @@ function ViewerApp:_scroll_by_drag(dx, dy, pos)
     local ny, nx = steps(g.wy, step_y), steps(g.wx, step_x)
     if ny == 0 and nx == 0 then return end
     g.wy, g.wx = g.wy - ny * step_y, g.wx - nx * step_x
-    self:_flush_deferred_click()
     local x, y = self:_wheel_position(pos)
     if ny ~= 0 then self:scroll_wheel(ny < 0 and 1 or -1, math.abs(ny), false, x, y) end
     if nx ~= 0 then self:scroll_wheel(nx < 0 and 1 or -1, math.abs(nx), true, x, y) end
@@ -2431,9 +2300,7 @@ end
 
 function ViewerApp:open_menu()
     if self.menu then return self.menu end
-    -- a pending Mouse-mode click belongs to the remote, before the menu covers it, and a drag
-    -- ends: the menu may take its release (a swipe turns its pages)
-    self:_flush_deferred_click()
+    -- a drag ends: the menu may take its release (a swipe turns its pages)
     self:_end_stale_pointer_action("menu")
     self.menu = require("vnc/menu").open(self)
     -- The menu is on the window stack now: it owns the screen, so the keyboard gets out of the
@@ -2459,7 +2326,6 @@ end
 --- Opens the display panel (see @{vnc.displaypanel}), or returns the one already open.
 function ViewerApp:open_display_panel()
     if self.display_panel then return self.display_panel end
-    self:_flush_deferred_click()
     self:_end_stale_pointer_action("display panel") -- (it could take the drag's release)
     self.display_panel = require("vnc/displaypanel").open(self)
     self:_sync_keyboard_later()
@@ -2512,12 +2378,10 @@ end
 
 --[[--
 The toolbar's brightness button: KOReader's own frontlight dialog, asked for the way its gestures
-and hotkeys do (DeviceListener handles `ShowFlDialog`). The dialog is a popup like ours: a pending
-click goes first, a drag ends, and the keyboard makes way for it (and comes back once it is gone,
+and hotkeys do (DeviceListener handles `ShowFlDialog`). The dialog is a popup like ours: a drag ends, and the keyboard makes way for it (and comes back once it is gone,
 which the keyboard watch notices: the dialog closes without telling us).
 ]]
 function ViewerApp:open_frontlight_dialog()
-    self:_flush_deferred_click()
     self:_end_stale_pointer_action("frontlight dialog")
     UIManager:broadcastEvent(Event:new("ShowFlDialog"))
     self:_sync_keyboard_later()
@@ -2527,7 +2391,6 @@ end
 --- Opens the contrast dialog (see @{vnc.contrastdialog}), or returns the one already open.
 function ViewerApp:open_contrast_dialog()
     if self.contrast_dialog then return self.contrast_dialog end
-    self:_flush_deferred_click()
     self:_end_stale_pointer_action("contrast dialog")
     self.contrast_dialog = require("vnc/contrastdialog").open(self)
     self:_sync_keyboard_later()
@@ -2698,7 +2561,6 @@ attempt of the running loop lands here too, and changes nothing.
 function ViewerApp:on_session_error(_err)
     if self.reconnect:is_running() then return end
     self:_end_pointer_action("session error")
-    self:_drop_deferred_click()
     local armed = self:_armed_source()
     if armed then armed:take_armed() end
     self:close_help(true)

@@ -28,16 +28,14 @@ end
 Help.ROWS = {
     touch = rows_for{
         { _("Tap"), _("Left click at the finger") },
-        { _("Long press"), _("Right click at the finger") },
+        { _("Long press"), _("Lift without moving: right click at the finger; move: drag with the left button") },
         { _("Drag"), _("Drag with the left button") },
         { _("Two-finger long press"), _("Left click between the fingers, then the keyboard") },
     },
     mouse = rows_for{
-        { _("Tap"), _("Left click at the pointer") },
-        { _("Long press"), _("Right click at the pointer") },
+        { _("Tap"), _("Left click at the pointer, at once (two quick taps: double click)") },
+        { _("Long press"), _("Lift without moving: right click at the pointer; move: drag with the left button") },
         { _("Drag"), _("Move the pointer") },
-        { _("Tap, then drag"), _("Drag with the left button") },
-        { _("Tap, then long press"), _("Hold the left button: move to drag, lift to let go") },
         { _("Two-finger long press"), _("Left click at the pointer, then the keyboard") },
     },
 }

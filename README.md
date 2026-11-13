@@ -122,11 +122,9 @@ are greyed out there).
 
 | Gesture | Touch mode | Mouse mode |
 | --- | --- | --- |
-| tap | left click at the finger | left click at the pointer |
-| long press | right click at the finger | right click at the pointer |
+| tap | left click at the finger | left click at the pointer, sent at once (two quick taps: a double click) |
+| long press | lift without moving: right click at the finger (sent at the lift); moving: drag with the left button held | the same, at the pointer (the finger's movement moves it) |
 | one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed) |
-| tap, then drag | not used (a plain drag already drags) | drag with the left button held from the pointer |
-| tap, then long press | right click at the finger (the tap clicked first) | hold the left button at the pointer: moving drags, lifting lets go |
 | two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
 | two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |
@@ -134,13 +132,7 @@ are greyed out there).
 | device page buttons | Page Up/Down or wheel (setting) | same |
 
 In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
-x11vnc, `-cursor arrow`); the viewer draws none. A tap's click waits out KOReader's double-tap
-interval before it is sent, so that a tap followed by a drag or a long press near it can become a
-drag with the left button instead of a click and a press; two quick taps still give two clicks. A
-finger that comes down near the tap and is still down when that interval runs out keeps the click
-waiting (at most the double-tap interval plus KOReader's long-press interval plus a quarter second
-after the tap) until it turns into a tap, a drag or a long press, so a slow second touch still
-drags. A second finger joining a long press or a tap-then-hold drag lets go of its button. Touch mode clicks are sent at once. A long press acts
+x11vnc, `-cursor arrow`); the viewer draws none. A second finger joining a long press drag lets go of its button. Touch and Mouse mode clicks are sent at once. A long press acts
 about 0.12 s after KOReader reports it (at once if the finger moves first): some PocketBook
 firmware holds a touch back for half a second and then delivers it in a burst, which KOReader
 takes for a long press; one that lifts within that time is treated as the tap or drag it really

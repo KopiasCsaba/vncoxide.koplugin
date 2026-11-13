@@ -259,12 +259,7 @@ function Toolbar:relayout(at)
             margin = 0,
             radius = 0,
             padding = padding,
-            -- a pending Mouse-mode click goes to the remote before the bar does anything: it
-            -- belongs to where the user tapped before reaching for the bar
-            callback = function()
-                app:_flush_deferred_click()
-                spec.callback()
-            end,
+            callback = spec.callback,
             -- a long press only tells what the button is
             hold_callback = function() show_tip(app, tip) end,
             -- a toggle that is on is drawn inverted
