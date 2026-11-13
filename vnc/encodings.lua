@@ -320,9 +320,14 @@ function Encodings.decode_rre(ctx)
     if w > 0 and h > 0 then
         if t then c_fill(t, ox, oy, w, h, br, bg, bb) else fill_at(base, stride, 0, w, h, br, bg, bb) end
     end
+    -- one read per subrect (pixel + four u16), not five: on the session reader each read is a
+    -- call into the transport with its own checks
+    local nb = cv.bytes
     for _ = 1, n do
-        local pr, pg, pb = read_pixel(r, cv)
-        local sx, sy, sw, sh = r:u16(), r:u16(), r:u16(), r:u16()
+        local p = r:ptr(nb + 8)
+        local pr, pg, pb = wire_rgb(cv, p, nb)
+        local sx, sy = p[nb] * 256 + p[nb + 1], p[nb + 2] * 256 + p[nb + 3]
+        local sw, sh = p[nb + 4] * 256 + p[nb + 5], p[nb + 6] * 256 + p[nb + 7]
         local cx, cy, cw, ch = clamp_sub(w, h, sx, sy, sw, sh)
         if cx then
             if t then c_fill(t, ox + cx, oy + cy, cw, ch, pr, pg, pb)
@@ -350,42 +355,69 @@ function Encodings.decode_hextile(ctx)
                 -- Neither colour may be carried over a raw tile.
                 bg_valid, fg_valid = false, false
             else
-                if band(mask, 2) ~= 0 then -- BackgroundSpecified
-                    bg_r, bg_g, bg_b = read_pixel(r, cv)
-                    bg_valid = true
-                elseif not bg_valid then
+                -- the tile's header (background, foreground, subrect count) in one read, and its
+                -- subrects in another: each read on the session reader is a call into the transport
+                local has_bg, has_fg, any = band(mask, 2) ~= 0, band(mask, 4) ~= 0, band(mask, 8) ~= 0
+                if not has_bg and not bg_valid then
                     return nil, string.format("Hextile: background not specified at tile (%d,%d)", tx, ty)
                 end
-                if band(mask, 4) ~= 0 then -- ForegroundSpecified
-                    if band(mask, 16) ~= 0 then
-                        return nil, string.format("Hextile: ForegroundSpecified with SubrectsColoured at tile (%d,%d)", tx, ty)
+                if has_fg and band(mask, 16) ~= 0 then
+                    return nil, string.format("Hextile: ForegroundSpecified with SubrectsColoured at tile (%d,%d)", tx, ty)
+                end
+                local hn = (has_bg and nb or 0) + (has_fg and nb or 0) + (any and 1 or 0)
+                local count = 0
+                if hn > 0 then
+                    local hp = r:ptr(hn)
+                    local o = 0
+                    if has_bg then -- BackgroundSpecified
+                        bg_r, bg_g, bg_b = wire_rgb(cv, hp, nb)
+                        bg_valid = true
+                        o = nb
                     end
-                    fg_r, fg_g, fg_b = read_pixel(r, cv)
-                    fg_valid = true
+                    if has_fg then -- ForegroundSpecified
+                        fg_r, fg_g, fg_b = wire_rgb(cv, hp + o, nb)
+                        fg_valid = true
+                        o = o + nb
+                    end
+                    if any then count = hp[o] end
                 end
                 local to = ty * stride + tx * 3
                 if t then c_fill(t, ox + tx, oy + ty, tw, th, bg_r, bg_g, bg_b)
                 else fill_at(base, stride, to, tw, th, bg_r, bg_g, bg_b) end
-                if band(mask, 8) ~= 0 then -- AnySubrects
-                    local count = r:u8()
+                if any then -- AnySubrects
                     local coloured = band(mask, 16) ~= 0
-                    for _ = 1, count do
-                        local sr, sg, sb
-                        if coloured then
-                            sr, sg, sb = read_pixel(r, cv)
-                        else
-                            if not fg_valid then
-                                return nil, string.format("Hextile: subrect without foreground at tile (%d,%d)", tx, ty)
+                    if count > 0 and not coloured and not fg_valid then
+                        return nil, string.format("Hextile: subrect without foreground at tile (%d,%d)", tx, ty)
+                    end
+                    -- (two loops over the subrects' offsets, each taking its one read in its first
+                    -- iteration: a read right before a loop puts a side exit right before its entry,
+                    -- and on soft-float ARM side traces into the loop then failed, over and over, with
+                    -- "NYI: register coalescing too complex")
+                    if coloured and count > 0 then
+                        local sz = nb + 2
+                        local sp
+                        for so = 0, (count - 1) * sz, sz do
+                            if so == 0 then sp = r:ptr(count * sz) end
+                            local sr, sg, sb = wire_rgb(cv, sp + so, nb)
+                            local xy, wh = sp[so + nb], sp[so + nb + 1]
+                            local cx, cy, cw, ch = clamp_sub(tw, th, rshift(xy, 4), band(xy, 0xF),
+                                rshift(wh, 4) + 1, band(wh, 0xF) + 1)
+                            if cx then
+                                if t then c_fill(t, ox + tx + cx, oy + ty + cy, cw, ch, sr, sg, sb)
+                                else fill_at(base, stride, to + cy * stride + cx * 3, cw, ch, sr, sg, sb) end
                             end
-                            sr, sg, sb = fg_r, fg_g, fg_b
                         end
-                        local xy, wh = r:u8(), r:u8()
-                        local sx, sy = rshift(xy, 4), band(xy, 0xF)
-                        local sw, sh = rshift(wh, 4) + 1, band(wh, 0xF) + 1
-                        local cx, cy, cw, ch = clamp_sub(tw, th, sx, sy, sw, sh)
-                        if cx then
-                            if t then c_fill(t, ox + tx + cx, oy + ty + cy, cw, ch, sr, sg, sb)
-                            else fill_at(base, stride, to + cy * stride + cx * 3, cw, ch, sr, sg, sb) end
+                    elseif count > 0 then
+                        local sp
+                        for so = 0, (count - 1) * 2, 2 do
+                            if so == 0 then sp = r:ptr(count * 2) end
+                            local xy, wh = sp[so], sp[so + 1]
+                            local cx, cy, cw, ch = clamp_sub(tw, th, rshift(xy, 4), band(xy, 0xF),
+                                rshift(wh, 4) + 1, band(wh, 0xF) + 1)
+                            if cx then
+                                if t then c_fill(t, ox + tx + cx, oy + ty + cy, cw, ch, fg_r, fg_g, fg_b)
+                                else fill_at(base, stride, to + cy * stride + cx * 3, cw, ch, fg_r, fg_g, fg_b) end
+                            end
                         end
                     end
                     if coloured then fg_valid = false end
