@@ -2042,7 +2042,7 @@ check("worker_switch_round_trips", function()
     local menu = app:open_menu()
     local function entry() return find_item(menu.item_table, "Decode in background processes") end
     assert_true(entry().mandatory == "-", "off shows -")
-    assert_true(entry().help_text == "Faster on multi-core readers. Applies from the next connection.", "help text")
+    assert_true(entry().help_text == "Faster on multi-core readers. Applies to the next new connection (after Close); a connection left with Leave or one that dropped keeps its mode until it is closed.", "help text")
     menu:onMenuSelect(entry()); UIManager:_checkTasks()
     assert_true(s.worker_processes == true and flushed == 1, "toggled on and flushed")
     assert_true(entry().mandatory == "✓", "on shows the check")

@@ -241,10 +241,10 @@ function MenuBuilder.open(app)
         end,
     }, function(item) item.mandatory = settings.match_orientation and "✓" or "-" end)
 
-    -- ---- decode and scale in worker processes (read when a session is created: next connection)
+    -- ---- decode and scale in worker processes (read when a session is created: the next new connection)
     item_table[#item_table + 1] = stays_open({
         text = _("Decode in background processes"),
-        help_text = _("Faster on multi-core readers. Applies from the next connection."),
+        help_text = _("Faster on multi-core readers. Applies to the next new connection (after Close); a connection left with Leave or one that dropped keeps its mode until it is closed."),
         callback = function()
             settings.worker_processes = not settings.worker_processes
             plugin.settings:flush()

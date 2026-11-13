@@ -72,8 +72,9 @@ shows its name in a one-line tooltip. **Drag** the bar by any of its buttons to 
 the finger, stays fully on the screen, and keeps its place (as a share of the free space, so also
 after a rotation) for the next time. Its buttons, left to right:
 
-1. **Collapse** (a small bar icon) folds the toolbar into a round button with the same icon, at the
-   same spot. A tap on the round button opens the toolbar again; it can be dragged like the bar,
+1. **Collapse** (a small bar icon) folds the toolbar into a round button with the same icon, which
+   returns to its anchored spot (where you last dragged the bar or the button; top centre at
+   first). A tap on the round button opens the toolbar again; it can be dragged like the bar,
    and the bar opens where it is. The folded state is remembered.
 2. **Display** opens the Display panel (below).
 3. **Zoom** cycles the view: **fit** → **1:1** (one remote pixel per screen pixel, keeping the
@@ -209,7 +210,7 @@ just dropped (a long press tells why), the connection list (**Connections…**, 
 buttons send** (Page Up/Down keys or Mouse wheel),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
-**Decode in background processes** (default off: on a multi-core reader the picture is decoded and scaled in separate processes, so the interface stays responsive while a big update arrives; applies from the next connection, and the connection falls back to the normal way if the processes cannot start),
+**Decode in background processes** (default off: on a multi-core reader the picture is decoded and scaled in separate processes, so the interface stays responsive while a big update arrives; applies to the next new connection, after **Close**: a connection left with **Leave** or one that dropped and reconnects keeps its mode until it is closed; the connection falls back to the normal way if the processes cannot start),
 **Toolbar buttons…** (above), **Help** and **Leave (keep connection)**. Rows that switch something
 on or off show ✓ or - and keep the menu open; anything else closes it.
 

@@ -182,7 +182,9 @@ VNC:save_profile still points the live session at the saved profile, and connect
 reloaded one.
 
 Worker processes. Setting `worker_processes` (default off; menu "Decode in background processes";
-read by VNC:connect_profile when it creates a session, so it applies from the next connection).
+read by VNC:connect_profile when it creates a session, so it applies to the next new connection:
+a session kept with "Leave", or one that dropped and reconnects, keeps its mode until it is closed;
+reused sessions are deliberately not re-plumbed).
 With it on, Session.new{ worker_processes = true } makes the session, after the RFB handshake,
 fork (vnc/worker.lua) two processes (vnc/workers.lua): a decode worker, which inherits the socket
 and the protocol state and decodes updates into the remote plane, and a scale worker, which scales
@@ -202,8 +204,20 @@ vnc/workers.lua's header is the source):
                   E <message> (a render failed; exits after)
 Resize: the plane is the UI's and a worker cannot change its size, so on a new desktop size the
 decode worker sends Z and exits before decoding anything of the new size; the UI then reconnects
-(a fresh handshake and fresh workers). If the workers cannot start (no link), the session carries
-on in-process. What stays in-process: the picture benchmark (vnc/benchmark.lua creates its own
+(a fresh handshake and fresh workers). A DesktopSize of the plane's own size is no resize: the
+decode worker handles it as in-process (the plane stays, a full update is requested, the view area
+the UI sent is kept) and sends no Z. If the workers cannot start before the decode worker is
+forked, the session carries on in-process; a failure after that fork stops both workers and fails
+the connection (Workers.start's third result; a worker may hold the socket, so the protocol state
+cannot be trusted). Watchdogs (Link:poll): commands queued for the decode worker that do not move
+for Workers.DECODE_STALL (2 s), or no C at all for Workers.SCALE_STALL (10 s; a full 1264x1680 render
+measured 31-270 ms on emulated ARMv7) while a G is unanswered, stop the link and fail the
+session ("decode/scale worker not responding"): the viewer's reconnect box, never a frozen picture.
+A scale worker EOF in the tick that read the decode pipe before its Z re-reads the decode pipe
+once (resize, not crash). The UI polls every Workers.UI_POLL (10 ms) while a message arrived in
+the last Workers.ACTIVE_FOR (0.5 s) or a G is unanswered, else every Session.POLL_INTERVAL; the
+timing trace's poll gap is measured against the interval the last tick scheduled. The UI's pipe
+ends are FD_CLOEXEC. What stays in-process: the picture benchmark (vnc/benchmark.lua creates its own
 sessions without the flag; a test asserts it) and the plugin's own VNC server (vnc/server.lua).
 
 Picture benchmark. vnc/benchmark.lua measures combinations (see its header); the UI is

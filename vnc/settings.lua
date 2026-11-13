@@ -43,7 +43,7 @@ for _, key in ipairs(Settings.DATA_KEYS) do known_data_key[key] = true end
 Settings.DEFAULTS = {
     orientation = 0,                 -- Screen.DEVICE_ROTATED_UPRIGHT, the last one used; the viewer opens in it
     match_orientation = true,        -- after connecting, turn the screen to the remote's orientation (landscape/portrait)
-    worker_processes = false,        -- decode and scale in forked worker processes (see @{vnc.workers}); applies from the next connection
+    worker_processes = false,        -- decode and scale in forked worker processes (see @{vnc.workers}); applies to the next new connection (a session kept with Leave, or reconnecting, keeps its mode)
     landscape_orientation = 1,       -- the landscape side last picked by hand (1 = Screen.DEVICE_ROTATED_CLOCKWISE)
     portrait_orientation = 0,        -- the portrait side last picked by hand (0 = Screen.DEVICE_ROTATED_UPRIGHT)
     keyboard_shown = false,          -- the on-screen keyboard's last state: the viewer opens with it shown or not
