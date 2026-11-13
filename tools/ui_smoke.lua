@@ -3873,6 +3873,8 @@ check("mode_switch_shows_a_tooltip_not_a_card", function()
     assert_true(app.help == nil and #sent.pointer == 0, "no card, nothing sent")
     UIManager:close(tip)
     tap_toolbar(app, "mode")
+    UIManager:close(top())
+    tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "touch" and top().text == "Touch mode")
     UIManager:close(top())
     close_viewer(app, remote)
@@ -6207,6 +6209,8 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     assert_true(app:get_pointer_mode() == "mouse", "mode switches to mouse")
     UIManager:close(top())  -- the tooltip
     tap_toolbar(app, "mode")
+    UIManager:close(top())
+    tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "touch", "and back to touch")
     UIManager:close(top())
     tap_toolbar(app, "keyboard"); assert_true(app.vk_wanted == true, "keyboard tap toggles the keyboard")
@@ -7464,6 +7468,153 @@ check("viewer_follows_the_keyboards_tap_interval", function()
     G_reader_settings:saveSetting("ges_tap_interval_ms", saved)
     G_reader_settings:saveSetting("ges_tap_interval_on_keyboard_ms", saved_kb)
     if not ok then error(err, 0) end
+end)
+
+-- ---------------------------------------------------------------- Hybrid mode
+
+--- Hybrid: a drag from `start` by (dx, dy) in `steps` pan events, then its lift.
+local function hybrid_drag(start, dx, dy, steps)
+    steps = steps or 3
+    local s = Geom:new{ x = start.x, y = start.y, w = 0, h = 0 }
+    for i = 1, steps do
+        local rx, ry = dx * i / steps, dy * i / steps
+        dispatch_gesture{ ges = "pan", relative = { x = rx, y = ry }, start_pos = s,
+                          pos = Geom:new{ x = start.x + rx, y = start.y + ry, w = 0, h = 0 } }
+    end
+    dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = start.x + dx, y = start.y + dy, w = 0, h = 0 } }
+end
+
+local function clear_sent(sent) for i = #sent.pointer, 1, -1 do sent.pointer[i] = nil end end
+
+check("mode_button_cycles_three_modes", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true })
+    local want = { { "mouse", "Mouse mode", "🖱" }, { "hybrid", "Hybrid mode", "↕" }, { "touch", "Touch mode", "☝" } }
+    for _, w in ipairs(want) do
+        tap_toolbar(app, "mode")
+        assert_true(app:get_pointer_mode() == w[1], "mode is " .. w[1] .. ", got " .. app:get_pointer_mode())
+        assert_true(app.session:get_profile().pointer_mode == w[1], "stored on the profile")
+        assert_true(top().text == w[2] and top().toast, "the toast " .. w[2] .. ", got " .. tostring(top().text))
+        UIManager:close(top())
+        UIManager:setDirty(app, "ui"); UIManager:forceRePaint()
+        assert_true(app.toolbar.button_by_id.mode.text == w[3], "the glyph follows: " .. w[1])
+    end
+    assert_true(#sent.pointer == 0, "nothing sent")
+    close_viewer(app, remote)
+end)
+
+check("hybrid_drag_scrolls", function()
+    local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
+    assert_true(math.abs(app.HYBRID_SCROLL_STEP - 1 / 30) < 1e-12, "the step is 1/30")
+    app:zoom_to(2)
+    local vx, vy = remote.view_x, remote.view_y
+    local start = { x = 300, y = 500 }
+    local rx, ry = app:_to_remote(start.x, start.y)
+    hybrid_drag(start, 0, -3 * Screen:getHeight() / 30)
+    assert_true(#sent.pointer == 6, "3 notches (press and release), got " .. #sent.pointer)
+    for i, e in ipairs(sent.pointer) do
+        assert_true(e.mask == (i % 2 == 1 and 16 or 0), "wheel down, event " .. i .. " mask " .. e.mask)
+        -- (each notch goes where the finger is at its pan event: from the press up to 3 steps' travel)
+        assert_true(e.x == rx and e.y <= ry and e.y >= ry - 3 * Screen:getHeight() * app.HYBRID_SCROLL_STEP * 2 / app.remote:get_scale() * 1.01,
+            string.format("at the finger (%d,%d), got (%d,%d)", rx, ry, e.x, e.y))
+    end
+    assert_true(remote.view_x == vx and remote.view_y == vy, "the view did not move")
+    assert_true(app:has_pointer_action() == false, "no button held")
+    clear_sent(sent)
+    hybrid_drag(start, 0, 2 * Screen:getHeight() / 30)
+    assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 8, "down drag: button 8, got " .. take_masks(sent))
+    clear_sent(sent)
+    hybrid_drag(start, -2 * Screen:getWidth() / 30, 0)
+    assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 64, "left drag: button 64, got " .. take_masks(sent))
+    clear_sent(sent)
+    hybrid_drag(start, Screen:getWidth() / 30, 0)
+    assert_true(#sent.pointer == 2 and sent.pointer[1].mask == 32, "right drag: button 32, got " .. take_masks(sent))
+    clear_sent(sent)
+    hybrid_drag(start, 0, Screen:getHeight() / 60)
+    assert_true(#sent.pointer == 0, "under a notch: nothing, got " .. take_masks(sent))
+    close_viewer(app, remote)
+end)
+
+check("hybrid_tap_clicks_at_the_finger", function()
+    local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
+    local wire = wire_log(app)
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+    dispatch_gesture{ ges = "tap", pos = P }
+    local rx, ry = app:_to_remote(P.x, P.y)
+    assert_true(wire() == "p0,p1,p0", "an instant left click")
+    for _, e in ipairs(sent.pointer) do assert_true(e.x == rx and e.y == ry, "at the finger") end
+    close_viewer(app, remote)
+end)
+
+check("hybrid_long_press", function()
+    local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 60, y = c.y + 40 }
+    local rx, ry = app:_to_remote(P.x, P.y)
+    dispatch_gesture{ ges = "hold", pos = P }
+    confirm_hold(app)
+    assert_true(#sent.pointer == 0, "nothing before the lift")
+    dispatch_gesture{ ges = "hold_release", pos = P }
+    assert_true(#sent.pointer == 2 and sent.pointer[1].mask == 4 and sent.pointer[1].x == rx and sent.pointer[1].y == ry,
+        "a right click at the finger, got " .. #sent.pointer .. " event(s)")
+    assert_true(last_pointer(sent).mask == 0 and app:has_pointer_action() == false, "released")
+    clear_sent(sent)
+    dispatch_gesture{ ges = "hold", pos = P }
+    confirm_hold(app)
+    local Q = Geom:new{ x = P.x + 30, y = P.y + 20 }
+    dispatch_gesture{ ges = "hold_pan", pos = Q, relative = { x = 30, y = 20 } }
+    local e = sent.pointer[1]
+    assert_true(e and e.mask == 1 and e.x == rx and e.y == ry, "left press from the finger")
+    local qx, qy = app:_to_remote(Q.x, Q.y)
+    e = last_pointer(sent)
+    assert_true(e.mask == 1 and e.x == qx and e.y == qy, "follows the finger")
+    dispatch_gesture{ ges = "hold_release", pos = Q }
+    e = last_pointer(sent)
+    assert_true(e.mask == 0 and e.x == qx and e.y == qy and app:has_pointer_action() == false, "left released")
+    for _, ev in ipairs(sent.pointer) do assert_true(ev.mask <= 1, "no wheel or right button") end
+    close_viewer(app, remote)
+end)
+
+check("hybrid_drag_on_toolbar_does_not_scroll", function()
+    local app, remote, sent = new_app(400, 300, { toolbar = true, mode = "hybrid" })
+    local from = toolbar_button_centre(app, "zoom")
+    local before = app.toolbar.dimen.y
+    drag_toolbar(from, -10, 60)
+    assert_true(#sent.pointer == 0, "nothing sent, got " .. take_masks(sent))
+    assert_true(app.toolbar.dimen.y ~= before, "the bar moved")
+    close_viewer(app, remote)
+end)
+
+check("unknown_pointer_mode_is_touch", function()
+    local Settings = require("vnc/settings")
+    local path = data_dir .. "/ui_smoke_pointer_mode2.lua"; os.remove(path)
+    local s = Settings.open(path)
+    s:save_profile{ name = "b", host = "h", port = 1, pointer_mode = "banana" }
+    s:save_profile{ name = "h", host = "h", port = 1, pointer_mode = "hybrid" }
+    assert_true(s:get_profile("b").pointer_mode == "touch", "banana loads as touch")
+    assert_true(s:get_profile("h").pointer_mode == "hybrid", "hybrid is kept")
+    s:save_profile({ name = "h", host = "h2", port = 1 }, "h")
+    assert_true(s:get_profile("h").pointer_mode == "hybrid", "an edit without the field keeps it")
+    s:flush()
+    assert_true(Settings.open(path):get_profile("h").pointer_mode == "hybrid", "round-trips through the file")
+    os.remove(path)
+end)
+
+check("help_lists_hybrid", function()
+    local Help = require("vnc/help")
+    assert_true(Help.TITLES.hybrid == "Hybrid mode", "title")
+    local text = Help.text("hybrid")
+    assert_true(text:find("Hybrid mode", 1, true) < text:find("Touch mode", 1, true), "current mode first")
+    assert_true(text:find("Mouse mode", 1, true) and text:find("Touch mode", 1, true), "all three")
+    assert_true(Help.ROWS.hybrid and #Help.ROWS.hybrid > 0, "rows")
+    local rows = {}
+    for _, r in ipairs(Help.ROWS.hybrid) do
+        rows[r[1]] = r[2]
+        assert_true(text:find(r[1] .. ": " .. r[2], 1, true), "row " .. r[1])
+    end
+    assert_true(rows["Tap"]:find("finger", 1, true) and rows["Drag"]:lower():find("scroll", 1, true), "tap and drag rows")
+    assert_true(rows["Long press"]:find("right click", 1, true), "long press row")
+    assert_true(text:find("Mode: switch between Touch, Mouse and Hybrid mode", 1, true), "the Mode button text")
 end)
 
 -- ---------------------------------------------------------------- hold confirmation

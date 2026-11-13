@@ -90,7 +90,7 @@ end
 
 -- Labels for the buttons without a fitting icon: these glyphs come from KOReader's default UI font
 -- fallbacks (FreeSerif has both).
-local MODE_GLYPHS = { touch = "☝", mouse = "🖱" }
+local MODE_GLYPHS = { touch = "☝", mouse = "🖱", hybrid = "↕" }
 
 -- The zoom button's icon per view state (`ViewerApp:view_state`); 1:1 has a plugin icon instead.
 local ZOOM_ICONS = { fit = "zoom.page", user = "zoom.manual", preset = "zoom.manual" }

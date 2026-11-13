@@ -24,7 +24,7 @@ Settings.__index = Settings
 --- Profile field names.
 Settings.PROFILE_FIELDS = {
     "name", "host", "port", "password", "autoconnect",
-    "pointer_mode",                  -- how the screen drives the pointer: "touch" or "mouse"
+    "pointer_mode",                  -- how the screen drives the pointer: "touch", "mouse" or "hybrid"
     -- Picture: read once per connection, so a change applies on the next one (see NOTES.txt,
     -- "Pixel format").
     "color_depth",                   -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
@@ -372,7 +372,7 @@ local function clean_profile(p, tight_default)
         password = type(p.password) == "string" and p.password or "",
         -- Only the boolean true counts: a hand-edited `"yes"` (or anything else) means "no".
         autoconnect = p.autoconnect == true,
-        pointer_mode = p.pointer_mode == "mouse" and "mouse" or "touch",
+        pointer_mode = (p.pointer_mode == "mouse" or p.pointer_mode == "hybrid") and p.pointer_mode or "touch",
         color_depth = (p.color_depth == 16 or p.color_depth == 8) and p.color_depth or 24,
         enable_tight = (p.enable_tight == nil and tight_default or p.enable_tight) == true,
         jpeg_quality = level_or_off(p.jpeg_quality),

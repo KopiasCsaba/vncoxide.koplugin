@@ -149,7 +149,7 @@ end
 --- A swipe down in the top menu zone shows or hides the toolbar; anything else falls through to
 --- the canvas. A swipe that ends one of our drags is that drag's end, not a request for the bar.
 function ViewerApp:onTopSwipe(ges)
-    local dragging = self._drag_active or self._mouse_moving
+    local dragging = self._drag_active or self._mouse_moving or self._hybrid_pan
     self:_end_quick_drag(ges)
     if dragging or not self:_input_target() then return nil end
     if BD.flipDirectionIfMirroredUILayout(ges.direction) ~= "south" then return nil end
@@ -866,6 +866,9 @@ function ViewerApp:onPan(_, ges)
     if self._mouse_moving or (self._drag_active == nil and self:get_pointer_mode() == "mouse") then
         return self:_mouse_pan(ges)
     end
+    if self._hybrid_pan or (self._drag_active == nil and self:get_pointer_mode() == "hybrid") then
+        return self:_hybrid_pan_move(start, ges)
+    end
     -- a drag whose release never came has its own start: a new contact is a new gesture
     if self._drag_active and self._drag_start and self._drag_start:distance(start) > 1 then
         self:_end_pointer_action("stale drag")
@@ -888,7 +891,33 @@ function ViewerApp:onPan(_, ges)
     return true
 end
 
+--[[--
+Hybrid mode's drag: it scrolls the remote (`_scroll_by_drag`, HYBRID_SCROLL_STEP per notch, at the
+finger) and never presses a button. `start` is where the contact came down; the pan's `relative`
+is its offset from there, so the movement since the previous event is the difference.
+]]
+ViewerApp.HYBRID_SCROLL_STEP = 1 / 30
+
+function ViewerApp:_hybrid_pan_move(start, ges)
+    local rel = ges.relative or { x = 0, y = 0 }
+    local g = self._hybrid_pan
+    if g and (math.abs(g.sx - start.x) > 1 or math.abs(g.sy - start.y) > 1) then g = nil end -- a new contact
+    if not g then
+        self:_end_stale_pointer_action() -- a long press whose release never came
+        g = { sx = start.x, sy = start.y, x = 0, y = 0, wx = 0, wy = 0 }
+        self._hybrid_pan = g
+    end
+    local dx, dy = rel.x - g.x, rel.y - g.y
+    g.x, g.y = rel.x, rel.y
+    self:_scroll_by_drag(dx, dy, ges.pos, self.HYBRID_SCROLL_STEP, g)
+    return true
+end
+
 function ViewerApp:onPanRelease(_, ges)
+    if self._hybrid_pan then
+        self._hybrid_pan = nil
+        return true
+    end
     if self._mouse_moving then
         self._mouse_moving = nil
         self:_follow_settled()
@@ -920,6 +949,7 @@ end
 function ViewerApp:_end_quick_drag(ges)
     if ges and ges.ges == "swipe" then
         self._mouse_moving = nil
+        self._hybrid_pan = nil
         self:_follow_settled()
         if self._drag_active then self:_end_pointer_action("swipe end") end
     end
@@ -1316,6 +1346,7 @@ function ViewerApp:_end_pointer_action(reason)
     self:_cancel_hold(reason)
     self._last_touch_tap = nil
     self._mouse_moving = nil
+    self._hybrid_pan = nil
     self:_follow_settled()
     if self._drag_active or self._hold_active then
         -- (a long press still waiting has nothing down)
@@ -1331,11 +1362,12 @@ function ViewerApp:_end_pointer_action(reason)
     self:_pointer_action_changed()
 end
 
---- The profile's pointer mode: "touch" (a tap clicks where it lands) or "mouse" (a drag moves a
---- cursor).
+--- The profile's pointer mode: "touch" (a tap clicks where it lands), "mouse" (a drag moves a
+--- cursor) or "hybrid" (a drag scrolls, a tap clicks at the finger).
 function ViewerApp:get_pointer_mode()
     local profile = self.session:get_profile()
-    return profile and profile.pointer_mode == "mouse" and "mouse" or "touch"
+    local mode = profile and profile.pointer_mode
+    return (mode == "mouse" or mode == "hybrid") and mode or "touch"
 end
 
 --- Switches the pointer mode and stores it in the profile.
@@ -1350,11 +1382,14 @@ function ViewerApp:set_pointer_mode(mode)
     end
 end
 
---- Flips Touch <-> Mouse; the toolbar's Mode button follows. A tooltip says which one it is now.
+local NEXT_MODE = { touch = "mouse", mouse = "hybrid", hybrid = "touch" }
+
+--- Cycles Touch -> Mouse -> Hybrid; the toolbar's Mode button follows. A tooltip says which one it is now.
 function ViewerApp:toggle_pointer_mode()
-    self:set_pointer_mode(self:get_pointer_mode() == "mouse" and "touch" or "mouse")
+    self:set_pointer_mode(NEXT_MODE[self:get_pointer_mode()])
     self:_toolbar_changed()
-    self:show_toast(self:get_pointer_mode() == "mouse" and _("Mouse mode") or _("Touch mode"))
+    local mode = self:get_pointer_mode()
+    self:show_toast(mode == "mouse" and _("Mouse mode") or mode == "hybrid" and _("Hybrid mode") or _("Touch mode"))
 end
 
 --- Shows the help page (the current pointer mode's gestures first), replacing one still up.
@@ -1649,19 +1684,21 @@ function ViewerApp:_wheel_position(pos)
 end
 
 --[[--
-Turns a drag's movement into wheel notches, one per tenth of the screen height
-(vertically) or width (sideways); what is left over waits for the next move. The content follows
-the fingers, as on a phone: fingers going up scroll down, going left scroll right.
+Turns a drag's movement into wheel notches, one per `step` (default a tenth) of the screen height
+(vertically) or width (sideways); what is left over waits in `g` (the drag's state: `wx`, `wy`,
+default the two-finger drag's) for the next move. The content follows the fingers, as on a phone:
+fingers going up scroll down, going left scroll right.
 ]]
-function ViewerApp:_scroll_by_drag(dx, dy, pos)
-    local g = self._two_finger_pan
+function ViewerApp:_scroll_by_drag(dx, dy, pos, step, g)
+    g = g or self._two_finger_pan
+    step = step or 1 / 10
     g.wx, g.wy = g.wx + dx, g.wy + dy
     -- whole steps, towards zero (the epsilon keeps an exact multiple of a fractional step whole)
     local function steps(v, step)
         local n = math.floor(math.abs(v) / step + 1e-9)
         return v < 0 and -n or n
     end
-    local step_y, step_x = Screen:getHeight() / 10, Screen:getWidth() / 10
+    local step_y, step_x = Screen:getHeight() * step, Screen:getWidth() * step
     local ny, nx = steps(g.wy, step_y), steps(g.wx, step_x)
     if ny == 0 and nx == 0 then return end
     g.wy, g.wx = g.wy - ny * step_y, g.wx - nx * step_x

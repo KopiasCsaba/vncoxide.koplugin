@@ -40,7 +40,14 @@ Help.ROWS = {
     },
 }
 
-Help.TITLES = { touch = _("Touch mode"), mouse = _("Mouse mode") }
+Help.ROWS.hybrid = rows_for{
+    { _("Tap"), _("Left click at the finger") },
+    { _("Long press"), _("Lift without moving: right click at the finger; move: drag with the left button") },
+    { _("Drag"), _("Scroll the remote (mouse wheel at the finger); the content follows the finger") },
+    { _("Two-finger long press"), _("Left click between the fingers, then the keyboard") },
+}
+
+Help.TITLES = { touch = _("Touch mode"), mouse = _("Mouse mode"), hybrid = _("Hybrid mode") }
 
 local function gestures(mode)
     local lines = { Help.TITLES[mode] }
@@ -48,14 +55,17 @@ local function gestures(mode)
     return table.concat(lines, "\n")
 end
 
---- The whole page as plain text; `mode` ("touch" or "mouse") is described first.
+--- The whole page as plain text; `mode` ("touch", "mouse" or "hybrid") is described first.
 function Help.text(mode)
-    mode = mode == "mouse" and "mouse" or "touch"
-    local other = mode == "mouse" and "touch" or "mouse"
+    if not Help.ROWS[mode] then mode = "touch" end
     local sections = {
         _("GESTURES"),
         gestures(mode),
-        gestures(other),
+    }
+    for _i, other in ipairs{ "touch", "mouse", "hybrid" } do
+        if other ~= mode then sections[#sections + 1] = gestures(other) end
+    end
+    local rest = {
         _("A swipe down in the top zone of the screen shows or hides the toolbar. Taps on the toolbar never reach the remote."),
 
         _("TOOLBAR"),
@@ -64,7 +74,7 @@ function Help.text(mode)
             "  " .. _("Collapse: fold the toolbar into a small round button, which returns to its anchored spot (where you last dragged the toolbar or the button); tap that to open the toolbar again."),
             "  " .. _("Display: the display panel (below)."),
             "  " .. _("Zoom: cycle fit, 1:1 (one remote pixel per screen pixel) and your own view (the last one you made by pinching or panning); without one, just fit and 1:1. The icon shows the current state."),
-            "  " .. _("Mode: switch between Touch and Mouse mode."),
+            "  " .. _("Mode: switch between Touch, Mouse and Hybrid mode."),
             "  " .. _("Keyboard: show or hide the on-screen keyboard with the key strip; closes the Send keys panel if it is open. The viewer opens with the keyboard as you last left it. Drag the button out onto the picture to click a field and type: where you let go it left-clicks (Mouse mode: the pointer moves there first) and shows the keyboard; let go anywhere else and nothing happens."),
             "  " .. _("Rotate: turn the screen a quarter turn clockwise; the viewer remembers the orientation."),
             "  " .. _("Scroll up / down: mouse-wheel notches (hidden by default)."),
@@ -103,6 +113,7 @@ function Help.text(mode)
         _("RECONNECT"),
         "  " .. _("When the connection drops, a box appears over the last picture and the viewer retries by itself, waiting 2, 4, 8, 15 and then 30 seconds between attempts, without giving up. Retry now tries at once; Close (or Back) drops the connection. If you reopen the viewer on a connection that dropped while you were away, the box waits for Retry. Nothing you did before the drop (held buttons, armed modifiers) is carried over."),
     }
+    for _i, section in ipairs(rest) do sections[#sections + 1] = section end
     return table.concat(sections, "\n\n")
 end
 

@@ -344,14 +344,16 @@ ButtonDialog anchored under the bar, rebuilt in place after each choice so the c
 live state; only a rotation closes it. Quality presets (Settings.QUALITY_PRESETS) are sets of the
 four picture fields of the profile; Settings.preset_of() names the match or "custom".
 
-Pointer modes (Settings: profile field pointer_mode, "touch" or "mouse"; pointer_speed in the global
+Pointer modes (Settings: profile field pointer_mode, "touch", "mouse" or "hybrid"; pointer_speed in the global
 settings, Settings.POINTER_SPEEDS 0.75 / 1.25 / 2.0). Touch mode acts at the finger. In Mouse mode the
 viewer keeps a remote pointer position, a one-finger drag moves it by the drag delta taken through
 the zoom and times the speed, and a tap clicks at the pointer at once (two quick taps are a double click; the armed modifiers go
 with the click). A drag only moves the pointer, even right after a tap. A long press waits for its
 lift (a right click at the pointer) or its first move (a left-button drag from the pointer, moved
 through _mouse_move). Everything is built from GestureDetector's tap / hold / pan, no raw touch
-handling. Touch mode clicks are as immediate.
+handling. Touch mode clicks are as immediate. Hybrid mode ("hybrid"): taps and long presses as in Touch mode,
+a one-finger drag never presses a button but scrolls (_hybrid_pan_move -> _scroll_by_drag, one wheel notch
+per HYBRID_SCROLL_STEP = 1/30 of the screen height or width, at the finger; content follows the finger).
 
 Physical keyboard. Printable characters arrive as TextInput events, not as key events, and
 SDL 3 only delivers those after Device:startTextInput() ("Text input events are not received by

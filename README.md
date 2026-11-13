@@ -14,8 +14,8 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
 - The remote framebuffer on the whole screen, scaled to fit, with zoom presets (fit screen, fit
   with the on-screen keyboard, or a fixed 25 % … 400 %) and panning for the rest. Zoomed in, only
   the visible part (plus a margin) is requested from the server, so less is sent and decoded.
-- Two ways to drive the pointer: **Touch** mode acts where your finger is, **Mouse** mode moves a
-  pointer like a laptop trackpad. Two-finger gestures pan and zoom the view.
+- Three ways to drive the pointer: **Touch** mode acts where your finger is, **Mouse** mode moves a
+  pointer like a laptop trackpad, **Hybrid** mode scrolls with a one-finger drag and clicks where you tap. Two-finger gestures pan and zoom the view.
 - A small toolbar over the picture for the things you reach for most (including one zoom button
   that cycles fit, 1:1 and your own pinch/pan view, the frontlight and a contrast control for the
   remote picture), with the rest one tap away behind **⋯**. Drag it anywhere, fold it into a small
@@ -84,8 +84,8 @@ after a rotation) for the next time. Its buttons, left to right:
    screen size changes) the button just switches between fit and 1:1. The icon shows the current
    state: a page (fit), **1:1**, or a magnifier (your view; also shown for another Display panel
    zoom preset, from which the button goes to fit). Fit follows the keyboard like a two-finger tap.
-4. **Mode** (☝ Touch / 🖱 Mouse) switches the pointer mode and shows a short tooltip (*Touch mode*
-   or *Mouse mode*). The **Help** page is under **⋯**. The mode is remembered per connection.
+4. **Mode** (☝ Touch / 🖱 Mouse / ↕ Hybrid) cycles the pointer mode and shows a short tooltip (*Touch mode*,
+   *Mouse mode* or *Hybrid mode*). The **Help** page is under **⋯**. The mode is remembered per connection.
 5. **⌨ Keyboard** shows or hides the on-screen keyboard together with the key strip (and closes
    the **Send keys** panel if it is open; the panel opens from the strip's keys icon).
    The viewer opens with the keyboard as you last left it (shown or hidden; the strip's **✕** and the
@@ -120,16 +120,16 @@ when the toolbar is collapsed (Keyboard by default): collapsing leaves a short b
 the expand button and those; with none ticked it is the round button alone. Only buttons the toolbar shows can stay (the others
 are greyed out there).
 
-| Gesture | Touch mode | Mouse mode |
-| --- | --- | --- |
-| tap | left click at the finger | left click at the pointer, sent at once (two quick taps: a double click) |
-| long press | lift without moving: right click at the finger (sent at the lift); moving: drag with the left button held | the same, at the pointer (the finger's movement moves it) |
-| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed); zoomed in, the view follows it once it passes the middle of the screen, until the view reaches the remote screen's edge (as in RustDesk); a pointer off the screen first jumps to its middle |
-| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same |
-| pinch / spread | zoom the view, keeping the point between the fingers fixed | same |
-| two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same |
-| two-finger long press | on lifting: left click at the fingers' midpoint, then the on-screen keyboard (as the **⌨** drag does); moving the fingers first cancels it | left click at the pointer, then the keyboard |
-| device page buttons | Page Up/Down or wheel (setting) | same |
+| Gesture | Touch mode | Mouse mode | Hybrid mode |
+| --- | --- | --- | --- |
+| tap | left click at the finger | left click at the pointer, sent at once (two quick taps: a double click) | left click at the finger |
+| long press | lift without moving: right click at the finger (sent at the lift); moving: drag with the left button held | the same, at the pointer (the finger's movement moves it) | the same as Touch mode |
+| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed); zoomed in, the view follows it once it passes the middle of the screen, until the view reaches the remote screen's edge (as in RustDesk); a pointer off the screen first jumps to its middle | scroll the remote with mouse-wheel notches at the finger (a thirtieth of the screen per notch; sideways scrolls horizontally); the content follows the finger |
+| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same | same |
+| pinch / spread | zoom the view, keeping the point between the fingers fixed | same | same |
+| two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same | same |
+| two-finger long press | on lifting: left click at the fingers' midpoint, then the on-screen keyboard (as the **⌨** drag does); moving the fingers first cancels it | left click at the pointer, then the keyboard | as Touch mode |
+| device page buttons | Page Up/Down or wheel (setting) | same | same |
 
 In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
 x11vnc, `-cursor arrow`); the viewer draws none. A second finger joining a long press drag lets go of its button. Touch and Mouse mode clicks are sent at once. A long press acts
@@ -345,7 +345,7 @@ return {
                 ["enable_tight"] = false,  -- opt-in Tight encoding, see below
                 ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
                 ["compress_level"] = false,   -- Tight compression level 0..9 (false = server default)
-                ["pointer_mode"] = "touch" }, -- "touch" or "mouse" (the toolbar's Mode button)
+                ["pointer_mode"] = "touch" }, -- "touch", "mouse" or "hybrid" (the toolbar's Mode button)
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)
