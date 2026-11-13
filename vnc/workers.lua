@@ -29,6 +29,7 @@ and stays at `Session.POLL_INTERVAL`.
 @module vnc.workers
 ]]
 
+local BB = require("ffi/blitbuffer")
 local ffi = require("ffi")
 local Renderer = require("vnc/renderer")
 local Session = require("vnc/session")
@@ -222,13 +223,20 @@ end
 
 -- Parses a `G` line into a view, or nil.
 local function parse_view(l)
-    local id, s, vx, vy, cw, ch, bt, di, mode, con, inv = l:match(
-        "^G (%d+) (%S+) (%S+) (%S+) (%d+) (%d+) (%d+) ([01]) (%a+) (%S+) ([01])$")
+    local id, s, vx, vy, cw, ch, bt, di, mode, con, inv, tail = l:match(
+        "^G (%d+) (%S+) (%S+) (%S+) (%d+) (%d+) (%d+) ([01]) (%a+) (%S+) ([01])(.*)$")
     if not id then return nil end
+    -- optional: the screen's buffer rotation and inversion, for a canvas in its physical layout
+    local srot, sinv = 0, 0
+    if tail ~= "" then
+        local r, i = tail:match("^ ([0-3]) ([01])$")
+        if not r then return nil end
+        srot, sinv = tonumber(r), tonumber(i)
+    end
     return {
         id = id, scale = tonumber(s), x = tonumber(vx), y = tonumber(vy),
         cw = tonumber(cw), ch = tonumber(ch), btype = tonumber(bt), dither = di == "1",
-        mode = mode, contrast = tonumber(con), invert = inv == "1",
+        mode = mode, contrast = tonumber(con), invert = inv == "1", srot = srot, sinv = sinv,
     }
 end
 
@@ -238,7 +246,12 @@ The scale worker's main function: `dfd` is the read end of the pipe from the dec
 ]]
 local function scale_main(ctx, dfd, plane, canvas_mem)
     if Workers._test_scale_stuck then Worker._stuck_forever() end
-    local renderer = Renderer.new{ canvas_mem = canvas_mem }
+    local shared_renderer = Renderer.new{ canvas_mem = canvas_mem }
+    -- A screen that is rotated or inverted gets the canvas in its physical layout: rendered
+    -- privately, then blitted (rotated, inverted) into the shared memory here, off the UI thread,
+    -- so the UI's paint is a straight copy.
+    local native_renderer = nil
+    local renderer, was_native = shared_renderer, false
     local dreader = Worker.Reader.new()
     local pfd = ffi.new("struct pollfd[2]")
     pfd[0].fd, pfd[0].events = ctx.read_fd, C.POLLIN
@@ -283,12 +296,29 @@ local function scale_main(ctx, dfd, plane, canvas_mem)
         if view and (new_view or all_stale or stale[1]) then
             if view.contrast ~= contrast or view.invert ~= invert then
                 contrast, invert = view.contrast, view.invert
-                renderer:set_tone(contrast, invert)
+                shared_renderer:set_tone(contrast, invert)
                 all_stale = true
+            end
+            local native = view.srot ~= 0 or view.sinv ~= 0
+            if native ~= was_native then
+                -- the shared memory holds the other layout now: whatever renders into it next
+                -- starts over
+                was_native, all_stale = native, true
+            end
+            if native then
+                native_renderer = native_renderer or Renderer.new()
+                if native_renderer._lut ~= shared_renderer._lut then native_renderer._lut = shared_renderer._lut end
+                renderer = native_renderer
+            else
+                renderer = shared_renderer
             end
             rview.x, rview.y, rview.scale = view.x, view.y, view.scale
             local ok, res = pcall(renderer.render, renderer, plane, rview, view.mode, view.cw, view.ch,
                 view.btype, view.dither, stale[1] and stale or nil, all_stale)
+            if ok and native then
+                ok, res = pcall(Workers._to_physical, canvas_mem, renderer:canvas(), view,
+                    (new_view or res == "full") and "full" or res)
+            end
             if not ok then
                 ctx.send("E render failed: " .. tostring(res):gsub("\n", " "))
                 break
@@ -302,7 +332,32 @@ local function scale_main(ctx, dfd, plane, canvas_mem)
             if stale[1] then stale = {} end
         end
     end
-    renderer:free()
+    shared_renderer:free()
+    if native_renderer then native_renderer:free() end
+end
+
+--[[--
+Copies the canvas rects `what` ("full" or a list of `{x, y, w, h}`) of `src` into the shared canvas
+memory in the screen's physical layout (`view.srot`, `view.sinv`). Returns `what`.
+]]
+function Workers._to_physical(canvas_mem, src, view, what)
+    if not what then return what end
+    local cw, ch = view.cw, view.ch
+    local pw, ph = cw, ch
+    if view.srot % 2 == 1 then pw, ph = ch, cw end
+    local bpp = ({ [BB.TYPE_BB8] = 1, [BB.TYPE_BBRGB24] = 3, [BB.TYPE_BBRGB32] = 4 })[view.btype]
+    assert(bpp and pw * ph * bpp <= canvas_mem.bytes, "the canvas does not fit the canvas memory")
+    local phys = SharedMem.bb(canvas_mem.ptr, pw, ph, view.btype)
+    phys:setRotation(view.srot)
+    -- (an inverted screen stores inverted values: the C blitter's invert blit, not the flag,
+    -- which would send the blit down the per-pixel Lua path)
+    local blit = view.sinv == 1 and phys.invertblitFrom or phys.blitFrom
+    if what == "full" then
+        blit(phys, src, 0, 0, 0, 0, cw, ch)
+    else
+        for _, d in ipairs(what) do blit(phys, src, d.x, d.y, d.x, d.y, d.w, d.h) end
+    end
+    return what
 end
 
 -- ------------------------------------------------------------------ UI side

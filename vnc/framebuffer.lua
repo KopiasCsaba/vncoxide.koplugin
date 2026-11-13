@@ -384,11 +384,16 @@ Each view id's canvas geometry (`"cw ch btype"`) is kept in `link.view_geoms`; t
 layout the shared canvas memory holds.
 --- @treturn string the geometry this paint needs
 ]]
-function Remote:_send_view(link, cw, ch, btype, dither)
+function Remote:_send_view(link, cw, ch, btype, dither, srot, sinv)
     local v = self:_render_view()
     local key = string.format("%.17g %.17g %.17g %d %d %d %d %s %.17g %d", v.scale, v.x, v.y, cw, ch,
         btype, dither and 1 or 0, self.scaling, self.contrast, self.invert and 1 or 0)
     local geom = string.format("%d %d %d", cw, ch, btype)
+    if srot ~= 0 or sinv ~= 0 then
+        -- the canvas in the screen's physical layout (see @{Remote:draw_to})
+        key = key .. string.format(" %d %d", srot, sinv)
+        geom = geom .. string.format(" %d %d", srot, sinv)
+    end
     if key ~= link.view_key then
         link.view_id = (link.view_id or 0) + 1
         link.view_key, link.view_cw, link.view_ch = key, cw, ch
@@ -436,7 +441,12 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
     if not CANVAS_TYPES[btype] then btype = BB.TYPE_BBRGB24 end
     local link = self.worker_link
     if link then
-        local geom = self:_send_view(link, cw, ch, btype, dither)
+        -- A rotated or inverted screen gets the canvas in its physical layout from the scale
+        -- worker (which does the rotating blit on its own core): the blit here is then a plain
+        -- copy of physical rows. Only for a destination of the canvas type itself.
+        local srot, sinv = 0, 0
+        if bb:getType() == btype and not Remote.NO_NATIVE then srot, sinv = bb:getRotation(), bb:getInverse() end
+        local geom = self:_send_view(link, cw, ch, btype, dither, srot, sinv)
         -- the in-process canvas buffer is out of date: should the workers stop, the next paint
         -- here recomputes all of it
         self._all_stale = true
@@ -452,12 +462,23 @@ function Remote:draw_to(bb, cx, cy, cw, ch, dither)
             end
             return true
         end
+        local t0 = Util.timing_enabled() and time.now()
+        local pw, ph = cw, ch
+        if srot % 2 == 1 then pw, ph = ch, cw end
         local cb = link.canvas_bb
-        if not (cb and cb:getWidth() == cw and cb:getHeight() == ch and cb:getType() == btype) then
-            cb = SharedMem.bb(link.canvas_mem.ptr, cw, ch, btype)
+        if not (cb and cb:getWidth() == pw and cb:getHeight() == ph and cb:getType() == btype) then
+            cb = SharedMem.bb(link.canvas_mem.ptr, pw, ph, btype)
             link.canvas_bb = cb
         end
-        bb:blitFrom(cb, cx, cy, 0, 0, cw, ch)
+        if srot ~= 0 or sinv ~= 0 then
+            -- unrotated, uninverted view of the destination's memory, and the canvas' physical rect
+            local px, py, ppw, pph = bb:getPhysicalRect(cx, cy, cw, ch)
+            local view = BB.new(bb.w, bb.h, btype, bb.data, bb.stride, bb.pixel_stride)
+            view:blitFrom(cb, px, py, 0, 0, ppw, pph)
+        else
+            bb:blitFrom(cb, cx, cy, 0, 0, cw, ch)
+        end
+        if t0 then self.last_blit_ms = time.to_ms(time.now() - t0) end
         self._canvas_painted = true
         return true
     end
