@@ -629,6 +629,7 @@ function ViewerApp:onCloseWidget()
     self:_drop_key_panel()
     self:_drop_key_strip()
     self:_end_pointer_action("close")
+    Keyboard.stop_repeat(self.vk, "viewer closed")
     UIManager:unschedule(self._release_watch_task)
     self._release_watched = nil
     self._watched_finger = nil
@@ -1452,34 +1453,7 @@ ViewerApp.FALSE_HOLD_RECHECK = 0.05
 --- How near (screen pixels) a contact must land to a false hold to continue it.
 function false_hold_radius() return Screen:scaleByDPI(50) end
 
---[[--
-The fingers GestureDetector has down now, as a list of `{ slot =, contact =, start = }`, `start`
-being where the finger came down in screen coordinates (nil when unknown); nil when GestureDetector
-does not tell (then callers keep the behaviour that does not depend on it).
-]]
-local function fingers_down()
-    local ok, res = pcall(function()
-        local gd = Device.input and Device.input.gesture_detector
-        local contacts = gd and gd.active_contacts
-        if type(contacts) ~= "table" then return nil end
-        local list = {}
-        for slot, contact in pairs(contacts) do
-            if type(contact) == "table" and contact.down == true then
-                local tev, start = contact.initial_tev, nil
-                if type(tev) == "table" and type(tev.x) == "number" and type(tev.y) == "number" then
-                    -- touch coordinates -> screen coordinates, the way a gesture's are translated
-                    local probe = { ges = "touch", pos = Geom:new{ x = tev.x, y = tev.y, w = 0, h = 0 } }
-                    if gd.adjustGesCoordinate then gd:adjustGesCoordinate(probe) end
-                    start = probe.pos
-                end
-                list[#list + 1] = { slot = slot, contact = contact, start = start }
-            end
-        end
-        return list
-    end)
-    if ok then return res end
-    return nil
-end
+local fingers_down = Util.fingers_down
 
 --- Whether a finger is down that came down within `radius` of `pos` (or whose start is unknown).
 function finger_down_near(pos, radius)
@@ -1647,16 +1621,7 @@ end
 
 --- Whether the finger `_watch_release` follows is still down: nil when GestureDetector does not tell.
 function ViewerApp:_watched_finger_down()
-    local f = self._watched_finger
-    if not f then return nil end
-    local ok, res = pcall(function()
-        local gd = Device.input and Device.input.gesture_detector
-        local contacts = gd and gd.active_contacts
-        if type(contacts) ~= "table" then return nil end
-        return contacts[f.slot] == f.contact and f.contact.down == true
-    end)
-    if ok then return res end
-    return nil
+    return Util.finger_still_down(self._watched_finger)
 end
 
 function ViewerApp:_release_watch_tick()
@@ -2648,6 +2613,7 @@ attempt of the running loop lands here too, and changes nothing.
 function ViewerApp:on_session_error(_err)
     if self.reconnect:is_running() then return end
     self:_end_pointer_action("session error")
+    Keyboard.stop_repeat(self.vk, "session error")
     local armed = self:_armed_source()
     if armed then armed:take_armed() end
     self:close_help(true)

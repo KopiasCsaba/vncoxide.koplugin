@@ -18,6 +18,9 @@ local Util = require("vnc/util")
 
 local Keyboard = {}
 
+--- Seconds between two Backspaces while the keyboard's Backspace key is held.
+Keyboard.REPEAT_INTERVAL = 0.1
+
 -- Saved G_reader_settings values while a keyboard created here is alive.
 local saved_layout = nil
 
@@ -67,7 +70,7 @@ function Keyboard.restore_layout()
 end
 
 --- Builds the inputbox stub the keyboard talks to. Each key goes to `send(keysym)`.
-local function make_stub(send, on_height_changed)
+local function make_stub(send, on_height_changed, on_backspace_hold)
     local stub = {
         parent = { onKeyboardHeightChanged = on_height_changed },
     }
@@ -81,7 +84,8 @@ local function make_stub(send, on_height_changed)
     end
     function stub:delChar() send(special.Backspace) end
     function stub:delWord() send(special.Backspace) end
-    function stub:delToStartOfLine() end -- no equivalent single RFB event
+    -- the Backspace key's hold_callback (the key ignores its own release after it): repeat instead
+    function stub:delToStartOfLine() on_backspace_hold() end
     function stub:leftChar() send(special.Left) end
     function stub:rightChar() send(special.Right) end
     function stub:goToStartOfLine() send(special.Home) end
@@ -120,6 +124,50 @@ local function close_key_popup_later(vk)
 end
 
 --[[--
+The Backspace key's hold fired: one Backspace now, then one every REPEAT_INTERVAL until the hold
+ends, like a PC key. Each one is a whole press (down and up), so nothing is ever left down on the
+remote; the plugin repeats, not the remote's own auto-repeat. The hold ends with the next gesture
+reaching the keyboard (the lift's hold_release first of all), with the keyboard closing, with
+@{Keyboard.stop_repeat} (the viewer closing, the connection dropping), or - when that lift went
+elsewhere - once GestureDetector no longer has the finger down.
+]]
+function Keyboard._start_repeat(vk, rep, send)
+    local UIManager = require("ui/uimanager")
+    UIManager:unschedule(rep.task)
+    -- the finger that held the key: the one down nearest to where the hold was
+    local best, best_d
+    for _i, f in ipairs(Util.fingers_down() or {}) do
+        local d = (rep.hold_pos and f.start) and rep.hold_pos:distance(f.start) or math.huge
+        if not best or d < best_d then best, best_d = f, d end
+    end
+    rep.finger = best and { slot = best.slot, contact = best.contact } or nil
+    rep.running = true
+    send(Keysyms.special.Backspace)
+    -- (sending may have ended it: a popup or the session going)
+    if rep.running then UIManager:scheduleIn(Keyboard.REPEAT_INTERVAL, rep.task) end
+end
+
+function Keyboard._repeat_tick(vk, rep, send)
+    if not rep.running then return end
+    if not vk.visible or Util.finger_still_down(rep.finger) == false then
+        Keyboard.stop_repeat(vk, vk.visible and "finger up, release lost" or "keyboard hidden")
+        return
+    end
+    send(Keysyms.special.Backspace)
+    if rep.running then require("ui/uimanager"):scheduleIn(Keyboard.REPEAT_INTERVAL, rep.task) end
+end
+
+--- Stops a held Backspace's repeat on keyboard `vk` (a no-op when none runs).
+function Keyboard.stop_repeat(vk, reason)
+    local rep = vk and vk.vnc_backspace_repeat
+    if not rep then return end
+    if rep.running then require("logger").dbg("vnc: Backspace repeat stops:", reason) end
+    rep.running = false
+    rep.finger = nil
+    require("ui/uimanager"):unschedule(rep.task)
+end
+
+--[[--
 Creates the on-screen keyboard.
 
 --- @tparam table session the @{vnc.session} to send key events to
@@ -139,13 +187,34 @@ function Keyboard.new(session, on_height_changed, press)
         deliver(keysym)
         close_key_popup_later(vk)
     end
-    local stub = make_stub(send, on_height_changed)
+    local rep = { finger = nil, hold_pos = nil, running = false }
+    local stub = make_stub(send, on_height_changed, function() Keyboard._start_repeat(vk, rep, send) end)
     pin_latin_layout()
     local ok
     ok, vk = pcall(VirtualKeyboard.new, VirtualKeyboard, { inputbox = stub })
     if not ok then
         Keyboard.restore_layout()
         error(vk)
+    end
+    vk.vnc_backspace_repeat = rep
+    rep.task = function() Keyboard._repeat_tick(vk, rep, send) end
+    -- what reaches the keyboard while the repeat runs: the gesture that ends the hold (KOReader
+    -- delivers the lift to the key as a hold_release, which the key then ignores) and the keyboard
+    -- going away
+    local handle = vk.handleEvent
+    vk.handleEvent = function(w, event)
+        if event.handler == "onGesture" then
+            local ges = event.args and event.args[1]
+            local kind = ges and ges.ges
+            if kind == "hold" then
+                rep.hold_pos = ges.pos
+            elseif rep.running and kind ~= "hold_pan" then
+                Keyboard.stop_repeat(vk, kind)
+            end
+        elseif event.handler == "onCloseWidget" then
+            Keyboard.stop_repeat(vk, "keyboard closed")
+        end
+        return handle(w, event)
     end
     return vk
 end

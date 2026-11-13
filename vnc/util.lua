@@ -310,4 +310,49 @@ function Util.keyboard_tap_interval(widget)
     return widget
 end
 
+--[[--
+The fingers GestureDetector has down now, as a list of `{ slot =, contact =, start = }`, `start`
+being where the finger came down in screen coordinates (nil when unknown); nil when GestureDetector
+does not tell (then callers keep the behaviour that does not depend on it).
+]]
+function Util.fingers_down()
+    local ok, res = pcall(function()
+        local Device = require("device")
+        local gd = Device.input and Device.input.gesture_detector
+        local contacts = gd and gd.active_contacts
+        if type(contacts) ~= "table" then return nil end
+        local list = {}
+        for slot, contact in pairs(contacts) do
+            if type(contact) == "table" and contact.down == true then
+                local tev, start = contact.initial_tev, nil
+                if type(tev) == "table" and type(tev.x) == "number" and type(tev.y) == "number" then
+                    -- touch coordinates -> screen coordinates, the way a gesture's are translated
+                    local probe = { ges = "touch", pos = require("ui/geometry"):new{ x = tev.x, y = tev.y, w = 0, h = 0 } }
+                    if gd.adjustGesCoordinate then gd:adjustGesCoordinate(probe) end
+                    start = probe.pos
+                end
+                list[#list + 1] = { slot = slot, contact = contact, start = start }
+            end
+        end
+        return list
+    end)
+    if ok then return res end
+    return nil
+end
+
+--- Whether `f` (a `{ slot =, contact = }` from @{Util.fingers_down}) is still down: false once it
+--- lifted or its slot holds a new contact, nil when `f` is nil or GestureDetector does not tell.
+function Util.finger_still_down(f)
+    if not f then return nil end
+    local ok, res = pcall(function()
+        local gd = require("device").input
+        gd = gd and gd.gesture_detector
+        local contacts = gd and gd.active_contacts
+        if type(contacts) ~= "table" then return nil end
+        return contacts[f.slot] == f.contact and f.contact.down == true
+    end)
+    if ok then return res end
+    return nil
+end
+
 return Util

@@ -5606,6 +5606,150 @@ local function finger_down(pos, slot)
     return function() gd.active_contacts[slot] = nil end
 end
 
+-- ---------------------------------------------------------------- held Backspace repeats
+
+--[[ The viewer with its keyboard up, its Backspace key (KOReader labels it U+E76D) found, and a wire
+log. Returns app, remote, the key's centre, the wire log and the repeat task. ]]
+local function backspace_setup(opts)
+    local app, remote = new_app(400, 300, opts)
+    if opts and opts.toolbar then tap_toolbar(app, "keyboard") else app:toggle_keyboard() end
+    UIManager:forceRePaint()
+    local key
+    for _, row in ipairs(app.vk.layout or {}) do
+        for _, k in ipairs(row) do
+            if k.label == "\238\157\173" then key = k end
+        end
+    end
+    assert_true(key ~= nil, "the keyboard has a Backspace key")
+    return app, remote, centre_of(key.dimen), wire_log(app)
+end
+
+--- The keyboard's repeat task (nil before it exists).
+local function repeat_task(app) return app.vk.vnc_backspace_repeat and app.vk.vnc_backspace_repeat.task end
+
+--- Every key that went down in `log` (a wire_log string) came up again, right after it.
+local function balanced(log)
+    local down = {}
+    for sign, k in log:gmatch("([+-])(0x%x+)") do
+        if sign == "+" then down[k] = (down[k] or 0) + 1 else down[k] = (down[k] or 0) - 1 end
+    end
+    for k, n in pairs(down) do if n ~= 0 then return false, k end end
+    return true
+end
+
+local BKSP = "+0xFF08,-0xFF08"
+
+-- The delay each repeat task was last scheduled with (the time a test step takes would blur a
+-- `scheduled_delay` reading).
+local repeat_delays = setmetatable({}, { __mode = "k" })
+do
+    local schedule_in = UIManager.scheduleIn
+    UIManager.scheduleIn = function(self_, seconds, action, ...)
+        repeat_delays[action] = seconds
+        return schedule_in(self_, seconds, action, ...)
+    end
+end
+
+--- Lets the repeat task fall due `n` times, checking it was scheduled 0.1 s ahead each time.
+local function repeat_ticks(app, n, what)
+    for i = 1, n do
+        local task = repeat_task(app)
+        local d = task and scheduled_delay(task) and repeat_delays[task]
+        assert_true(d == 0.1, what .. ": tick " .. i .. " due 0.1 s later, got " .. tostring(d))
+        run_scheduled(task)
+    end
+end
+
+check("held_backspace_repeats_until_the_lift", function()
+    local app, remote, pos, wire = backspace_setup()
+    local lift = finger_down(pos)
+    dispatch_gesture{ ges = "hold", pos = pos }
+    assert_true(wire() == BKSP, "the hold sends one Backspace at once")
+    repeat_ticks(app, 4, "held")
+    local got = wire()
+    assert_true(got == table.concat({ BKSP, BKSP, BKSP, BKSP }, ","), "one per tick, got " .. got)
+    -- the lift reaches the key: the repeat stops there, even before GestureDetector drops the finger
+    dispatch_gesture{ ges = "hold_release", pos = pos }
+    lift()
+    assert_true(scheduled_delay(repeat_task(app)) == nil, "nothing scheduled after the lift")
+    UIManager:_checkTasks()
+    assert_true(wire() == "", "and nothing sent after it")
+    -- the next tap types one again (the key's release state was left clean)
+    dispatch_gesture{ ges = "tap", pos = pos }
+    assert_true(wire() == BKSP, "a tap afterwards is one Backspace")
+    close_viewer(app, remote)
+end)
+
+check("tapped_backspace_sends_exactly_one", function()
+    local app, remote, pos, wire = backspace_setup()
+    dispatch_gesture{ ges = "tap", pos = pos }
+    local got = wire()
+    assert_true(got == BKSP, "one down and up, got " .. got)
+    assert_true(repeat_task(app) == nil or scheduled_delay(repeat_task(app)) == nil, "no repeat scheduled")
+    UIManager:_checkTasks()
+    assert_true(wire() == "", "nothing later")
+    close_viewer(app, remote)
+end)
+
+check("held_backspace_stops_when_the_finger_is_gone_without_a_release", function()
+    local app, remote, pos, wire = backspace_setup()
+    local lift = finger_down(pos)
+    dispatch_gesture{ ges = "hold", pos = pos }
+    repeat_ticks(app, 2, "held")
+    assert_true(wire() == table.concat({ BKSP, BKSP, BKSP }, ","), "1 + 2")
+    lift() -- the hold_release never comes
+    run_scheduled(repeat_task(app))
+    assert_true(wire() == "", "the next tick sends nothing")
+    assert_true(scheduled_delay(repeat_task(app)) == nil, "and does not come again")
+    -- a release that arrives late after all types nothing
+    dispatch_gesture{ ges = "hold_release", pos = pos }
+    assert_true(wire() == "", "a late release types nothing")
+    close_viewer(app, remote)
+end)
+
+check("held_backspace_stops_with_the_keyboard_viewer_or_session", function()
+    local cases = {
+        { "keyboard hidden", function(app) app:toggle_keyboard() end },
+        { "viewer closed", function(app, remote) close_viewer(app, remote) return true end },
+        { "session dropped", function(app) app:on_session_error("gone") end },
+    }
+    for _, case in ipairs(cases) do
+        local app, remote, pos, wire = backspace_setup()
+        local lift = finger_down(pos)
+        dispatch_gesture{ ges = "hold", pos = pos }
+        repeat_ticks(app, 1, case[1])
+        local task = repeat_task(app)
+        local closed = case[2](app, remote)
+        local got = wire()
+        assert_true(got == BKSP .. "," .. BKSP, case[1] .. ": nothing more sent, got " .. got)
+        assert_true(scheduled_delay(task) == nil, case[1] .. ": the repeat is unscheduled")
+        task() -- even if it ran anyway
+        UIManager:_checkTasks()
+        assert_true(wire() == "", case[1] .. ": no stray key afterwards")
+        lift()
+        if not closed then close_viewer(app, remote) end
+    end
+end)
+
+check("held_backspace_leaves_nothing_down_and_takes_armed_modifiers_once", function()
+    local app, remote, pos, wire = backspace_setup{ toolbar = true }
+    app:set_toolbar_visible(false)
+    touch(app.key_strip, "mod:Ctrl")
+    wire()
+    local lift = finger_down(pos)
+    dispatch_gesture{ ges = "hold", pos = pos }
+    repeat_ticks(app, 2, "armed")
+    dispatch_gesture{ ges = "hold_release", pos = pos }
+    lift()
+    local got = wire()
+    assert_true(got == "+0xFFE3," .. BKSP .. ",-0xFFE3," .. BKSP .. "," .. BKSP,
+        "Ctrl goes with the first Backspace only, like a tap, got " .. got)
+    local ok, k = balanced(got)
+    assert_true(ok, "every key down came up, not " .. tostring(k))
+    assert_true(app.key_strip:modifier_state("Ctrl") == nil, "Ctrl disarmed")
+    close_viewer(app, remote)
+end)
+
 --[[ The one long-press rule (Touch and Mouse mode): a confirmed long press sends nothing yet. Lifted
 without moving it is a right click, sent at the lift - Touch mode where the finger pressed, Mouse
 mode at the pointer; moved (a hold_pan) it is a left-button drag - Touch mode from the finger,

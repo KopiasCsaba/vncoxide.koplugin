@@ -76,6 +76,7 @@ function Help.text(mode)
             "  " .. _("Zoom: cycle fit, 1:1 (one remote pixel per screen pixel) and your own view (the last one you made by pinching or panning); without one, just fit and 1:1. The icon shows the current state."),
             "  " .. _("Mode: switch between Touch, Mouse and Hybrid mode."),
             "  " .. _("Keyboard: show or hide the on-screen keyboard with the key strip; closes the Send keys panel if it is open. The viewer opens with the keyboard as you last left it. Drag the button out onto the picture to click a field and type: where you let go it left-clicks (Mouse mode: the pointer moves there first) and shows the keyboard; let go anywhere else and nothing happens."),
+            "  " .. _("On-screen keyboard: hold Backspace to repeat it (one Backspace, then ten a second until you lift)."),
             "  " .. _("Rotate: turn the screen a quarter turn clockwise; the viewer remembers the orientation."),
             "  " .. _("Scroll up / down: mouse-wheel notches (hidden by default)."),
             "  " .. _("Brightness: KOReader's frontlight dialog; only on devices with a frontlight."),

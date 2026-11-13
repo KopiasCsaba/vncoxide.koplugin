@@ -230,6 +230,9 @@ leaves and follows it. Otherwise, a view that is too large for the space above t
 the whole screen (pan with two fingers to reach what the keys cover), while a view that fits in
 that space is moved into it instead of hiding behind the keys. The keyboard gets out of the way
 whenever a menu or dialog is open, and comes back when it closes.
+Hold **Backspace** on it to repeat it like a PC key: one Backspace at once, then one every 0.1 s
+until you lift (each a full press and release, so nothing stays down on the remote; a modifier armed
+on the key strip goes with the first one only, as with a tap).
 
 **Losing the connection.** When the connection drops while the viewer is open, the last picture
 stays and a box appears over it: *Connection lost — reconnecting…* with the attempt number and the
