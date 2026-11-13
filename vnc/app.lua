@@ -469,6 +469,7 @@ end
 function ViewerApp:paintTo(bb, x, y)
     local timing = Util.timing_enabled()
     local t0 = timing and time.now()
+    local c0 = timing and os.clock()
     local size = self:getSize()
     self.canvas = self:_layout(x, y)
     if self.remote then
@@ -498,15 +499,21 @@ function ViewerApp:paintTo(bb, x, y)
     else
         bb:paintRect(x, y, size.w, size.h, BB.COLOR_BLACK)
     end
+    local t_tb = timing and time.now()
     if self.toolbar_visible then self.toolbar:paintTo(bb, x, y) end
     if timing then
         local r = self.remote
+        local t1 = time.now()
         local line = string.format("vnc-timing: paint ms=%.1f canvas=%dx%d scale=%s mode=%s recomputed_px=%d",
-            time.to_ms(time.now() - t0), c.w, c.h, r and tostring(r.scale) or "-",
+            time.to_ms(t1 - t0), c.w, c.h, r and tostring(r.scale) or "-",
             r and r.scaling or "-", r and r.last_recomputed_px or 0)
         if r and r.last_blit_ms then
             line = line .. string.format(" blit_ms=%.1f", r.last_blit_ms)
         end
+        -- what decides the blit's path: the screen buffer's rotation and inversion, the C blitter
+        line = line .. string.format(" toolbar_ms=%.1f cpu_ms=%.1f bb=%d/rot%d/inv%d cbb=%s",
+            time.to_ms(t1 - t_tb), (os.clock() - c0) * 1000, bb:getType(), bb:getRotation(), bb:getInverse(),
+            tostring(BB:getUseCBB()))
         logger.dbg(line)
     end
 end
