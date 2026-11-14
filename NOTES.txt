@@ -371,7 +371,7 @@ lift (a right click at the pointer) or its first move (a left-button drag from t
 through _mouse_move). Everything is built from GestureDetector's tap / hold / pan, no raw touch
 handling. Touch mode clicks are as immediate. Hybrid mode ("hybrid"): taps and long presses as in Touch mode,
 a one-finger drag never presses a button but scrolls (_hybrid_pan_move -> _scroll_by_drag, at where the drag
-began). The step is in remote pixels: one wheel notch per hybrid_notch_px (a profile field, default 100,
+began). The step is in remote pixels: one wheel notch per hybrid_notch_px (a profile field, default 240,
 10..1000, the viewer menu's "Hybrid scroll distance") of finger movement divided by the zoom
 (Remote:get_scale()), so the content follows the finger at any zoom; what one notch really scrolls is
 the remote OS's / application's choice (desktop browsers: about 3 lines, some 50-120 px), hence the

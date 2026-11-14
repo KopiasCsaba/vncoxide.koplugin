@@ -90,10 +90,10 @@ Settings.TOOLBAR_POS = { x = 0.5, y = 0 }
 Hybrid mode's scroll distance: how many remote pixels one wheel notch scrolls the remote content.
 The plugin cannot know it (the remote OS and application decide), so it is a per-connection
 setting; the drag that makes one notch is this many pixels times the zoom, so the content follows
-the finger at any zoom. The default, 100: desktop browsers typically scroll about 3 lines, some
-50 to 120 pixels, per notch; tune it on the device (the viewer menu's "Hybrid scroll distance").
+the finger at any zoom. The default, 240, was measured on the device against a desktop browser (other
+remotes differ: tune it in the viewer menu's "Hybrid scroll distance").
 ]]
-Settings.HYBRID_NOTCH_DEFAULT = 100
+Settings.HYBRID_NOTCH_DEFAULT = 240
 Settings.HYBRID_NOTCH_MIN, Settings.HYBRID_NOTCH_MAX = 10, 1000
 --- The viewer menu's presets (remote pixels per notch).
 Settings.HYBRID_NOTCH_PRESETS = { 40, 60, 100, 150, 240 }

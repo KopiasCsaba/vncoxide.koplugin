@@ -195,10 +195,10 @@ just dropped (a long press tells why), the connection list (**Connections…**, 
 **Refresh** (asks for a full picture and flashes the screen), **Page
 buttons send** (Page Up/Down keys or Mouse wheel),
 **Hybrid scroll distance** (per connection, applies at once: how many remote pixels one wheel notch
-scrolls the remote, 40, 60, 100 (default), 150 or 240 px, or **Custom…** from 10 to 1000; a Hybrid
+scrolls the remote, 40, 60, 100, 150 or 240 (default) px, or **Custom…** from 10 to 1000; a Hybrid
 drag sends one notch per that distance times the zoom, so the content keeps up with the finger at
-any zoom. The remote OS and application decide the real distance - desktop browsers scroll about
-3 lines, some 50 to 120 px, per notch - so tune it on the device: if the content moves further than
+any zoom. The remote OS and application decide the real distance (240 was measured against a desktop
+browser; other remotes differ) - so tune it on the device: if the content moves further than
 your finger, pick a larger value; if less, a smaller one),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
@@ -357,7 +357,7 @@ return {
                 ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
                 ["compress_level"] = false,   -- Tight compression level 0..9 (false = server default)
                 ["pointer_mode"] = "touch",   -- "touch", "mouse" or "hybrid" (the toolbar's Mode button)
-                ["hybrid_notch_px"] = 100 },  -- Hybrid mode: remote pixels one wheel notch scrolls (10..1000)
+                ["hybrid_notch_px"] = 240 },  -- Hybrid mode: remote pixels one wheel notch scrolls (10..1000)
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)

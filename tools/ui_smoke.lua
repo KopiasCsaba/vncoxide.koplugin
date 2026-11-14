@@ -7700,7 +7700,7 @@ local function notch(app) return app:hybrid_notch_px() * app.remote:get_scale() 
 check("hybrid_drag_scrolls", function()
     local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
     assert_true(app.HYBRID_SCROLL_STEP == nil, "no screen-fraction step any more")
-    assert_true(app:hybrid_notch_px() == 100, "the default: 100 remote pixels per notch")
+    assert_true(app:hybrid_notch_px() == 240, "the default: 240 remote pixels per notch")
     app:set_hybrid_notch_px(60) -- (3 notches at 200% stay on the screen)
     app:zoom_to(2)
     local vx, vy = remote.view_x, remote.view_y
@@ -7732,6 +7732,7 @@ end)
 
 check("hybrid_notch_follows_the_zoom", function()
     local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
+    app:set_hybrid_notch_px(100) -- (2N sideways at 200% stays on the screen)
     local N = app:hybrid_notch_px()
     local s = Geom:new{ x = 300, y = 500, w = 0, h = 0 }
     local function pan(rx, ry)
@@ -7781,12 +7782,12 @@ check("hybrid_notch_px_is_cleaned_and_kept_per_profile", function()
     local path = data_dir .. "/ui_smoke_hybrid_notch.lua"; os.remove(path)
     local s = Settings.open(path)
     s:save_profile{ name = "d", host = "h", port = 1 }
-    assert_true(s:get_profile("d").hybrid_notch_px == 100, "default 100, got " .. tostring(s:get_profile("d").hybrid_notch_px))
+    assert_true(s:get_profile("d").hybrid_notch_px == 240, "default 240, got " .. tostring(s:get_profile("d").hybrid_notch_px))
     s:save_profile{ name = "k", host = "h", port = 1, hybrid_notch_px = 240 }
     assert_true(s:get_profile("k").hybrid_notch_px == 240)
     for i, bad in ipairs({ 9, 1001, -5, 0 / 0, "60", true }) do
         s:save_profile{ name = "b" .. i, host = "h", port = 1, hybrid_notch_px = bad }
-        assert_true(s:get_profile("b" .. i).hybrid_notch_px == 100, "junk cleans to 100: " .. tostring(bad))
+        assert_true(s:get_profile("b" .. i).hybrid_notch_px == 240, "junk cleans to 240: " .. tostring(bad))
     end
     for _, ok in ipairs({ 10, 1000 }) do
         s:save_profile{ name = "e" .. ok, host = "h", port = 1, hybrid_notch_px = ok }
@@ -7799,7 +7800,7 @@ check("hybrid_notch_px_is_cleaned_and_kept_per_profile", function()
     assert_true(again:get_profile("k").hybrid_notch_px == 240, "round-trips through the file")
     again.data.profiles[1].hybrid_notch_px = 5000
     again:normalise()
-    assert_true(again.data.profiles[1].hybrid_notch_px == 100, "a hand-edited value out of range normalises to 100")
+    assert_true(again.data.profiles[1].hybrid_notch_px == 240, "a hand-edited value out of range normalises to 240")
     os.remove(path)
 end)
 
@@ -7812,19 +7813,19 @@ check("hybrid_scroll_distance_menu", function()
         local entry = find_item(app.menu.item_table, "Hybrid scroll distance")
         assert_true(entry.help_text and entry.help_text:find("larger", 1, true) and entry.help_text:find("smaller", 1, true),
             "the help says which way to go")
-        assert_true(entry.mandatory == "100 px", "shows the current value, got " .. tostring(entry.mandatory))
+        assert_true(entry.mandatory == "240 px", "shows the current value, got " .. tostring(entry.mandatory))
         local sub = entry.sub_item_table
         local labels = {}
         for _, it in ipairs(sub) do labels[#labels + 1] = it.text end
         assert_true(table.concat(labels, "|") == "40 px|60 px|100 px|150 px|240 px|Custom…",
             "presets and Custom…, got " .. table.concat(labels, "|"))
-        assert_true(find_item(sub, "100 px").mandatory == "✓" and find_item(sub, "40 px").mandatory == nil, "the current one is ticked")
+        assert_true(find_item(sub, "240 px").mandatory == "✓" and find_item(sub, "40 px").mandatory == nil, "the current one is ticked")
         find_item(sub, "150 px").callback()
         assert_true(app:hybrid_notch_px() == 150, "a preset applies at once")
         local u = sent.profile_updates[#sent.profile_updates]
         assert_true(u and u.name == "test" and u.fields.hybrid_notch_px == 150, "and is stored on the profile")
         assert_true(entry.mandatory == "150 px" and find_item(sub, "150 px").mandatory == "✓"
-            and find_item(sub, "100 px").mandatory == nil, "the menu follows")
+            and find_item(sub, "240 px").mandatory == nil, "the menu follows")
         -- Custom…: a number input
         UIManager.show = function(mgr, widget, ...) shown = widget; return real_show(mgr, widget, ...) end
         find_item(sub, "Custom…").callback()
