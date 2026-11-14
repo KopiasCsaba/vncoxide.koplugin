@@ -178,7 +178,8 @@ function Keyboard._repeat_tick(vk, rep, send)
             return
         end
     end
-    send(Keysyms.special.Backspace)
+    -- (a repeat: it does not hold the screen updates the way typing does)
+    send(Keysyms.special.Backspace, true)
     if rep.running then require("ui/uimanager"):scheduleIn(Keyboard.REPEAT_INTERVAL, rep.task) end
 end
 
@@ -218,19 +219,19 @@ Creates the on-screen keyboard.
 
 --- @tparam table session the @{vnc.session} to send key events to
 --- @tparam function on_height_changed called when the keyboard height changes
---- @tparam[opt] function press called with the keysym of each key instead of sending its down and
---- up to the session directly
+--- @tparam[opt] function press called with the keysym of each key (and true for a held
+--- Backspace's repeats) instead of sending its down and up to the session directly
 --- @treturn table a ready-to-show VirtualKeyboard (`UIManager:show(vk)`)
 ]]
 function Keyboard.new(session, on_height_changed, press)
     local VirtualKeyboard = require("ui/widget/virtualkeyboard")
     local vk
-    local deliver = press or function(keysym)
-        session:send_key(keysym, true)
-        session:send_key(keysym, false)
+    local deliver = press or function(keysym, is_repeat)
+        session:send_key(keysym, true, is_repeat)
+        session:send_key(keysym, false, is_repeat)
     end
-    local function send(keysym)
-        deliver(keysym)
+    local function send(keysym, is_repeat)
+        deliver(keysym, is_repeat)
         close_key_popup_later(vk)
     end
     local rep = { finger = nil, hold_pos = nil, running = false }

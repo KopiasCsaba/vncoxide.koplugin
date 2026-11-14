@@ -76,7 +76,7 @@ function ViewerApp:init()
     self._keyboard_sync_pending = false
     self._keyboard_watch_pending = false
     self.vk = Keyboard.new(self.session, function() self:on_keyboard_height_changed() end,
-        function(keysym) self:send_osk_key(keysym) end)
+        function(keysym, is_repeat) self:send_osk_key(keysym, is_repeat) end)
     self:_keep_drag_ends_from(self.vk)
     self._drag_active = nil
     self._last_pinch_factor = nil
@@ -737,9 +737,9 @@ end
 
 --- Sends a key. A drag or long press of ours still pending (its release was eaten by the
 --- on-screen keyboard or the menu) ends first, so its button and modifiers do not stay down.
-function ViewerApp:send_key(keysym, down)
+function ViewerApp:send_key(keysym, down, is_repeat)
     self:_end_stale_pointer_action()
-    self.session:send_key(keysym, down)
+    self.session:send_key(keysym, down, is_repeat)
 end
 
 --- Whether a one-finger action of ours is under way: a drag, a long press (also one still
@@ -2068,15 +2068,16 @@ function ViewerApp:onTextInput(text)
 end
 
 --- A key from the on-screen keyboard: with the modifiers armed on the key strip around it (and
---- them disarmed), like a strip key; else just its down and up.
-function ViewerApp:send_osk_key(keysym)
+--- them disarmed), like a strip key; else just its down and up (`is_repeat`: a held key's repeat,
+--- see @{vnc.session.Session:send_key}).
+function ViewerApp:send_osk_key(keysym, is_repeat)
     local strip = self.key_strip
     if strip and strip:has_armed() then
         strip:send_key(Keysyms.name_for_keysym(keysym) or "", keysym)
         return
     end
-    self:send_key(keysym, true)
-    self:send_key(keysym, false)
+    self:send_key(keysym, true, is_repeat)
+    self:send_key(keysym, false, is_repeat)
 end
 
 --- Asks the server for the whole picture again and repaints the viewer in full.

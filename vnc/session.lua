@@ -1240,14 +1240,16 @@ end
 
 --- @tparam number keysym X11 keysym
 --- @tparam boolean down
-function Session:send_key(keysym, down)
+--- @tparam[opt] boolean is_repeat a held key's repeat (the on-screen Backspace's): not typing, it
+--- does not hold the update request (`note_input`), so the screen follows the hold
+function Session:send_key(keysym, down, is_repeat)
     if self.workers then
         -- (the decode worker notes the input and waits out the modifier gap itself)
-        self.workers.decode:send(string.format("K %d %d", keysym, down and 1 or 0))
+        self.workers.decode:send(string.format("K %d %d%s", keysym, down and 1 or 0, is_repeat and " r" or ""))
         return
     end
     if not self:_live() then return end
-    if down then self:note_input() end
+    if down and not is_repeat then self:note_input() end
     self:_input_gap(keysym, down)
     self.proto:send_key(keysym, down)
     self:_flush_now()

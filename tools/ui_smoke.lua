@@ -5871,6 +5871,32 @@ check("keyboard_false_hold_on_backspace_is_one_backspace", function()
     close_viewer(app, remote)
 end)
 
+--[[ A held Backspace kept the screen still for the whole hold (device log: one screen update in a
+6 s hold, then all of it at the lift): every repeat counted as typing, which holds the update
+request for Session.INPUT_QUIET (0.3 s), longer than the repeat interval. The repeats go out marked
+as repeats (the session's third argument), which do not hold it; the first Backspace does, like a
+tap. ]]
+check("held_backspace_repeats_are_sent_as_repeats", function()
+    local app, remote, pos = backspace_setup()
+    local log = {}
+    local send_key = app.session.send_key
+    app.session.send_key = function(s_, keysym, down, is_repeat)
+        log[#log + 1] = string.format("%s0x%X%s", down and "+" or "-", keysym, is_repeat and "r" or "")
+        return send_key(s_, keysym, down, is_repeat)
+    end
+    local lift = finger_down(pos)
+    dispatch_gesture{ ges = "hold", pos = pos }
+    confirm_key_hold(app)
+    repeat_ticks(app, 2, "held")
+    dispatch_gesture{ ges = "hold_release", pos = pos }
+    lift()
+    dispatch_gesture{ ges = "tap", pos = pos }
+    local got = table.concat(log, ",")
+    assert_true(got == "+0xFF08,-0xFF08,+0xFF08r,-0xFF08r,+0xFF08r,-0xFF08r,+0xFF08,-0xFF08",
+        "the first press and a tap plain, the ticks repeats, got " .. got)
+    close_viewer(app, remote)
+end)
+
 --[[ The one long-press rule (Touch and Mouse mode): a confirmed long press sends nothing yet. Lifted
 without moving it is a right click, sent at the lift - Touch mode where the finger pressed, Mouse
 mode at the pointer; moved (a hold_pan) it is a left-button drag - Touch mode from the finger,

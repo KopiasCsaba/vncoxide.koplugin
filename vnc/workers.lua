@@ -6,7 +6,7 @@ inherits the socket and the protocol state and decodes updates into the remote p
 **scale worker**, which scales the visible part of the plane into a canvas. Plane and canvas are
 `MAP_SHARED` memory (@{vnc.sharedmem}); the pipes carry only small messages:
 
-- UI → decode: `K <keysym> <0|1>`, `P <x> <y> <mask>`, `V <x> <y> <w> <h>` | `V -`, `F`,
+- UI → decode: `K <keysym> <0|1>[ r]` (r: a held key's repeat), `P <x> <y> <mask>`, `V <x> <y> <w> <h>` | `V -`, `F`,
   `N <what>`, `T <len>` + bytes (cut text), `S` (detached: stop reading), `R` (attached:
   resume), `I <n>` (ping: answer at once, also while detached), `Q`.
 - decode → UI: `H <pid>`, `Z <w> <h>` (desktop resized; exits after), `B` (bell), `E <message>`
@@ -99,8 +99,8 @@ local function apply_commands(ctx, session, lines, reading)
         local l = lines[i]
         local op = l:sub(1, 1)
         if op == "K" then
-            local k, d = l:match("^K (%d+) ([01])$")
-            if k then session:send_key(tonumber(k), d == "1") end
+            local k, d, r = l:match("^K (%d+) ([01])( ?r?)$")
+            if k then session:send_key(tonumber(k), d == "1", r == " r") end
         elseif op == "P" then
             local x, y, m = l:match("^P (%-?%d+) (%-?%d+) (%d+)$")
             if x then session:send_pointer(tonumber(x), tonumber(y), tonumber(m)) end
@@ -136,6 +136,7 @@ local function apply_commands(ctx, session, lines, reading)
     end
     return reading
 end
+Workers._apply_commands = apply_commands -- (tests)
 
 --[[--
 The decode worker's main function: `session` is this process' copy of the UI's session, `dfd`

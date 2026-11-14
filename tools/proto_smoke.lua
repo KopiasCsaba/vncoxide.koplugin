@@ -2047,6 +2047,47 @@ local function main()
         return true
     end)
 
+    -- A held key's repeats (the on-screen Backspace's) are not typing: they do not hold the update
+    -- request, or the screen would stay still for the whole hold and jump at the lift. The first
+    -- press holds it as usual. Worker mode: the UI marks them "r" on the K line, the decode worker
+    -- passes that on.
+    check("session_key_repeats_do_not_hold_the_update_request", function()
+        local Session = load_session()
+        local real_now, clock = Session._now, 100
+        Session._now = function() return clock end
+        local s = Session.new{ profile = { host = "h", port = 1, name = "rep" },
+            network_mgr = { isWifiOn = function() return true end } }
+        s._phase = nil
+        s.proto = { send_key = function() end, send_pointer = function() end }
+        local ok, err = pcall(function()
+            s:send_key(0xFF08, true, true); s:send_key(0xFF08, false, true)
+            assert(not s:_holding(), "a repeat alone must not hold the request")
+            s:send_key(0xFF08, true); s:send_key(0xFF08, false)
+            assert(s:_holding(), "a press holds it")
+            clock = clock + Session.INPUT_QUIET + 0.01
+            s:send_key(0xFF08, true, true); s:send_key(0xFF08, false, true)
+            assert(not s:_holding(), "repeats after the press do not extend the hold")
+            -- worker mode: the UI's lines and the decode worker's reading of them
+            local lines = {}
+            local ui = Session.new{ profile = { host = "h", port = 1, name = "rep2" },
+                network_mgr = { isWifiOn = function() return true end } }
+            ui.workers = { decode = { send = function(_, l) lines[#lines + 1] = l end } }
+            ui:send_key(0xFF08, true, true); ui:send_key(0xFF08, false, true); ui:send_key(0x61, true)
+            ui.workers = nil
+            assert(table.concat(lines, "|") == "K 65288 1 r|K 65288 0 r|K 97 1",
+                "the K lines, got " .. table.concat(lines, "|"))
+            local got = {}
+            local fake = { state = "connected",
+                send_key = function(_, k, d, r) got[#got + 1] = string.format("%d %s %s", k, tostring(d), tostring(r)) end }
+            require("vnc/workers")._apply_commands({}, fake, lines, true)
+            assert(table.concat(got, "|") == "65288 true true|65288 false true|97 true false",
+                "the decode worker's calls, got " .. table.concat(got, "|"))
+        end)
+        Session._now = real_now
+        if not ok then return nil, tostring(err) end
+        return true
+    end)
+
     -- 13/14. Input priority: while keys are being pressed the incremental update request that
     -- normally follows every FramebufferUpdate is held, so the server does not start the next
     -- redraw behind a burst of key presses. Exactly one request goes out once input has been

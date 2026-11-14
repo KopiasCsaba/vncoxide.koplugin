@@ -122,6 +122,9 @@ themselves are always sent at once; what is held is the incremental FramebufferU
 normally follows each FramebufferUpdate. Once input has been quiet for Session.INPUT_QUIET (0.3 s)
 the next poll sends exactly one request. Only key events and page-button wheel scrolls count as
 input; taps and drags do not, and explicit full-update requests (attach, resize) are never held.
+Neither do the repeats of a held on-screen Backspace (Session:send_key's is_repeat, "K ... r" to
+the decode worker): one every 0.1 s renewed the 0.3 s hold, so the screen stayed still for the
+whole hold and jumped at the lift; only its first Backspace holds the request, like a tap.
 
 Protocol concurrency. protocol.lua runs as a coroutine whose transport yields ("need", n) when it
 wants bytes; Session is the driver and resumes it once exactly n bytes have arrived. Everything is
@@ -197,7 +200,7 @@ logic, the e-ink refresh and the paint. Plane and canvas are MAP_SHARED memory (
 the pipes carry only small messages, so a big update no longer blocks the UI thread for its decode
 and scale. vnc/renderer.lua holds the scaling the in-process path shares. Messages (the table in
 vnc/workers.lua's header is the source):
-  UI -> decode    K <keysym> <0|1>; P <x> <y> <mask>; V <x> <y> <w> <h> | V -; F; N <what>;
+  UI -> decode    K <keysym> <0|1>[ r] (r: a repeat); P <x> <y> <mask>; V <x> <y> <w> <h> | V -; F; N <what>;
                   T <len> + bytes (cut text); S (detached: stop reading); R (attached: resume);
                   I <n> (ping; answered at once, also while detached); Q
   decode -> UI    H <pid>; Z <w> <h> (desktop resized; the worker exits after); B (bell);
