@@ -147,7 +147,9 @@ Creates a session. Nothing is opened until @{Session:connect} is called.
 ---   `tm = { px, bytes, cpu, rects, t0 }`: the summed rect area (remote pixels), the bytes read,
 ---   the decode CPU seconds, the rect count and the `Session._now()` it started at
 --- @tparam[opt] boolean opts.worker_processes after the handshake, decode and scale in worker
----   processes (@{vnc.workers}); the plane is then in shared memory
+---   processes (@{vnc.workers}); the plane is then in shared memory. Internal, not a setting:
+---   every viewer connection passes true (VNC:connect_profile); off (in-process) for the
+---   picture benchmark's sessions and for tests of the in-process internals
 ]]
 function Session.new(opts)
     assert(type(opts) == "table" and type(opts.profile) == "table", "Session.new: opts.profile is required")

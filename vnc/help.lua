@@ -106,7 +106,6 @@ function Help.text(mode)
             "  " .. _("Keep screen on: stop the device from going to sleep or dimming the light while the viewer is open."),
             "  " .. _("Match orientation to the remote screen: after connecting (or when the remote switches between landscape and portrait), turn this screen the same way, to the side you last picked by hand. A rotation you pick yourself stays until the remote's orientation changes."),
             "  " .. _("Toolbar buttons\u{2026}: On the toolbar\u{2026} (which buttons are shown; the scroll up / down pair is one row) and Also when collapsed\u{2026} (which stay next to the round button)."),
-            "  " .. _("Decode in background processes: decode and scale the picture in separate processes, so the viewer stays responsive while a big update arrives (faster on multi-core readers). Applies to the next new connection, after Close; a connection left with Leave, or one that dropped and reconnects, keeps its mode until it is closed."),
             "  " .. _("Help: this page."),
             "  " .. _("Leave (keep connection): close the viewer, the connection stays up."),
         }, "\n"),

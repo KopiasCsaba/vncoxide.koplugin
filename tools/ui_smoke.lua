@@ -2032,59 +2032,61 @@ check("keep_screen_on_pauses_auto_suspend_while_shown", function()
     share.pause_auto_suspend = saved
 end)
 
-check("worker_switch_round_trips", function()
+--- Worker processes are the viewer's architecture, not a setting: no menu switch, and a
+--- `worker_processes` key left in a settings file by an older version loads cleanly and is dropped.
+check("worker_processes_is_no_setting", function()
+    assert_true(require("vnc/settings").DEFAULTS.worker_processes == nil, "no default")
     local app, remote = new_app()
-    local s = app.plugin.settings.data.settings
-    assert_true(require("vnc/settings").DEFAULTS.worker_processes == false, "off by default")
-    s.worker_processes = false
-    local flushed = 0
-    app.plugin.settings.flush = function() flushed = flushed + 1 end
     local menu = app:open_menu()
-    local function entry() return find_item(menu.item_table, "Decode in background processes") end
-    assert_true(entry().mandatory == "-", "off shows -")
-    assert_true(entry().help_text == "Faster on multi-core readers. Applies to the next new connection (after Close); a connection left with Leave or one that dropped keeps its mode until it is closed.", "help text")
-    menu:onMenuSelect(entry()); UIManager:_checkTasks()
-    assert_true(s.worker_processes == true and flushed == 1, "toggled on and flushed")
-    assert_true(entry().mandatory == "✓", "on shows the check")
-    menu:onMenuSelect(entry()); UIManager:_checkTasks()
-    assert_true(s.worker_processes == false and flushed == 2, "toggled off and flushed")
-    assert_true(entry().mandatory == "-", "off shows - again")
+    for _, item in ipairs(menu.item_table) do
+        assert_true(item.text ~= "Decode in background processes", "no menu switch")
+    end
     app:close_menu()
-    -- a hand-edited junk value is cleaned to the default
-    local path = data_dir .. "/ui_smoke_workers.lua"; os.remove(path)
-    local f = io.open(path, "w"); f:write('return { settings = { worker_processes = "yes" } }'); f:close()
-    local st = require("vnc/settings").open(path)
-    assert_true(st.data.settings.worker_processes == false, "junk cleans to false")
-    os.remove(path)
     remote:free()
+    local path = data_dir .. "/ui_smoke_workers.lua"; os.remove(path)
+    for _, stored in ipairs{ "true", "false", '"yes"' } do
+        local f = io.open(path, "w")
+        f:write('return { settings = { worker_processes = ' .. stored .. ', scaling = "sharp" } }')
+        f:close()
+        local st = require("vnc/settings").open(path)
+        assert_true(st.data.settings.worker_processes == nil, "a stored " .. stored .. " is dropped")
+        assert_true(st:get_setting("worker_processes") == nil, "and not read back")
+        assert_true(st.data.settings.scaling == "sharp", "the rest of the file loads")
+        st:flush()
+        local g = io.open(path, "r"); local text = g:read("*a"); g:close()
+        assert_true(not text:find("worker_processes", 1, true), "and the next save leaves it out")
+    end
+    os.remove(path)
 end)
 
-check("new_connections_use_the_setting", function()
+--- Every viewer connection asks for the workers; the picture benchmark's sessions stay in-process.
+check("viewer_connections_start_workers_benchmark_sessions_do_not", function()
     local Session = require("vnc/session")
     local real_new = Session.new
     local seen = {}
-    Session.new = function(opts) seen[#seen + 1] = opts.worker_processes; return real_new(opts) end
-    local saved = store:get_setting("worker_processes")
+    -- (false, not nil, for an absent flag: the list keeps its length)
+    Session.new = function(opts) seen[#seen + 1] = opts.worker_processes or false; return real_new(opts) end
     plugin.sessions = {}
     plugin.app = nil
+    local bench
     local ok, err = pcall(function()
-        for _, on in ipairs{ true, false } do
-            store:set_setting("worker_processes", on)
-            plugin.sessions = {}
-            plugin:connect_profile("dead")
-            settle_connects(plugin)
-            assert_true(seen[#seen] == on, "connect_profile passes the setting " .. tostring(on) .. ": " .. tostring(seen[#seen]))
-        end
+        plugin:connect_profile("dead")
+        settle_connects(plugin)
+        assert_true(#seen == 1 and seen[1] == true, "connect_profile asks for workers: " .. tostring(seen[1]))
+        local Benchmark = require("vnc/benchmark")
+        bench = Benchmark.new{
+            profile = store:get_profile("dead"),
+            combinations = { Benchmark.COMBINATIONS[1] },
+            canvas = { w = 16, h = 16, view_mode = "fit", scaling = "smooth" },
+        }
+        bench:start()
+        assert_true(#seen == 2 and seen[2] == false, "the benchmark's session is in-process: " .. tostring(seen[2]))
     end)
+    if bench then pcall(bench.cancel, bench) end
     Session.new = real_new
-    store:set_setting("worker_processes", saved)
-    store:flush()
     plugin.sessions = {}
     UIManager._window_stack = {}
     if not ok then error(err, 0) end
-    -- the benchmark builds its own sessions and never asks for workers
-    local f = assert(io.open(plugin_dir .. "/vnc/benchmark.lua")); local src = f:read("*a"); f:close()
-    assert_true(not src:find("worker_processes", 1, true), "benchmark sessions stay in-process")
 end)
 
 check("menu_stays_open_on_toggles_and_closes_with_its_close_button", function()
@@ -3936,7 +3938,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text end
     assert_true(table.concat(order, "|") == "Connections…|Refresh|"
-        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Decode in background processes|Toolbar buttons…|Help|Leave (keep connection)",
+        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Toolbar buttons…|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app.send_text == nil and app.send_combo == nil, "send_text and send_combo are gone with their rows")
@@ -8739,7 +8741,7 @@ end)
 -- ---------------------------------------------------------------- worker processes
 
 --[[--
-The real viewer over a real session with `worker_processes`, against tools/mock_vnc_server.py:
+The real viewer over a real session (connect_profile, as the user connects), against tools/mock_vnc_server.py:
 the session forks the decode and scale workers after the handshake, the viewer only blits their
 canvas. `fn(env)` gets `env.app`, `env.session`, `env.log` (the mock's log), `env.pump(cond,
 timeout)` (runs UIManager's tasks and paints until `cond()`), `env.shows(pattern)` (nil when the
@@ -8794,7 +8796,7 @@ local function with_worker_viewer(name, fn, pattern)
             assert_true(socket.gettime() < deadline, "the mock server did not start")
             socket.sleep(0.02)
         end
-        Session.new = function(o) o.worker_processes = true; return real_new(o) end
+        -- (no hook on Session.new: connect_profile itself asks for the workers)
         Workers.start = function(s)
             local link, e = real_start(s)
             if link then links[#links + 1] = link end
