@@ -183,12 +183,10 @@ re-reads the setting (Session:_apply_scaling) whenever it creates or resizes its
 VNC:save_profile still points the live session at the saved profile, and connect_profile at the
 reloaded one.
 
-Worker processes. Setting `worker_processes` (default off; menu "Decode in background processes";
-read by VNC:connect_profile when it creates a session, so it applies to the next new connection:
-a session kept with "Leave", or one that dropped and reconnects, keeps its mode until it is closed;
-reused sessions are deliberately not re-plumbed).
-With it on, Session.new{ worker_processes = true } makes the session, after the RFB handshake,
-fork (vnc/worker.lua) two processes (vnc/workers.lua): a decode worker, which inherits the socket
+Worker processes. The viewer's architecture: there is no setting and no menu switch. Every
+session VNC:connect_profile creates is Session.new{ worker_processes = true } (an internal
+parameter; only the picture benchmark and tests that inspect the in-process internals leave it
+off), which makes the session, after the RFB handshake (also after a reconnect), fork (vnc/worker.lua) two processes (vnc/workers.lua): a decode worker, which inherits the socket
 and the protocol state and decodes updates into the remote plane, and a scale worker, which scales
 the visible part of the plane into the canvas. The UI process keeps the keyboard/pointer/view
 logic, the e-ink refresh and the paint. Plane and canvas are MAP_SHARED memory (vnc/sharedmem.lua);
@@ -226,7 +224,8 @@ decode worker sends Z and exits before decoding anything of the new size; the UI
 (a fresh handshake and fresh workers). A DesktopSize of the plane's own size is no resize: the
 decode worker handles it as in-process (the plane stays, a full update is requested, the view area
 the UI sent is kept) and sends no Z. If the workers cannot start before the decode worker is
-forked, the session carries on in-process; a failure after that fork stops both workers and fails
+forked (fork or memory failure), the session carries on in-process and logs it ("worker
+processes not started, decoding in-process"); a failure after that fork stops both workers and fails
 the connection (Workers.start's third result; a worker may hold the socket, so the protocol state
 cannot be trusted). Watchdogs (Link:poll): commands queued for the decode worker that do not move
 for Workers.DECODE_STALL (2 s), or no C at all for Workers.SCALE_STALL (10 s; a full 1264x1680 render
@@ -246,8 +245,12 @@ A scale worker EOF in the tick that read the decode pipe before its Z re-reads t
 once (resize, not crash). The UI polls every Workers.UI_POLL (10 ms) while a message arrived in
 the last Workers.ACTIVE_FOR (0.5 s) or a G is unanswered, else every Session.POLL_INTERVAL; the
 timing trace's poll gap is measured against the interval the last tick scheduled. The UI's pipe
-ends are FD_CLOEXEC. What stays in-process: the picture benchmark (vnc/benchmark.lua creates its own
-sessions without the flag; a test asserts it) and the plugin's own VNC server (vnc/server.lua).
+ends are FD_CLOEXEC. What stays in-process: the fallback above when the workers cannot start; the
+viewer's drawing while a session has no link (Remote:draw_to scales the plane itself, e.g. in the
+resize reconnect window between the decode worker's Z and the new workers); the session and
+decoder code itself, which the decode worker runs after the fork; the picture benchmark
+(vnc/benchmark.lua creates its own sessions without the flag, so it measures one process's
+decode and draw; a test asserts it); and the plugin's own VNC server (vnc/server.lua).
 
 Picture benchmark. vnc/benchmark.lua measures combinations (see its header); the UI is
 Dialogs.picture_benchmark, behind "Find fastest picture settings" in the per-connection dialog:

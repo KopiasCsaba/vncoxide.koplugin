@@ -28,6 +28,9 @@ TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understan
 - Connection profiles (name, host, port, password) you can add, edit and delete from KOReader.
 - One connection can be flagged to connect by itself at KOReader's start (and to appear as
   **VNC auto connect** in KOReader's **Start with** menu).
+- The picture is decoded and scaled in two background processes, so the viewer stays responsive
+  while a big update arrives (and a multi-core reader uses its cores). If they cannot start, the
+  connection does that work itself.
 - Wi-Fi is turned on when a connection needs it.
 - A dropped connection is retried by itself, with Wi-Fi kept on meanwhile.
 - **Leave** the viewer and the connection survives; only **Disconnect** closes the session (and
@@ -193,7 +196,6 @@ just dropped (a long press tells why), the connection list (**Connections…**, 
 buttons send** (Page Up/Down keys or Mouse wheel),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
-**Decode in background processes** (default off: on a multi-core reader the picture is decoded and scaled in separate processes, so the interface stays responsive while a big update arrives; applies to the next new connection, after **Close**: a connection left with **Leave** or one that dropped and reconnects keeps its mode until it is closed; the connection falls back to the normal way if the processes cannot start),
 **Toolbar buttons…** (above), **Help** and **Leave (keep connection)**. Rows that switch something
 on or off show ✓ or - and keep the menu open; anything else closes it.
 
@@ -401,7 +403,7 @@ A `vnc-timing: paint` line also gives the toolbar's share (`toolbar_ms`), the CP
 paint (`cpu_ms`; well below `ms` means the time went elsewhere, e.g. waiting), the screen buffer
 as `bb=<type>/rot<rotation>/inv<0|1>` (a rotated or inverted one, such as night mode, makes
 KOReader's blit slower) and whether KOReader's C blitter is on (`cbb=true|false`); `blit_ms`
-(dithered paints, and every paint with background processes) is the canvas blit itself.
+(every paint while the background processes run, otherwise dithered paints) is the canvas blit itself.
 
 ## Server compatibility
 
