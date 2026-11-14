@@ -127,7 +127,7 @@ are greyed out there).
 | --- | --- | --- | --- |
 | tap | left click at the finger (two quick taps: a double click) | left click at the pointer, sent at once (two quick taps: a double click) | left click at the finger (two quick taps: a double click) |
 | long press | lift without moving: right click at the finger (sent at the lift); moving: drag with the left button held | the same, at the pointer (the finger's movement moves it) | the same as Touch mode |
-| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed); zoomed in, the view follows it once it passes the middle of the screen, until the view reaches the remote screen's edge (as in RustDesk); a pointer off the screen first jumps to its middle | scroll the remote with mouse-wheel notches where the drag began (a thirtieth of the screen per notch; sideways scrolls horizontally); the content follows the finger |
+| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed); zoomed in, the view follows it once it passes the middle of the screen, until the view reaches the remote screen's edge (as in RustDesk); a pointer off the screen first jumps to its middle | scroll the remote with mouse-wheel notches where the drag began (sideways scrolls horizontally); the content follows the finger at any zoom: one notch per **Hybrid scroll distance** remote pixels dragged (see below) |
 | two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same | same |
 | pinch / spread | zoom the view, keeping the point between the fingers fixed | same | same |
 | two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same | same |
@@ -194,6 +194,12 @@ connected, *name · connection lost* after a drop). Then **Reconnect to …** wh
 just dropped (a long press tells why), the connection list (**Connections…**, to switch or add one),
 **Refresh** (asks for a full picture and flashes the screen), **Page
 buttons send** (Page Up/Down keys or Mouse wheel),
+**Hybrid scroll distance** (per connection, applies at once: how many remote pixels one wheel notch
+scrolls the remote, 40, 60, 100 (default), 150 or 240 px, or **Custom…** from 10 to 1000; a Hybrid
+drag sends one notch per that distance times the zoom, so the content keeps up with the finger at
+any zoom. The remote OS and application decide the real distance - desktop browsers scroll about
+3 lines, some 50 to 120 px, per notch - so tune it on the device: if the content moves further than
+your finger, pick a larger value; if less, a smaller one),
 **Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
 **Match orientation to the remote screen** (default on, see above),
 **Toolbar buttons…** (above), **Help** and **Leave (keep connection)**. Rows that switch something
@@ -350,7 +356,8 @@ return {
                 ["enable_tight"] = false,  -- opt-in Tight encoding, see below
                 ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
                 ["compress_level"] = false,   -- Tight compression level 0..9 (false = server default)
-                ["pointer_mode"] = "touch" }, -- "touch", "mouse" or "hybrid" (the toolbar's Mode button)
+                ["pointer_mode"] = "touch",   -- "touch", "mouse" or "hybrid" (the toolbar's Mode button)
+                ["hybrid_notch_px"] = 100 },  -- Hybrid mode: remote pixels one wheel notch scrolls (10..1000)
     },
     ["settings"] = {
         ["orientation"] = 0,               -- default screen orientation (0 = upright)

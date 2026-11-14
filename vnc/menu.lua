@@ -15,11 +15,13 @@ local Device = require("device")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InfoMessage = require("ui/widget/infomessage")
+local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 local time = require("ui/time")
 
 local Dialogs = require("vnc/dialogs")
+local Settings = require("vnc/settings")
 local Toolbar = require("vnc/toolbar")
 
 local MenuBuilder = {}
@@ -220,6 +222,69 @@ function MenuBuilder.open(app)
     }, function(item)
         item.mandatory = settings.page_buttons == "wheel" and _("Mouse wheel") or _("Page Up/Down keys")
     end)
+
+    -- ---- Hybrid mode: how far one wheel notch scrolls the remote (per connection, applies at once)
+    if profile then
+        local function is_preset(px)
+            for _i, p in ipairs(Settings.HYBRID_NOTCH_PRESETS) do
+                if p == px then return true end
+            end
+            return false
+        end
+        local function px_label(px) return T(_("%1 px"), px) end
+        local notch_rows = {}
+        for _i, px in ipairs(Settings.HYBRID_NOTCH_PRESETS) do
+            notch_rows[#notch_rows + 1] = stays_open({
+                text = px_label(px),
+                callback = function() app:set_hybrid_notch_px(px) end,
+            }, function(item) item.mandatory = app:hybrid_notch_px() == px and "✓" or nil end)
+        end
+        local function edit_custom()
+            local dialog
+            dialog = InputDialog:new{
+                title = _("Hybrid scroll distance"),
+                description = T(_("Remote pixels one wheel notch scrolls (%1 to %2)."),
+                    Settings.HYBRID_NOTCH_MIN, Settings.HYBRID_NOTCH_MAX),
+                input = tostring(app:hybrid_notch_px()),
+                input_type = "number",
+                buttons = { {
+                    {
+                        text = _("Cancel"),
+                        id = "close",
+                        callback = function() UIManager:close(dialog) end,
+                    },
+                    {
+                        text = _("OK"),
+                        is_enter_default = true,
+                        callback = function()
+                            local px = tonumber(dialog:getInputValue())
+                            UIManager:close(dialog)
+                            if px and px >= Settings.HYBRID_NOTCH_MIN and px <= Settings.HYBRID_NOTCH_MAX then
+                                app:set_hybrid_notch_px(px)
+                                refresh_all()
+                            else
+                                UIManager:show(InfoMessage:new{
+                                    text = T(_("Enter a number from %1 to %2."), Settings.HYBRID_NOTCH_MIN, Settings.HYBRID_NOTCH_MAX),
+                                    timeout = 3,
+                                })
+                            end
+                        end,
+                    },
+                } },
+            }
+            UIManager:show(dialog)
+            dialog:onShowKeyboard()
+        end
+        notch_rows[#notch_rows + 1] = stays_open({
+            text = _("Custom…"),
+            callback = edit_custom,
+        }, function(item) item.mandatory = not is_preset(app:hybrid_notch_px()) and "✓" or nil end)
+        item_table[#item_table + 1] = stays_open({
+            text = _("Hybrid scroll distance"),
+            help_text = _("How far the remote scrolls per wheel notch in Hybrid mode, in remote pixels. If the content moves further than your finger, pick a larger value; if less, a smaller one."),
+            sub_item_table = notch_rows,
+        }, function(item) item.mandatory = px_label(app:hybrid_notch_px()) end)
+    end
 
     -- ---- keep the device awake while the viewer is up
     item_table[#item_table + 1] = stays_open({

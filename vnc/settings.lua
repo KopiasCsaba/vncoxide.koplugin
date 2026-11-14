@@ -25,6 +25,7 @@ Settings.__index = Settings
 Settings.PROFILE_FIELDS = {
     "name", "host", "port", "password", "autoconnect",
     "pointer_mode",                  -- how the screen drives the pointer: "touch", "mouse" or "hybrid"
+    "hybrid_notch_px",               -- Hybrid mode: remote pixels one wheel notch scrolls (@{Settings.hybrid_notch_px})
     -- Picture: read once per connection, so a change applies on the next one (see NOTES.txt,
     -- "Pixel format").
     "color_depth",                   -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
@@ -84,6 +85,27 @@ Settings.TOOLBAR_PINNED = { keyboard = true }
 
 --- Where the toolbar sits by default (see `toolbar_pos`).
 Settings.TOOLBAR_POS = { x = 0.5, y = 0 }
+
+--[[--
+Hybrid mode's scroll distance: how many remote pixels one wheel notch scrolls the remote content.
+The plugin cannot know it (the remote OS and application decide), so it is a per-connection
+setting; the drag that makes one notch is this many pixels times the zoom, so the content follows
+the finger at any zoom. The default, 100: desktop browsers typically scroll about 3 lines, some
+50 to 120 pixels, per notch; tune it on the device (the viewer menu's "Hybrid scroll distance").
+]]
+Settings.HYBRID_NOTCH_DEFAULT = 100
+Settings.HYBRID_NOTCH_MIN, Settings.HYBRID_NOTCH_MAX = 10, 1000
+--- The viewer menu's presets (remote pixels per notch).
+Settings.HYBRID_NOTCH_PRESETS = { 40, 60, 100, 150, 240 }
+
+--- A stored Hybrid scroll distance cleaned: a number in HYBRID_NOTCH_MIN..MAX (rounded to whole
+--- pixels), anything else the default.
+function Settings.hybrid_notch_px(value)
+    if type(value) == "number" and value >= Settings.HYBRID_NOTCH_MIN and value <= Settings.HYBRID_NOTCH_MAX then
+        return math.floor(value + 0.5)
+    end
+    return Settings.HYBRID_NOTCH_DEFAULT
+end
 
 --- Mouse-mode cursor speed presets: remote pixels moved per screen pixel dragged.
 Settings.POINTER_SPEEDS = { slow = 0.75, normal = 1.25, fast = 2.0 }
@@ -372,6 +394,7 @@ local function clean_profile(p, tight_default)
         -- Only the boolean true counts: a hand-edited `"yes"` (or anything else) means "no".
         autoconnect = p.autoconnect == true,
         pointer_mode = (p.pointer_mode == "mouse" or p.pointer_mode == "hybrid") and p.pointer_mode or "touch",
+        hybrid_notch_px = Settings.hybrid_notch_px(p.hybrid_notch_px),
         color_depth = (p.color_depth == 16 or p.color_depth == 8) and p.color_depth or 24,
         enable_tight = (p.enable_tight == nil and tight_default or p.enable_tight) == true,
         jpeg_quality = level_or_off(p.jpeg_quality),
@@ -563,6 +586,7 @@ function Settings:save_profile(p, existing_name)
         name = name, host = p.host, port = port, password = p.password,
         autoconnect = given_or_kept("autoconnect"),
         pointer_mode = given_or_kept("pointer_mode"),
+        hybrid_notch_px = given_or_kept("hybrid_notch_px"),
         color_depth = given_or_kept("color_depth"),
         enable_tight = given_or_kept("enable_tight"),
         jpeg_quality = given_or_kept("jpeg_quality"),

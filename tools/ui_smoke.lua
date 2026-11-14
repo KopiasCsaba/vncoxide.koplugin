@@ -3938,7 +3938,7 @@ check("more_menu_order_and_actions", function()
     local order = {}
     for _, item in ipairs(menu.item_table) do order[#order + 1] = item.text end
     assert_true(table.concat(order, "|") == "Connections…|Refresh|"
-        .. "Page buttons send|Keep screen on|Match orientation to the remote screen|Toolbar buttons…|Help|Leave (keep connection)",
+        .. "Page buttons send|Hybrid scroll distance|Keep screen on|Match orientation to the remote screen|Toolbar buttons…|Help|Leave (keep connection)",
         table.concat(order, "|"))
     app:close_menu()
     assert_true(app.send_text == nil and app.send_combo == nil, "send_text and send_combo are gone with their rows")
@@ -7685,37 +7685,6 @@ check("mode_button_cycles_three_modes", function()
     close_viewer(app, remote)
 end)
 
-check("hybrid_drag_scrolls", function()
-    local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
-    assert_true(math.abs(app.HYBRID_SCROLL_STEP - 1 / 15) < 1e-12, "the step is 1/15")
-    app:zoom_to(2)
-    local vx, vy = remote.view_x, remote.view_y
-    local start = { x = 300, y = 500 }
-    local rx, ry = app:_to_remote(start.x, start.y)
-    hybrid_drag(start, 0, -3 * Screen:getHeight() * app.HYBRID_SCROLL_STEP)
-    assert_true(#sent.pointer == 6, "3 notches (press and release), got " .. #sent.pointer)
-    for i, e in ipairs(sent.pointer) do
-        assert_true(e.mask == (i % 2 == 1 and 16 or 0), "wheel down, event " .. i .. " mask " .. e.mask)
-        -- (every notch goes where the drag began, though the finger has moved on)
-        assert_true(e.x == rx and e.y == ry, string.format("at the start (%d,%d), got (%d,%d)", rx, ry, e.x, e.y))
-    end
-    assert_true(remote.view_x == vx and remote.view_y == vy, "the view did not move")
-    assert_true(app:has_pointer_action() == false, "no button held")
-    clear_sent(sent)
-    hybrid_drag(start, 0, 2 * Screen:getHeight() * app.HYBRID_SCROLL_STEP)
-    assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 8, "down drag: button 8, got " .. take_masks(sent))
-    clear_sent(sent)
-    hybrid_drag(start, -2 * Screen:getWidth() * app.HYBRID_SCROLL_STEP, 0)
-    assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 64, "left drag: button 64, got " .. take_masks(sent))
-    clear_sent(sent)
-    hybrid_drag(start, Screen:getWidth() * app.HYBRID_SCROLL_STEP, 0)
-    assert_true(#sent.pointer == 2 and sent.pointer[1].mask == 32, "right drag: button 32, got " .. take_masks(sent))
-    clear_sent(sent)
-    hybrid_drag(start, 0, Screen:getHeight() * app.HYBRID_SCROLL_STEP / 2)
-    assert_true(#sent.pointer == 0, "under a notch: nothing, got " .. take_masks(sent))
-    close_viewer(app, remote)
-end)
-
 --- Whether the pointer events sent so far are exactly `n` wheel notches (press, release) of `mask`.
 local function only_notches(sent, n, mask)
     if #sent.pointer ~= 2 * n then return false end
@@ -7725,9 +7694,167 @@ local function only_notches(sent, n, mask)
     return true
 end
 
+--- Hybrid: the drag (screen pixels) that makes one wheel notch at the current zoom.
+local function notch(app) return app:hybrid_notch_px() * app.remote:get_scale() end
+
+check("hybrid_drag_scrolls", function()
+    local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
+    assert_true(app.HYBRID_SCROLL_STEP == nil, "no screen-fraction step any more")
+    assert_true(app:hybrid_notch_px() == 100, "the default: 100 remote pixels per notch")
+    app:set_hybrid_notch_px(60) -- (3 notches at 200% stay on the screen)
+    app:zoom_to(2)
+    local vx, vy = remote.view_x, remote.view_y
+    local start = { x = 300, y = 500 }
+    local rx, ry = app:_to_remote(start.x, start.y)
+    hybrid_drag(start, 0, -3 * notch(app))
+    assert_true(#sent.pointer == 6, "3 notches (press and release), got " .. #sent.pointer)
+    for i, e in ipairs(sent.pointer) do
+        assert_true(e.mask == (i % 2 == 1 and 16 or 0), "wheel down, event " .. i .. " mask " .. e.mask)
+        -- (every notch goes where the drag began, though the finger has moved on)
+        assert_true(e.x == rx and e.y == ry, string.format("at the start (%d,%d), got (%d,%d)", rx, ry, e.x, e.y))
+    end
+    assert_true(remote.view_x == vx and remote.view_y == vy, "the view did not move")
+    assert_true(app:has_pointer_action() == false, "no button held")
+    clear_sent(sent)
+    hybrid_drag(start, 0, 2 * notch(app))
+    assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 8, "down drag: button 8, got " .. take_masks(sent))
+    clear_sent(sent)
+    hybrid_drag(start, -2 * notch(app), 0)
+    assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 64, "left drag: button 64, got " .. take_masks(sent))
+    clear_sent(sent)
+    hybrid_drag(start, notch(app), 0)
+    assert_true(#sent.pointer == 2 and sent.pointer[1].mask == 32, "right drag: button 32, got " .. take_masks(sent))
+    clear_sent(sent)
+    hybrid_drag(start, 0, notch(app) / 2)
+    assert_true(#sent.pointer == 0, "under a notch: nothing, got " .. take_masks(sent))
+    close_viewer(app, remote)
+end)
+
+check("hybrid_notch_follows_the_zoom", function()
+    local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
+    local N = app:hybrid_notch_px()
+    local s = Geom:new{ x = 300, y = 500, w = 0, h = 0 }
+    local function pan(rx, ry)
+        dispatch_gesture{ ges = "pan", relative = { x = rx, y = ry }, start_pos = s,
+                          pos = Geom:new{ x = s.x + rx, y = s.y + ry, w = 0, h = 0 } }
+    end
+    local function lift(rx, ry) dispatch_gesture{ ges = "pan_release", pos = Geom:new{ x = s.x + rx, y = s.y + ry, w = 0, h = 0 } } end
+    -- (a) at 100%: N screen pixels are one notch
+    app:zoom_to(1)
+    assert_true(remote:get_scale() == 1, "scale 1")
+    hybrid_drag(s, 0, -N)
+    assert_true(only_notches(sent, 1, 16), "scale 1: N px up = 1 notch, got " .. take_masks(sent))
+    clear_sent(sent)
+    hybrid_drag(s, 0, -(N - 1))
+    assert_true(#sent.pointer == 0, "scale 1: N-1 px = none, got " .. take_masks(sent))
+    -- (b) at 200%: 2N screen pixels are one notch, N alone none (kept) until another N
+    app:zoom_to(2)
+    assert_true(remote:get_scale() == 2, "scale 2")
+    hybrid_drag(s, 0, -2 * N)
+    assert_true(only_notches(sent, 1, 16), "scale 2: 2N px = 1 notch, got " .. take_masks(sent))
+    clear_sent(sent)
+    pan(0, -N)
+    assert_true(#sent.pointer == 0, "scale 2: N px = none, got " .. take_masks(sent))
+    pan(0, -2 * N)
+    assert_true(only_notches(sent, 1, 16), "the remainder completes with another N, got " .. take_masks(sent))
+    lift(0, -2 * N)
+    clear_sent(sent)
+    -- (c) sideways the same
+    hybrid_drag(s, -2 * N, 0)
+    assert_true(only_notches(sent, 1, 64), "scale 2: 2N px left = 1 notch, got " .. take_masks(sent))
+    clear_sent(sent)
+    pan(N, 0)
+    assert_true(#sent.pointer == 0, "scale 2: N px right = none")
+    pan(2 * N, 0)
+    assert_true(only_notches(sent, 1, 32), "and another N: 1 notch right, got " .. take_masks(sent))
+    lift(2 * N, 0)
+    clear_sent(sent)
+    -- a profile value applies at once
+    app:set_hybrid_notch_px(40)
+    hybrid_drag(s, 0, -2 * 40 * 3)
+    assert_true(only_notches(sent, 3, 16), "40 px per notch at 200%: 240 screen px = 3 notches, got " .. take_masks(sent))
+    close_viewer(app, remote)
+end)
+
+check("hybrid_notch_px_is_cleaned_and_kept_per_profile", function()
+    local Settings = require("vnc/settings")
+    local path = data_dir .. "/ui_smoke_hybrid_notch.lua"; os.remove(path)
+    local s = Settings.open(path)
+    s:save_profile{ name = "d", host = "h", port = 1 }
+    assert_true(s:get_profile("d").hybrid_notch_px == 100, "default 100, got " .. tostring(s:get_profile("d").hybrid_notch_px))
+    s:save_profile{ name = "k", host = "h", port = 1, hybrid_notch_px = 240 }
+    assert_true(s:get_profile("k").hybrid_notch_px == 240)
+    for i, bad in ipairs({ 9, 1001, -5, 0 / 0, "60", true }) do
+        s:save_profile{ name = "b" .. i, host = "h", port = 1, hybrid_notch_px = bad }
+        assert_true(s:get_profile("b" .. i).hybrid_notch_px == 100, "junk cleans to 100: " .. tostring(bad))
+    end
+    for _, ok in ipairs({ 10, 1000 }) do
+        s:save_profile{ name = "e" .. ok, host = "h", port = 1, hybrid_notch_px = ok }
+        assert_true(s:get_profile("e" .. ok).hybrid_notch_px == ok, "the bounds are valid: " .. ok)
+    end
+    s:save_profile({ name = "k", host = "h2", port = 1 }, "k")
+    assert_true(s:get_profile("k").hybrid_notch_px == 240, "an edit without the field keeps it")
+    s:flush()
+    local again = Settings.open(path)
+    assert_true(again:get_profile("k").hybrid_notch_px == 240, "round-trips through the file")
+    again.data.profiles[1].hybrid_notch_px = 5000
+    again:normalise()
+    assert_true(again.data.profiles[1].hybrid_notch_px == 100, "a hand-edited value out of range normalises to 100")
+    os.remove(path)
+end)
+
+check("hybrid_scroll_distance_menu", function()
+    local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
+    local real_show = UIManager.show
+    local shown
+    local ok, err = pcall(function()
+        app:open_menu()
+        local entry = find_item(app.menu.item_table, "Hybrid scroll distance")
+        assert_true(entry.help_text and entry.help_text:find("larger", 1, true) and entry.help_text:find("smaller", 1, true),
+            "the help says which way to go")
+        assert_true(entry.mandatory == "100 px", "shows the current value, got " .. tostring(entry.mandatory))
+        local sub = entry.sub_item_table
+        local labels = {}
+        for _, it in ipairs(sub) do labels[#labels + 1] = it.text end
+        assert_true(table.concat(labels, "|") == "40 px|60 px|100 px|150 px|240 px|Custom…",
+            "presets and Custom…, got " .. table.concat(labels, "|"))
+        assert_true(find_item(sub, "100 px").mandatory == "✓" and find_item(sub, "40 px").mandatory == nil, "the current one is ticked")
+        find_item(sub, "150 px").callback()
+        assert_true(app:hybrid_notch_px() == 150, "a preset applies at once")
+        local u = sent.profile_updates[#sent.profile_updates]
+        assert_true(u and u.name == "test" and u.fields.hybrid_notch_px == 150, "and is stored on the profile")
+        assert_true(entry.mandatory == "150 px" and find_item(sub, "150 px").mandatory == "✓"
+            and find_item(sub, "100 px").mandatory == nil, "the menu follows")
+        -- Custom…: a number input
+        UIManager.show = function(mgr, widget, ...) shown = widget; return real_show(mgr, widget, ...) end
+        find_item(sub, "Custom…").callback()
+        assert_true(shown and shown.buttons and shown.input == "150", "an input dialog with the current value, got " .. tostring(shown and shown.input))
+        shown.getInputValue = function() return "75" end
+        local dlg = shown
+        shown = nil
+        dlg.buttons[1][2].callback()
+        assert_true(app:hybrid_notch_px() == 75, "custom applies at once, got " .. app:hybrid_notch_px())
+        assert_true(sent.profile_updates[#sent.profile_updates].fields.hybrid_notch_px == 75, "and is stored")
+        assert_true(entry.mandatory == "75 px" and find_item(sub, "Custom…").mandatory == "✓", "the menu follows a custom value")
+        -- out of range: refused, the value kept
+        local n = #sent.profile_updates
+        find_item(sub, "Custom…").callback()
+        dlg = shown
+        dlg.getInputValue = function() return "5" end
+        dlg.buttons[1][2].callback()
+        assert_true(app:hybrid_notch_px() == 75 and #sent.profile_updates == n, "an out-of-range number changes nothing")
+        UIManager.show = real_show
+        while top() ~= app.menu and top() ~= app do UIManager:close(top()) end
+        app:close_menu()
+    end)
+    UIManager.show = real_show
+    close_viewer(app, remote)
+    if not ok then error(err, 0) end
+end)
+
 check("hybrid_flick_and_release_tails_scroll", function()
     local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
-    local step = Screen:getHeight() * app.HYBRID_SCROLL_STEP
+    local step = notch(app)
     local start = Geom:new{ x = 300, y = 500, w = 0, h = 0 }
     -- one notch's worth by pan events, then a swipe whose lift is 3 notches from the start
     dispatch_gesture{ ges = "pan", relative = { x = 0, y = -step }, start_pos = start, pos = Geom:new{ x = 300, y = 500 - step } }
@@ -7747,7 +7874,7 @@ end)
 
 check("hybrid_swipe_of_another_contact_sends_no_notches", function()
     local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
-    local step = Screen:getHeight() * app.HYBRID_SCROLL_STEP
+    local step = notch(app)
     local start = Geom:new{ x = 300, y = 500, w = 0, h = 0 }
     dispatch_gesture{ ges = "pan", relative = { x = 0, y = 1 }, start_pos = start, pos = Geom:new{ x = 300, y = 501 } }
     assert_true(app._hybrid_pan and #sent.pointer == 0, "a stale drag from an earlier contact")
@@ -7781,7 +7908,7 @@ check("hybrid_false_hold_then_pan_scrolls", function()
     local c = app.canvas
     local P = Geom:new{ x = c.x + 60, y = c.y + c.h - 10 }
     local t0 = time.now()
-    local step = Screen:getHeight() * app.HYBRID_SCROLL_STEP
+    local step = notch(app)
     dispatch_gesture{ ges = "hold", pos = Geom:new{ x = P.x, y = P.y }, time = t0 }
     dispatch_gesture{ ges = "hold_release", pos = Geom:new{ x = P.x, y = P.y }, time = t0 + time.ms(15) }
     dispatch_gesture{ ges = "pan", pos = Geom:new{ x = P.x, y = P.y - 2 * step }, relative = { x = 0, y = -2 * step },
@@ -7887,6 +8014,7 @@ check("help_lists_hybrid", function()
         assert_true(text:find(r[1] .. ": " .. r[2], 1, true), "row " .. r[1])
     end
     assert_true(rows["Tap"]:find("finger", 1, true) and rows["Drag"]:lower():find("scroll", 1, true), "tap and drag rows")
+    assert_true(text:find("Hybrid scroll distance: ", 1, true), "the menu's scroll distance is explained")
     assert_true(rows["Long press"]:find("right click", 1, true), "long press row")
     assert_true(text:find("Mode: switch between Touch, Mouse and Hybrid mode", 1, true), "the Mode button text")
 end)

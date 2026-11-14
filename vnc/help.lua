@@ -43,7 +43,7 @@ Help.ROWS = {
 Help.ROWS.hybrid = rows_for{
     { _("Tap"), _("Left click at the finger (two quick taps: double click)") },
     { _("Long press"), _("Lift without moving: right click at the finger; move: drag with the left button") },
-    { _("Drag"), _("Scroll the remote (mouse wheel where the drag began); the content follows the finger") },
+    { _("Drag"), _("Scroll the remote (mouse wheel where the drag began); the content follows the finger (if not, see Hybrid scroll distance in the menu)") },
     { _("Two-finger long press"), _("Left click between the fingers, then the keyboard") },
 }
 
@@ -103,6 +103,7 @@ function Help.text(mode)
             "  " .. _("Connections\u{2026}: switch to another connection, or create one."),
             "  " .. _("Refresh: ask the remote for a full picture."),
             "  " .. _("Page buttons send: Page Up/Down keys or mouse-wheel notches."),
+            "  " .. _("Hybrid scroll distance: remote pixels one wheel notch scrolls, for this connection. If a Hybrid drag moves the content further than your finger, pick a larger value; if less, a smaller one."),
             "  " .. _("Keep screen on: stop the device from going to sleep or dimming the light while the viewer is open."),
             "  " .. _("Match orientation to the remote screen: after connecting (or when the remote switches between landscape and portrait), turn this screen the same way, to the side you last picked by hand. A rotation you pick yourself stays until the remote's orientation changes."),
             "  " .. _("Toolbar buttons\u{2026}: On the toolbar\u{2026} (which buttons are shown; the scroll up / down pair is one row) and Also when collapsed\u{2026} (which stay next to the round button)."),

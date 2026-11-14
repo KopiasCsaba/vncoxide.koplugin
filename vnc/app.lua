@@ -902,18 +902,20 @@ function ViewerApp:onPan(_, ges)
 end
 
 --[[--
-Hybrid mode's drag: it scrolls the remote (`_scroll_by_drag`, HYBRID_SCROLL_STEP per notch, at the
-spot where the drag began) and never presses a button. `start` is where the contact came down; the pan's `relative`
-is its offset from there, so the movement since the previous event is the difference.
+Hybrid mode's drag: it scrolls the remote (`_scroll_by_drag`, at the spot where the drag began) and
+never presses a button. One wheel notch scrolls the remote content by `hybrid_notch_px` remote pixels
+(a per-connection setting, see @{vnc.settings.hybrid_notch_px}), so the finger's movement is counted
+in remote pixels (screen pixels over the zoom): the content follows the finger at any zoom. `start`
+is where the contact came down; the pan's `relative` is its offset from there, so the movement since
+the previous event is the difference.
 ]]
-ViewerApp.HYBRID_SCROLL_STEP = 1 / 15
-
 --- The Hybrid drag's finger is `rel` (offset from where it came down) now: scrolls by the
 --- movement since the previous event. The notches go to where the drag began.
 function ViewerApp:_hybrid_feed(g, rel)
     local dx, dy = rel.x - g.x, rel.y - g.y
     g.x, g.y = rel.x, rel.y
-    self:_scroll_by_drag(dx, dy, g.start, self.HYBRID_SCROLL_STEP, g)
+    local s = self.remote:get_scale()
+    self:_scroll_by_drag(dx / s, dy / s, g.start, self:hybrid_notch_px(), g)
 end
 
 function ViewerApp:_hybrid_pan_move(start, ges)
@@ -1408,6 +1410,24 @@ function ViewerApp:set_pointer_mode(mode)
     end
 end
 
+--- The profile's Hybrid scroll distance: remote pixels one wheel notch scrolls.
+function ViewerApp:hybrid_notch_px()
+    local profile = self.session:get_profile()
+    return Settings.hybrid_notch_px(profile and profile.hybrid_notch_px)
+end
+
+--- Sets the Hybrid scroll distance (applies to the next drag movement) and stores it in the profile.
+function ViewerApp:set_hybrid_notch_px(px)
+    px = Settings.hybrid_notch_px(px)
+    local profile = self.session:get_profile()
+    if not profile then return end
+    local stored = self.plugin:update_profile_fields(profile.name, { hybrid_notch_px = px })
+    if not stored then
+        profile.hybrid_notch_px = px
+        self.session:set_profile(profile)
+    end
+end
+
 local NEXT_MODE = { touch = "mouse", mouse = "hybrid", hybrid = "touch" }
 
 --- Cycles Touch -> Mouse -> Hybrid; the toolbar's Mode button follows. A tooltip says which one it is now.
@@ -1666,22 +1686,21 @@ function ViewerApp:_two_finger_move(start, rel)
 end
 
 --[[--
-Turns a drag's movement into wheel notches, one per `step` (a fraction) of the screen height
-(vertically) or width (sideways); what is left over waits in `g` (the drag's state: `wx`, `wy`)
-for the next move. The notches go to the remote position under screen position `pos`. The
-content follows the fingers, as on a phone: fingers going up scroll down, going left scroll right.
+Turns a drag's movement (`dx`, `dy`) into wheel notches, one per `step` (in the same units) either
+way; what is left over waits in `g` (the drag's state: `wx`, `wy`) for the next move. The notches go
+to the remote position under screen position `pos`. The content follows the fingers, as on a phone:
+fingers going up scroll down, going left scroll right.
 ]]
 function ViewerApp:_scroll_by_drag(dx, dy, pos, step, g)
     g.wx, g.wy = g.wx + dx, g.wy + dy
-    -- whole steps, towards zero (the epsilon keeps an exact multiple of a fractional step whole)
-    local function steps(v, step)
+    -- whole steps, towards zero (the epsilon keeps an exact multiple of a step whole despite float error)
+    local function steps(v)
         local n = math.floor(math.abs(v) / step + 1e-9)
         return v < 0 and -n or n
     end
-    local step_y, step_x = Screen:getHeight() * step, Screen:getWidth() * step
-    local ny, nx = steps(g.wy, step_y), steps(g.wx, step_x)
+    local ny, nx = steps(g.wy), steps(g.wx)
     if ny == 0 and nx == 0 then return end
-    g.wy, g.wx = g.wy - ny * step_y, g.wx - nx * step_x
+    g.wy, g.wx = g.wy - ny * step, g.wx - nx * step
     local x, y = self:_to_remote(pos.x, pos.y)
     if ny ~= 0 then self:scroll_wheel(ny < 0 and 1 or -1, math.abs(ny), false, x, y) end
     if nx ~= 0 then self:scroll_wheel(nx < 0 and 1 or -1, math.abs(nx), true, x, y) end
