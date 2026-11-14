@@ -166,6 +166,16 @@ local function confirm_hold(app)
     end
 end
 
+--- A long press of one of the viewer keyboard's keys acts once confirmed (Keyboard.HOLD_CONFIRM):
+--- lets that time pass now, the finger still down. No-op when none waits.
+local function confirm_key_hold(app)
+    local h = app and app.vk and app.vk.vnc_key_hold
+    if h and h.ges then
+        UIManager:unschedule(h.task)
+        h.task()
+    end
+end
+
 -- ---------------------------------------------------------------- a plugin with two profiles
 
 local plugin_module = assert(dofile(plugin_dir .. "/main.lua"))
@@ -4994,6 +5004,7 @@ check("keyboard_accent_popup_closes_after_any_pick", function()
     local wire = wire_log(app)
     for _, pick in ipairs({ { "e", "+0x65,-0x65" }, { "é", "+0xE9,-0xE9" } }) do
         dispatch_gesture{ ges = "hold", pos = pos }
+        confirm_key_hold(app)
         local popup = key_popup(app)
         assert_true(popup ~= nil, pick[1] .. ": a long press opens the popup")
         local closes = 0
@@ -5666,6 +5677,7 @@ check("held_backspace_repeats_until_the_lift", function()
     local app, remote, pos, wire = backspace_setup()
     local lift = finger_down(pos)
     dispatch_gesture{ ges = "hold", pos = pos }
+    confirm_key_hold(app)
     assert_true(wire() == BKSP, "the hold sends one Backspace at once")
     repeat_ticks(app, 4, "held")
     local got = wire()
@@ -5697,6 +5709,7 @@ check("held_backspace_stops_when_the_finger_is_gone_without_a_release", function
     local app, remote, pos, wire = backspace_setup()
     local lift = finger_down(pos)
     dispatch_gesture{ ges = "hold", pos = pos }
+    confirm_key_hold(app)
     repeat_ticks(app, 2, "held")
     assert_true(wire() == table.concat({ BKSP, BKSP, BKSP }, ","), "1 + 2")
     lift() -- the hold_release never comes
@@ -5719,6 +5732,7 @@ check("held_backspace_stops_with_the_keyboard_viewer_or_session", function()
         local app, remote, pos, wire = backspace_setup()
         local lift = finger_down(pos)
         dispatch_gesture{ ges = "hold", pos = pos }
+        confirm_key_hold(app)
         repeat_ticks(app, 1, case[1])
         local task = repeat_task(app)
         local closed = case[2](app, remote)
@@ -5744,6 +5758,7 @@ check("untracked_backspace_repeat_stops_after_10_s", function()
             gd.active_contacts[8] = { slot = 8, down = true }
         end
         dispatch_gesture{ ges = "hold", pos = pos }
+        confirm_key_hold(app)
         assert_true(app.vk.vnc_backspace_repeat.finger == nil, case .. ": no finger is tracked")
         repeat_ticks(app, 100, case)
         local got, n = wire(), 0
@@ -5756,6 +5771,7 @@ check("untracked_backspace_repeat_stops_after_10_s", function()
         gd.active_contacts[7], gd.active_contacts[8] = nil, nil
         local lift = finger_down(pos)
         dispatch_gesture{ ges = "hold", pos = pos }
+        confirm_key_hold(app)
         repeat_ticks(app, 101, case .. ", tracked")
         assert_true(scheduled_delay(repeat_task(app)) ~= nil, case .. ": a tracked hold keeps repeating")
         dispatch_gesture{ ges = "hold_release", pos = pos }
@@ -5772,6 +5788,7 @@ check("held_backspace_leaves_nothing_down_and_takes_armed_modifiers_once", funct
     wire()
     local lift = finger_down(pos)
     dispatch_gesture{ ges = "hold", pos = pos }
+    confirm_key_hold(app)
     repeat_ticks(app, 2, "armed")
     dispatch_gesture{ ges = "hold_release", pos = pos }
     lift()
@@ -5781,6 +5798,76 @@ check("held_backspace_leaves_nothing_down_and_takes_armed_modifiers_once", funct
     local ok, k = balanced(got)
     assert_true(ok, "every key down came up, not " .. tostring(k))
     assert_true(app.key_strip:modifier_state("Ctrl") == nil, "Ctrl disarmed")
+    close_viewer(app, remote)
+end)
+
+-- ---------------------------------------------------------------- InkView's false holds on keys
+
+--[[ The device log of a typing session: InkView withheld a key tap's events for ~0.5 s, the hold timer
+tripped, the lift came 20-80 ms after the hold in one burst with the next key's tap. The hold opened
+the key's popup, which then took that next tap to close itself: both keys lost. A key's long press
+counts only once it lasts Keyboard.HOLD_CONFIRM, like the canvas's. ]]
+check("keyboard_false_hold_is_a_tap_not_a_popup", function()
+    local Keyboard = require("vnc/keyboard")
+    assert_true(Keyboard.HOLD_CONFIRM == require("vnc/app").HOLD_CONFIRM, "the canvas's confirmation time")
+    local app, remote = new_app()
+    app:toggle_keyboard()
+    UIManager:forceRePaint()
+    local e, a = find_vk_key(app.vk, "e"), find_vk_key(app.vk, "a")
+    local pe, pa = centre_of(e.dimen), centre_of(a.dimen)
+    local wire = wire_log(app)
+    -- the burst: hold, its lift, the next key's tap
+    dispatch_gesture{ ges = "hold", pos = pe }
+    assert_true(key_popup(app) == nil and wire() == "", "the hold alone does nothing yet")
+    local h = app.vk.vnc_key_hold
+    assert_true(h and scheduled_delay(h.task) ~= nil, "its confirmation is scheduled")
+    dispatch_gesture{ ges = "hold_release", pos = pe }
+    dispatch_gesture{ ges = "tap", pos = pa }
+    local got = wire()
+    assert_true(got == "+0x65,-0x65,+0x61,-0x61", "both keys typed, in order, got " .. got)
+    assert_true(key_popup(app) == nil, "no popup: " .. stack_desc())
+    assert_true(scheduled_delay(h.task) == nil, "nothing left scheduled")
+    UIManager:_checkTasks()
+    assert_true(wire() == "" and key_popup(app) == nil, "and nothing later")
+    -- a genuine long press: still down after the confirmation time, the popup opens then
+    local lift = finger_down(pe)
+    dispatch_gesture{ ges = "hold", pos = pe }
+    assert_true(key_popup(app) == nil, "not before its confirmation")
+    confirm_key_hold(app)
+    local popup = key_popup(app)
+    assert_true(popup ~= nil, "a confirmed long press opens the popup")
+    UIManager:forceRePaint()
+    dispatch_gesture{ ges = "hold_release", pos = pe }
+    lift()
+    assert_true(wire() == "" and key_popup(app) == popup, "its lift types nothing and leaves the popup up")
+    UIManager:close(popup)
+    UIManager:_checkTasks()
+    -- a long press that moves first is genuine at once
+    dispatch_gesture{ ges = "hold", pos = pe }
+    dispatch_gesture{ ges = "hold_pan", pos = pe, relative = { x = 3, y = 0 } }
+    popup = key_popup(app)
+    assert_true(popup ~= nil, "a hold_pan confirms the long press")
+    UIManager:close(popup)
+    UIManager:_checkTasks()
+    -- hidden while one waits: nothing comes of it
+    dispatch_gesture{ ges = "hold", pos = pe }
+    app:toggle_keyboard()
+    UIManager:_checkTasks()
+    assert_true(scheduled_delay(h.task) == nil and key_popup(app) == nil and wire() == "",
+        "the keyboard going away drops a waiting long press")
+    close_viewer(app, remote)
+end)
+
+check("keyboard_false_hold_on_backspace_is_one_backspace", function()
+    local app, remote, pos, wire = backspace_setup()
+    dispatch_gesture{ ges = "hold", pos = pos }
+    assert_true(wire() == "", "nothing before the confirmation")
+    dispatch_gesture{ ges = "hold_release", pos = pos }
+    local got = wire()
+    assert_true(got == BKSP, "a tap: one Backspace, got " .. got)
+    assert_true(repeat_task(app) == nil or scheduled_delay(repeat_task(app)) == nil, "no repeat")
+    UIManager:_checkTasks()
+    assert_true(wire() == "", "nothing later")
     close_viewer(app, remote)
 end)
 

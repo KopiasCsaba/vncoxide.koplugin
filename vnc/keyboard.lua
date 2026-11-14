@@ -23,6 +23,16 @@ Keyboard.REPEAT_INTERVAL = 0.1
 --- Ticks after which a repeat whose finger cannot be followed stops anyway (10 s), so that a lost
 --- release can never make it repeat forever.
 Keyboard.REPEAT_UNTRACKED_MAX = 100
+--[[--
+Seconds a key's long press waits before it acts (the canvas's `ViewerApp.HOLD_CONFIRM`). On
+PocketBook, InkView sometimes withholds a tap's events for ~0.5 s: GestureDetector's hold timer
+trips, and the lift follows 10-70 ms after the hold in one burst, often with the next key's tap. On
+a key that hold opened the alternate-characters popup, which then took the next tap to close itself
+(both keys lost), and on Backspace started the repeat. So a key's hold is passed on only once it has
+lasted this long with no lift (or once it moves, a hold_pan); lifted sooner, the lift reaches the
+key alone, which types it like a tap (`VirtualKey:onHoldReleaseKey`).
+]]
+Keyboard.HOLD_CONFIRM = 0.12
 
 -- Saved G_reader_settings values while a keyboard created here is alive.
 local saved_layout = nil
@@ -182,6 +192,27 @@ function Keyboard.stop_repeat(vk, reason)
     require("ui/uimanager"):unschedule(rep.task)
 end
 
+--- The key of keyboard `vk` under screen point `pos`, or nil.
+local function key_at(vk, pos)
+    if not pos then return nil end
+    for _i, row in ipairs(vk.layout or {}) do
+        for _j, key in ipairs(row) do
+            if key.dimen and key.dimen.x and key.dimen:contains(pos) then return key end
+        end
+    end
+end
+
+--- Forgets a key's long press waiting for its confirmation on keyboard `vk` (a no-op when none
+--- waits): nothing of it reaches the key.
+function Keyboard.drop_key_hold(vk, reason)
+    local h = vk and vk.vnc_key_hold
+    if not (h and h.event) then return end
+    require("logger").dbg("vnc: key hold dropped:", reason)
+    h.event = nil
+    h.ges = nil
+    require("ui/uimanager"):unschedule(h.task)
+end
+
 --[[--
 Creates the on-screen keyboard.
 
@@ -217,7 +248,7 @@ function Keyboard.new(session, on_height_changed, press)
     -- delivers the lift to the key as a hold_release, which the key then ignores) and the keyboard
     -- going away
     local handle = vk.handleEvent
-    vk.handleEvent = function(w, event)
+    local function pass(w, event)
         if event.handler == "onGesture" then
             local ges = event.args and event.args[1]
             local kind = ges and ges.ges
@@ -230,6 +261,40 @@ function Keyboard.new(session, on_height_changed, press)
             Keyboard.stop_repeat(vk, "keyboard closed")
         end
         return handle(w, event)
+    end
+    -- a key's long press waits for its confirmation (see HOLD_CONFIRM)
+    local hold = {}
+    vk.vnc_key_hold = hold
+    local function confirm(why)
+        local event = hold.event
+        if not event then return end
+        hold.event, hold.ges = nil, nil
+        require("ui/uimanager"):unschedule(hold.task)
+        if not vk.visible then return end
+        require("logger").dbg("vnc: key hold confirmed:", why)
+        pass(vk, event)
+    end
+    hold.task = function() confirm("still down after " .. Keyboard.HOLD_CONFIRM .. " s") end
+    vk.handleEvent = function(w, event)
+        if event.handler == "onGesture" then
+            local ges = event.args and event.args[1]
+            local kind = ges and ges.ges
+            if kind == "hold" and w.visible and key_at(w, ges.pos) then
+                Keyboard.drop_key_hold(w, "a new hold")
+                hold.event, hold.ges = event, ges
+                require("ui/uimanager"):scheduleIn(Keyboard.HOLD_CONFIRM, hold.task)
+                return true
+            elseif hold.event and kind == "hold_pan" then
+                confirm("it moves")
+            elseif hold.event and kind == "hold_release" then
+                -- lifted before its confirmation: InkView's late burst of a tap, which the lift
+                -- alone types
+                Keyboard.drop_key_hold(w, "lifted before " .. Keyboard.HOLD_CONFIRM .. " s: a tap")
+            end
+        elseif event.handler == "onCloseWidget" then
+            Keyboard.drop_key_hold(w, "keyboard closed")
+        end
+        return pass(w, event)
     end
     return vk
 end

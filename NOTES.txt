@@ -66,6 +66,10 @@ vnc/keypanel.lua    The "Send keys" panel: one-shot modifier toggles and every k
 vnc/dialogs.lua     Connection list, per-connection actions, profile editor (with its picture
                     settings).
 vnc/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via a stub inputbox.
+                          A key's long press (its popup, Backspace's repeat) reaches the key only
+                          once it lasted Keyboard.HOLD_CONFIRM (= HOLD_CONFIRM) with no lift, or moved
+                          (hold_pan); lifted sooner it is InkView's late burst of a tap, and the lift
+                          alone types the key (VirtualKey:onHoldReleaseKey).
 vnc/settings.lua    LuaSettings wrapper: profiles + global settings + the server section,
                           including the environment overrides (read once, never persisted).
 
