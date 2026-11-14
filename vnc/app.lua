@@ -906,7 +906,7 @@ Hybrid mode's drag: it scrolls the remote (`_scroll_by_drag`, HYBRID_SCROLL_STEP
 spot where the drag began) and never presses a button. `start` is where the contact came down; the pan's `relative`
 is its offset from there, so the movement since the previous event is the difference.
 ]]
-ViewerApp.HYBRID_SCROLL_STEP = 1 / 30
+ViewerApp.HYBRID_SCROLL_STEP = 1 / 15
 
 --- The Hybrid drag's finger is `rel` (offset from where it came down) now: scrolls by the
 --- movement since the previous event. The notches go to where the drag began.

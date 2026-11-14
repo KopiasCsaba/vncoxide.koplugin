@@ -371,7 +371,7 @@ lift (a right click at the pointer) or its first move (a left-button drag from t
 through _mouse_move). Everything is built from GestureDetector's tap / hold / pan, no raw touch
 handling. Touch mode clicks are as immediate. Hybrid mode ("hybrid"): taps and long presses as in Touch mode,
 a one-finger drag never presses a button but scrolls (_hybrid_pan_move -> _scroll_by_drag, one wheel notch
-per HYBRID_SCROLL_STEP = 1/30 of the screen height or width, at where the drag began; content follows the finger).
+per HYBRID_SCROLL_STEP = 1/15 of the screen height or width, at where the drag began; content follows the finger).
 
 Physical keyboard. Printable characters arrive as TextInput events, not as key events, and
 SDL 3 only delivers those after Device:startTextInput() ("Text input events are not received by

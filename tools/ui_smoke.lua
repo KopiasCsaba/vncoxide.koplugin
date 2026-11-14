@@ -7687,12 +7687,12 @@ end)
 
 check("hybrid_drag_scrolls", function()
     local app, remote, sent = new_app(2000, 1500, { mode = "hybrid" })
-    assert_true(math.abs(app.HYBRID_SCROLL_STEP - 1 / 30) < 1e-12, "the step is 1/30")
+    assert_true(math.abs(app.HYBRID_SCROLL_STEP - 1 / 15) < 1e-12, "the step is 1/15")
     app:zoom_to(2)
     local vx, vy = remote.view_x, remote.view_y
     local start = { x = 300, y = 500 }
     local rx, ry = app:_to_remote(start.x, start.y)
-    hybrid_drag(start, 0, -3 * Screen:getHeight() / 30)
+    hybrid_drag(start, 0, -3 * Screen:getHeight() * app.HYBRID_SCROLL_STEP)
     assert_true(#sent.pointer == 6, "3 notches (press and release), got " .. #sent.pointer)
     for i, e in ipairs(sent.pointer) do
         assert_true(e.mask == (i % 2 == 1 and 16 or 0), "wheel down, event " .. i .. " mask " .. e.mask)
@@ -7702,16 +7702,16 @@ check("hybrid_drag_scrolls", function()
     assert_true(remote.view_x == vx and remote.view_y == vy, "the view did not move")
     assert_true(app:has_pointer_action() == false, "no button held")
     clear_sent(sent)
-    hybrid_drag(start, 0, 2 * Screen:getHeight() / 30)
+    hybrid_drag(start, 0, 2 * Screen:getHeight() * app.HYBRID_SCROLL_STEP)
     assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 8, "down drag: button 8, got " .. take_masks(sent))
     clear_sent(sent)
-    hybrid_drag(start, -2 * Screen:getWidth() / 30, 0)
+    hybrid_drag(start, -2 * Screen:getWidth() * app.HYBRID_SCROLL_STEP, 0)
     assert_true(#sent.pointer == 4 and sent.pointer[1].mask == 64, "left drag: button 64, got " .. take_masks(sent))
     clear_sent(sent)
-    hybrid_drag(start, Screen:getWidth() / 30, 0)
+    hybrid_drag(start, Screen:getWidth() * app.HYBRID_SCROLL_STEP, 0)
     assert_true(#sent.pointer == 2 and sent.pointer[1].mask == 32, "right drag: button 32, got " .. take_masks(sent))
     clear_sent(sent)
-    hybrid_drag(start, 0, Screen:getHeight() / 60)
+    hybrid_drag(start, 0, Screen:getHeight() * app.HYBRID_SCROLL_STEP / 2)
     assert_true(#sent.pointer == 0, "under a notch: nothing, got " .. take_masks(sent))
     close_viewer(app, remote)
 end)
@@ -7779,7 +7779,7 @@ check("hybrid_false_hold_then_pan_scrolls", function()
     local app, remote, sent = new_app(400, 300, { mode = "hybrid" })
     local wire = wire_log(app)
     local c = app.canvas
-    local P = Geom:new{ x = c.x + 60, y = c.y + 100 }
+    local P = Geom:new{ x = c.x + 60, y = c.y + c.h - 10 }
     local t0 = time.now()
     local step = Screen:getHeight() * app.HYBRID_SCROLL_STEP
     dispatch_gesture{ ges = "hold", pos = Geom:new{ x = P.x, y = P.y }, time = t0 }
