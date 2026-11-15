@@ -1,13 +1,11 @@
 # VNC for KOReader
 
-Two halves of one thing. **Control a remote desktop from KOReader**: the plugin adds *VNC viewer* to
-KOReader's file browser menu, and the remote screen fills the display, driven by touch, the
-on-screen keyboard and a physical keyboard. And **share KOReader's own screen**: a small VNC server,
-started from the *Network* menu, lets a computer elsewhere watch and drive the reader — see
-[Sharing this screen (VNC server)](#sharing-this-screen-vnc-server).
+**Control a remote desktop from KOReader**: the plugin adds *VNC viewer* to KOReader's file browser
+menu, and the remote screen fills the display, driven by touch, the on-screen keyboard and a
+physical keyboard.
 
-Both halves speak RFB 3.8, the protocol ordinary VNC servers and viewers (x11vnc, TigerVNC,
-TightVNC, RealVNC in compatibility mode, Remmina, phone apps, ...) all understand.
+It speaks RFB 3.8, the protocol ordinary VNC servers (x11vnc, TigerVNC, TightVNC, RealVNC in
+compatibility mode, ...) all understand.
 
 ## What you get
 
@@ -259,89 +257,13 @@ retries only after you tap **Retry**. Closing the viewer stops everything.
 Wi-Fi up, so reopening it is instant and the picture is resynchronised. **Close** on the toolbar
 (Disconnect) closes the connection and restores Wi-Fi if the plugin turned it on.
 
-## Sharing this screen (VNC server)
-
-The plugin can also serve the other way round: KOReader's own screen as a VNC desktop, so a
-computer elsewhere can watch what your reader is showing and drive it with its mouse and keyboard.
-
-It is **off by default**. Turn it on in KOReader's *Network* menu: **VNC server** — the entry is
-checked while it runs and opens a submenu with
-
-- **Start/Stop VNC server**,
-- a status line (the address it listens on, and how many clients are connected),
-- **Start with KOReader** — off by default; when on, the server starts by itself when KOReader
-  starts (a manual stop still stops it, and it stays stopped until the next start),
-- **IP address** — `0.0.0.0` (the default) serves every interface, `127.0.0.1` only this device,
-- **Port** — 5900 by default,
-- **Password** — clients must then authenticate (VNC Authentication); leave it empty and anybody
-  who can reach the port gets in.
-
-For scripted or headless setups a few environment variables override the server settings. They
-apply to that run only and are **never written to the settings file** — setting the password this
-way keeps it out of `settings/vnc.lua` — while the menu always shows and edits the stored values:
-
-| Variable | Effect |
-| --- | --- |
-| `VNC_KOPLUGIN_ENABLE_SERVER` | Start at boot. Any non-empty value except `0`, `no`, `false` (trimmed, case-insensitive) starts the server; empty or unset means "use the stored setting". |
-| `VNC_KOPLUGIN_SERVER_HOST` | Bind address for this run; empty or unset leaves the stored one. |
-| `VNC_KOPLUGIN_SERVER_PORT` | Port for this run (an integer 1–65535); anything else is ignored with a warning. |
-| `VNC_KOPLUGIN_SERVER_PASSWORD` | Password for this run; set it empty for "no password". |
-
-On Kindles the plugin opens the port in the device's firewall while it runs (the same thing
-KOReader's own HTTP inspector does) and closes it again when you stop the server.
-
-Connect with any VNC viewer to `<reader-ip>:5900`. You see KOReader's screen; clicking, dragging and
-typing act on the reader. Everything KOReader can do is therefore remote-controllable, so the
-password matters — see the warning under [Settings](#settings). **The server is only reachable while
-it is started**, and KOReader must be running.
-
-The server uses the viewer's own choice of encoding — **Raw, RRE, Hextile or ZRLE**, the first entry
-of the client's preference list it can produce, falling back to Raw when the viewer asks for none of
-those (Tight, TRLE, CopyRect) — and tiles a large changed region, so a full-screen change cannot
-hold up the reader's UI.
-
-An incremental update request with nothing to answer is **held**, not answered with an empty update
-(a viewer asks again the moment it is answered, so answering every time would be a ping-pong at the
-poll rate): the hold ends as soon as something inside the region the request named has changed, and
-a client that has gone quiet with a request outstanding is sent one empty update a second as a sign
-of life that does not release the hold. Viewers that keep their picture up to date without asking
-(the Continuous Updates extension) are supported too, and the community extensions real viewers send
-are handled rather than fatal — a Fence ping is answered, while a client asking the server to resize
-the desktop is declined, because the picture follows the reader's own screen. `NOTES.txt` has the
-rest.
-
-A client's click becomes a KOReader tap, drag or long press exactly as a finger would — the press is
-held back until it is known which.
-
-What a client sees is KOReader's logical screen: the e-ink panel's own flash/ghosting is not
-reproduced, and the on-screen keyboard, dialogs and rotations are simply part of the picture.
-
 ## Power consumption
 
-The two halves behave very differently.
-
-**The viewer** costs nothing while it is not connected: with no session open there is no timer, no
+The viewer costs nothing while it is not connected: with no session open there is no timer, no
 socket and no work of any kind. While a session is up, expect the usual power use of a network
 connection and — mostly — of screen updates, because every frame has to be received, decoded and
 drawn. A picture that does not change costs very little; a moving one costs what the update rate
 implies.
-
-**The server**:
-
-- **Installed but not started**: no runtime overhead worth mentioning — nothing is scheduled, and
-  nothing listens.
-- **Started, nobody connected**: a small, steady overhead. The server checks for a connection about
-  a hundred times a second — the network does not wake it up by itself — a constant, low-level cost
-  you can expect to show only as slightly shorter runtime on a battery-powered device.
-- **A client connected**: a little more, because that is when the per-connection work and the
-  network traffic happen. With a still screen even that stays very small — about one tiny
-  keep-alive-sized packet a second, and no frame work at all until something on the screen actually
-  changes.
-
-One caveat matters more than the above on an e-reader: the server does not manage Wi-Fi itself — it
-neither turns it on nor keeps it on — so a device that goes to sleep drops the connection. And
-while Wi-Fi is up it is usually the **larger** part of the power bill, bigger than the server's own
-periodic check.
 
 ## Settings
 
@@ -380,12 +302,6 @@ return {
         ["toolbar_pos"] = { ["x"] = 0.5, ["y"] = 0 }, -- where it sits: fractions of the free space (0.5, 0 = top centre)
         ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
         ["remote_invert"] = false,         -- the remote picture drawn inverted (the toolbar's Invert button)
-    },
-    ["server"] = {                         -- the VNC server (Network menu); 0.0.0.0 = any interface
-        ["ip"] = "0.0.0.0",
-        ["port"] = 5900,
-        ["password"] = "",                 -- empty = no authentication at all
-        ["autostart"] = false,             -- start the server with KOReader
     },
 }
 ```
@@ -485,8 +401,7 @@ This is a modified version of [hwhw/vnc.koplugin](https://github.com/hwhw/vnc.ko
 Hans-Werner Hilse, changed since 2026-11-06 by Kopiás Csaba (the git history records every change).
 It is free software under the **GNU Affero General Public License v3.0** (`LICENSE`), as the
 original is. The complete source of this version is at
-<https://github.com/KopiasCsaba/vnc.koplugin>; anyone using it, including over the network through
-its VNC server, can get it from there.
+<https://github.com/KopiasCsaba/vnc.koplugin>; anyone using it can get it from there.
 
 ## Serving a PC screen
 
@@ -537,7 +452,7 @@ tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; e
 ## For developers
 
 `NOTES.txt` has the architecture, the internals, the test setup and what has and has not been
-verified. The three Lua suites it describes live in `tools/` and are run from the KOReader root with
+verified. The two Lua suites it describes live in `tools/` and are run from the KOReader root with
 KOReader's own LuaJIT:
 
     PLUGIN=~/.config/koreader/plugins/vnc.koplugin
@@ -552,18 +467,11 @@ KOReader's own LuaJIT:
       LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
       ./luajit "$PLUGIN/tools/ui_smoke.lua"
 
-    # the server half: pixel formats, encoders, protocol, the real socket path, input injection
-    KO_HOME="$HOME/vnc-smoke/server" SDL_VIDEODRIVER=dummy \
-      LUA_PATH="$PLUGIN/?.lua;./common/?.lua;./common/?/init.lua;;" LUA_CPATH="./common/?.so;;" \
-      ./luajit "$PLUGIN/tools/server_smoke.lua"
-
 `tools/mock_vnc_server.py` is the RFB fixture the client suite talks to — deterministic patterns in
 every encoding, both security types, and every client message logged — and
 `tools/tight_jpeg.b64` is the fixed 32×32 JPEG it serves for its Tight JPEG rectangle.
-`tools/mock_vnc_client.py` is the independent Python client used to check the server, so the server
-half is validated by something that is not this plugin's own code.
 
-A fourth suite covers the PC-side launcher `tools/vnc-server.py` (unit tests plus end-to-end runs
+A third suite covers the PC-side launcher `tools/vnc-server.py` (unit tests plus end-to-end runs
 against fake `x11vnc`/`xrandr` stubs) and its zoom server `tools/vnc_zoom.py` (DES, ZRLE checked by
 a reference decoder, the RFB protocol against a fake capture; `tools/test_vnc_zoom.py`). It needs only
 Python 3, no KOReader:

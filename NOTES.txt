@@ -7,9 +7,8 @@ This file is for people reading or changing the code. The README is for users.
 WHAT THIS IS
 ------------
 
-An out-of-tree KOReader plugin with both halves of VNC (RFB 3.8): a **client** that renders a
-remote desktop through KOReader's BlitBuffer abstraction, and a **server** that serves KOReader's own
-screen to any VNC client. Pure Lua + LuaJIT FFI: no build step, no C component, nothing to compile.
+An out-of-tree KOReader plugin with a VNC (RFB 3.8) **client** that renders a remote desktop
+through KOReader's BlitBuffer abstraction. Pure Lua + LuaJIT FFI: no build step, no C component, nothing to compile.
 The directory is `vnc.koplugin` and its Lua modules live in `vnc/`.
 
 
@@ -70,23 +69,7 @@ vnc/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via a stu
                           once it lasted Keyboard.HOLD_CONFIRM (= HOLD_CONFIRM) with no lift, or moved
                           (hold_pan); lifted sooner it is InkView's late burst of a tap, and the lift
                           alone types the key (VirtualKey:onHoldReleaseKey).
-vnc/settings.lua    LuaSettings wrapper: profiles + global settings + the server section,
-                          including the environment overrides (read once, never persisted).
-
-The server half (the plugin can also serve KOReader's own screen):
-vnc/rfbserver.lua   RFB 3.8 *server* state machine, transport agnostic. The mirror of
-                          protocol.lua: coroutine, ("need", n) yields. A client's incremental
-                          request with nothing to answer is recorded as `held` (its region) and the
-                          driver (vnc/server.lua) answers it - when something changed, or when the
-                          coalescing deadline passes. The coroutine never suspends for it: that
-                          would stop it reading, and the client's keystrokes would queue behind
-                          the held request (c1e3806).
-vnc/serverenc.lua   Server-side encoders (Raw, RRE, Hextile, ZRLE) and the conversion from
-                          whatever BlitBuffer type the screen is to whatever pixel format a
-                          client asks for.
-vnc/server.lua      The runtime: LuaSocket listener, one protocol instance per client, the
-                          poll task, screen capture, dirty rectangles and input injection.
-vnc/servermenu.lua  The "VNC server" section of KOReader's Network menu.
+vnc/settings.lua    LuaSettings wrapper: profiles + global settings.
 
 tools/mock_vnc_server.py  Test fixture: an RFB 3.8 server in Python (all encodings, both security
                           types, deterministic patterns, logs every client message).
@@ -100,12 +83,6 @@ tools/vnc_zoom.py         Its -z server: ffmpeg x11grab capture/scale/convert, R
 tools/test_vnc_server.py  Unit + end-to-end tests for it (fake x11vnc/xrandr stubs); run with
                           `python3 tools/test_vnc_server.py` (also runs tools/test_vnc_zoom.py).
 tools/tight_jpeg.b64      The fixed 32x32 JPEG the mock serves for its Tight JPEG rectangle.
-tools/mock_vnc_client.py  An independent Python RFB 3.8 *client* fixture (decodes every encoding
-                          itself, can send input) - used to validate the server half against
-                          something that is not our own code.
-tools/server_smoke.lua    Headless tests for the server: pixel formats, encoders against our own
-                          decoders, the protocol against our own client, the real socket path and
-                          input injection.
 
 
 DESIGN NOTES WORTH KNOWING
@@ -257,7 +234,7 @@ viewer's drawing while a session has no link (Remote:draw_to scales the plane it
 resize reconnect window between the decode worker's Z and the new workers); the session and
 decoder code itself, which the decode worker runs after the fork; the picture benchmark
 (vnc/benchmark.lua creates its own sessions without the flag, so it measures one process's
-decode and draw; a test asserts it); and the plugin's own VNC server (vnc/server.lua).
+decode and draw; a test asserts it).
 
 Picture benchmark. vnc/benchmark.lua measures combinations (see its header); the UI is
 Dialogs.picture_benchmark, behind "Find fastest picture settings" in the per-connection dialog:
@@ -536,107 +513,7 @@ what ffi/zlib_h.lua does not (that one has compressBound/compress2/crc32/uncompr
 hand-rolled FFI, so there is no libcrypto/OpenSSL dependency, and LuaSocket is used for raw TCP
 only (no TLS, so LuaSec is not needed).
 
-Serving KOReader's screen. The listener and the per-client coroutines run from a
-UIManager:scheduleIn poll task (the same discipline as the client's socket), and dirty rectangles
-come from wrapping a pair of UIManager hooks: `_refresh`, which is where a frame's region becomes
-known, and `_repaint`, which is where its pixels reach Screen.bb (it calls every dirty widget's
-paintTo and then drains the queue `_refresh` filled). A rectangle is *recorded* only at the end of
-the outermost `_repaint` after the `_refresh` that named it - a rectangle is a claim about pixels,
-and recording it when `_refresh` is called stamps a generation whose pixels are not in the
-framebuffer yet. That is not a theoretical race: input the server injects is delivered from inside
-the poll task, so the `_repaint` that paints what it caused runs only after that poll has already
-answered the client - the answer carried the frame from *before* the change while sent_gen moved
-past it, and the change was lost until a later event recorded another generation (a
-keyboard-driven repaint reaching the client one event late; a click escaped it only because the
-widgets a click lands on repaint through forceRePaint, which paints inside the injection). Only
-rectangles are recorded in either hook; encoding happens in the poll task, so a repaint never pays
-for a client's bandwidth. Rectangles carry a generation and each client remembers the one it was
-served with, so a client that lagged behind the eviction window is simply given a full frame
-instead of a partial one. A screen-size change (rotation) sends every client that announced
-DesktopSize a DesktopSize rectangle (-223) and then a full update; any other client keeps its old
-geometry and is served what it asks for, clamped to the screen. Client coordinates are the rotated
-screen's (Screen.bb), so injected touches are mapped back to the panel's through the touch rotation
-(the inverse of GestureDetector:adjustGesCoordinate) and skip the device's hardware adjust hook. The
-poll runs every 10 ms while a client is connected and every 0.5 s while nobody is, entirely under a
-pcall (UIManager tasks are not protected); a dropped client's contact is lifted and its held keys
-released. There is one server per KOReader run (main.lua's `shared_server`), whichever plugin
-instance (FileManager, ReaderUI) is live.
-
-A conversion may be shared only while it is still the encoder's latest. Only `pixels` - an immutable
-copy of the rectangle's bytes - may be kept; `values` is the encoder's *single* per-pixel array,
-which the next conversion overwrites, so it is handed out only while the owner's convert_serial
-still marks it current. Sharing it after another conversion makes every rectangle of a repeated
-geometry - KOReader records one click as a "nil" and a "full" refresh of the same region - carry the
-last rectangle converted's pixels: a whole region painted with the bottom-right tile's content.
-
-A request that has nothing to answer is *held*, not answered. Answering it with an empty update
-looks harmless, but a viewer asks again the moment it is answered: measured with TigerVNC that is a
-ping-pong at the poll rate - 97 round trips a second in both directions, ~9 kB/s on the wire, 194
-packets/s - for as long as nothing on screen changes. The hold lives in the connection's state
-(`client.held`), never in the protocol coroutine: suspending the coroutine would also stop it
-reading, and the client's keystrokes would queue behind the held request (c1e3806). The driver
-answers it from its poll, when something inside the region changed, and sends one empty update per
-Server.HOLD_DEADLINE (1 s) as a sign of life if the client has gone quiet with the request
-outstanding - the deadline runs from the client's *latest* request, so a client that keeps asking
-while nothing changes is not answered at all. The hold survives that sign of life (the request has
-not been answered with content), which is what keeps a viewer that queues several requests - gtk-vnc
-sends a dozen at once - receiving changes afterwards. Measured after: 0.91 round trips a second
-either way with TigerVNC, a change delivered in ~19 ms while a request was held, and a keystroke
-injected in ~9 ms while a request was held.
-
-Client input is injected at the level KOReader's own device backends use: EV_ABS/EV_SYN events
-into Device.input:handleTouchEv for pointer events (press/release becomes a tap, a tap-and-move a
-drag; there is no multi-touch in VNC), EV_KEY through the device's own event_map for named keys
-(so the keysym -> KOReader key name mapping is device independent), and TextInput events for typed
-text. Every client's contact is the same one (slot 0), so it has one owner at a time: while one
-client's button is down another client's press is ignored, whole gesture (Server:_on_pointer).
-VNC Authentication reuses des.lua and mirrors the client's construction exactly.
-
-Injected input must be stamped on the clock the device stamps its own events with (the one
-GestureDetector probed; Server:_inject's `at` defaults to it). An event on another clock - os.time()
-is CLOCK_REALTIME in whole seconds - arms a hold timer decades away, and while such a timer is
-pending Input:waitEvent never returns to UIManager, so the scheduled poll task stops. A client press
-must not be injected the moment it is read: a contact that is down starves that same loop, so the
-plugin buffers it (Server:_on_pointer) until it is a tap (down+lift, one frame each), a drag (down +
-motion past Server.DRAG_THRESHOLD), or a real long press (the bare down, from Server:_flush_pointer
-at the detector's own hold interval).
-
-Four LuaSocket traps this hit, worth remembering: receive(n) only returns once it has all n bytes,
-so a non-blocking receive of a large chunk always "times out" with the data still in the kernel
-(read exactly the bytes the protocol owes, and give the socket a short positive timeout instead of
-zero), and a send on a zero-timeout socket can be dropped silently. Both a timed-out receive and a
-timed-out send still move bytes, and LuaSocket hands those back only in the third return value
-(receive's partial, send's last-byte index): ignoring them silently shifts every later message by
-the number of bytes lost, or sends the same bytes twice, while the connection stays up and nothing
-works. With that index handled a zero-timeout send loses nothing, and Server:_flush_client
-uses one for a client whose last flush sent no byte at all, so a client that stopped reading does
-not cost a blocking send per poll; its queue is capped at about two full frames (while over it, its
-messages are not read and nothing is encoded for it, Server:_backlogged) and it is dropped after
-Server.TX_STALL_TIMEOUT without progress. And RFB pointer input state (buttons, press_x/press_y, dragging) belongs to the input
-callback, which has to see the mask as it was *before* the message: storing it in the protocol layer
-first makes every press look like motion, so no click is ever injected. Also: FFI arrays are 0-based
-while the encoders index pixels 1..count, so the pixel-value array is allocated one slot larger.
-
-Four more lessons the same socket path cost. A FramebufferUpdate is several small writes (the
-header, then each rectangle's header and payload), and with Nagle on the server's accepted socket
-the later ones wait for the first one's ACK - ~40 ms added to every update, empty answer and fence
-reply, until tcp-nodelay is set (Server:_adopt_client; the client half does the same). A poll must
-read a whole buffer, not one protocol field: reading exactly the bytes the protocol owed made every
-six-byte pointer message cost four poll intervals (~41 ms), so a client's mouse moved at about 24
-messages a second. Pure-Lua framing is ~0.3 us per message, so latency was never the interpreter's
-fault - it was a syscall per field and a poll interval per message. And a test must never depend on
-the server being slow: an incremental request with nothing changed is answered at once, so a check
-that "worked" only because the answer took 50 ms is a bug.
-
-The server is off by default; it is started from the Network menu (or at boot by the menu's "Start
-with KOReader"), and the menu carries the only UI it has. The boot start is *deferred* to the next
-UI loop turn (`UIManager:nextTick`, scheduled from main.lua's init): at init() the screen and input
-may not be ready, and starting the server hooks UIManager. It is also scheduled exactly once, so
-nothing re-arms it and a manual stop stays a stop until the next KOReader start. A failed boot start
-is logged (warn) and left in the server's `last_error`, which the menu's status line shows; boot
-pops no dialog.
-
-The client's own "connect at start" is a per-profile `autoconnect` flag with the same deferral
+The "connect at start" is a per-profile `autoconnect` flag, deferred to the next UI loop turn
 (`VNC:schedule_autoconnect` -> `UIManager:nextTick` -> `VNC:autoconnect_at_boot`, scheduled once
 from init()). Only one profile may carry it: `Settings:save_profile` and `Settings:set_autoconnect`
 clear it on every other profile when it is set, and `Settings:normalise()` keeps the first flagged
@@ -662,20 +539,6 @@ intercepted (external plugins are not loaded before FileManager:init), so select
 KOReader open the file manager first and the deferred autoconnect then shows the viewer over it;
 that first frame is inherent to doing this without shipping a userpatch. With nothing flagged the
 entry is absent, and a stale `start_with` is only logged.
-
-The environment overrides (`VNC_KOPLUGIN_ENABLE_SERVER`, `_SERVER_HOST`, `_SERVER_PORT`,
-`_SERVER_PASSWORD`) are parsed once at load in `vnc/settings.lua:read_env`, behind a lookup seam
-(a function, `os.getenv` by default) so they are testable without touching the real environment.
-They take precedence over the stored server settings for the run but live outside `data.server`:
-the running server is built from `Settings:server_for_run()` - the stored table merged with the
-overrides (and the stored table itself when there are none) - while `data.server`, which the menu
-edits and `flush()` writes, never sees them, so the file stays byte-identical across an exit-time
-flush. `VNC_KOPLUGIN_ENABLE_SERVER` decides the boot start in place of the stored `autostart`: empty
-is no opinion, the trimmed words `0`/`no`/`false` mean do not start, anything else means start. An
-empty `VNC_KOPLUGIN_SERVER_PASSWORD` is a meaningful "no password", so it is kept.
-
-Its Kindle firewall hole follows httpinspector.koplugin (there is no sshd plugin in this KOReader to
-follow).
 
 KOReader internals relied on (could change under us): UIManager._window_stack (for "is a popup
 above us"), UIManager:scheduleIn/unschedule/nextTick/setDirty, VirtualKeyboard's inputbox protocol
@@ -791,11 +654,7 @@ retrying), platform text input is enabled exactly while the viewer is shown, typ
 text and physical keys reach the remote (through KOReader's own SDL event handler), the Send keys
 panel's combos, one-shot modifiers on keys and canvas actions, recent list, close paths and per-tab
 keysyms behave (with taps on its buttons delivered through the real widget stack), and the settings
-store survives a hand-edited or empty file. It also covers the server menu's autostart
-toggle, the environment overrides' parsing rules and precedence (through read_env's lookup seam),
-that a flush after them leaves the settings file byte-identical, and that the deferred tick starts
-the server exactly once when the setting (or the environment) asks for it. The client half gets
-the same treatment: the
+store survives a hand-edited or empty file. The
 `autoconnect` flag round-trips through the file, survives an edit that does not mention it, clears
 any other flagged profile (and a hand-edited file with two is normalised to the first on load), the
 actions dialog's switch and the list's marker work, the deferred tick connects the flagged profile
@@ -808,20 +667,6 @@ buffer that was painted but never refreshed is caught as stale pixels (that is t
 missing `"full"`/`"flashui"` on show/close and the missing flash on a wholesale change used to
 fail, with 60 % of the screen left over in the close case). `KO_HOME` is needed because KOReader's
 widget cache lives under it.
-
-Server half (headless):
-
-    PLUGIN=~/.config/koreader/plugins/vnc.koplugin
-    cd /usr/lib/koreader && \
-      KO_HOME=/tmp/vncv_server_home \
-      LUA_PATH="$PLUGIN/?.lua;./common/?.lua;./common/?/init.lua;;" LUA_CPATH="./common/?.so;;" \
-      ./luajit "$PLUGIN/tools/server_smoke.lua"
-
-It checks the pixel-format packing byte for byte, then round-trips every encoder through the
-client's own decoders, then drives the server protocol against the client protocol in process
-(including both VNC Authentication outcomes), then the real runtime over a TCP socket (listener,
-poll task, capture hook, encode, decode, pixels), and finally that a client PointerEvent becomes a
-KOReader gesture.
 
 Live end-to-end (GUI): run the mock, run KOReader, drive the plugin through KOReader's HTTP
 inspector (port 8989, httpinspector.autostart = true):
@@ -848,12 +693,6 @@ device/screen/bb can assert placement and rendering exactly.
 
 WHAT HAS BEEN VERIFIED, AND WHAT HAS NOT
 ----------------------------------------
-
-Server side, verified live: the server started from the plugin's own API served KOReader's real
-1920x1014 screen to tools/mock_vnc_client.py (an independent decoder) as one ZRLE update, and
-stopped cleanly. In-process, the same frames are decoded by the plugin's own client protocol and
-compared pixel by pixel. Not verified against a third-party VNC viewer (none is installed here)
-and not on real e-ink hardware.
 
 Verified on a desktop with the SDL Emulator device, against tools/mock_vnc_server.py:
 all seven encodings rendering in the live GUI; pointer, key and text input reaching the server;

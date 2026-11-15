@@ -1,5 +1,6 @@
 --[[--
-Stateful zlib wrapper: `inflate_ptr` for the RFB client, `deflate` for the RFB server.
+Stateful zlib wrapper: `inflate_ptr` for the RFB client, `deflate` for the test suites (they build
+compressed fixtures with it).
 
 KOReader's @{ffi.zlib} only exposes the one-shot `uncompress()`, which cannot be used for
 RFB: ZRLE and Tight keep **one zlib stream alive for the whole connection**, and a tile's
@@ -64,7 +65,7 @@ function ZStream.new()
     return self
 end
 
---- Creates a stream with `deflateInit_` already called (used by the server's ZRLE encoder).
+--- Creates a stream with `deflateInit_` already called (used by the tests to build ZRLE/Tight data).
 --- @tparam[opt=-1] number level zlib compression level
 function ZStream.new_deflate(level)
     local self = setmetatable({ mode = "deflate" }, ZStream)

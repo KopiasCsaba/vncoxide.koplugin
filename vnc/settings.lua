@@ -35,7 +35,7 @@ Settings.PROFILE_FIELDS = {
 }
 
 --- The only top-level keys of the file.
-Settings.DATA_KEYS = { "profiles", "settings", "server" }
+Settings.DATA_KEYS = { "profiles", "settings" }
 
 local known_data_key = {}
 for _, key in ipairs(Settings.DATA_KEYS) do known_data_key[key] = true end
@@ -235,92 +235,13 @@ local SETTING_CHECKS = {
     end,
 }
 
---- VNC server defaults (the `server` sub-table). See @{vnc.server}.
-Settings.SERVER_DEFAULTS = {
-    ip = "0.0.0.0",                  -- bind address; 0.0.0.0 serves every interface
-    port = 5900,
-    password = "",                   -- empty = no authentication (RFB "None" security)
-    autostart = false,               -- start the server with KOReader (main.lua defers it)
-}
-
---- Environment variables that override the server settings for one run.
----
---- They are read once (at load) and never written back to the settings file: a run binds what the
---- environment says while the menu keeps showing and editing the stored values.
-Settings.ENV = {
-    enable   = "VNC_KOPLUGIN_ENABLE_SERVER",   -- decides the boot start, in place of `autostart`
-    host     = "VNC_KOPLUGIN_SERVER_HOST",     -- overrides `ip`
-    port     = "VNC_KOPLUGIN_SERVER_PORT",     -- overrides `port`
-    password = "VNC_KOPLUGIN_SERVER_PASSWORD",  -- overrides `password`
-}
-
---[[--
-Reads the server environment once, behind a lookup seam so it is testable without touching the
-real environment.
-
-Rules (a value that is `nil` in the result means "no opinion": use the stored setting):
-
-* `enable`: unset or set-but-empty -> no opinion. Trimmed, case-insensitive `0`, `no` and `false`
-  -> do not start; anything else non-empty -> start. An accidentally exported empty variable must
-  therefore not open a listening server.
-* `host`: empty -> no opinion, otherwise the (trimmed) bind address.
-* `port`: an integer 1..65535 -> the port. Anything else is ignored with a warning.
-* `password`: empty-but-set is a meaningful override ("no password"), so any set value is kept
-  verbatim (not trimmed).
-
---- @tparam[opt] function getenv `name -> value|nil`; defaults to `os.getenv`
---- @treturn table `{ enable, host, port, password }`; absent means no opinion
-]]
-function Settings.read_env(getenv)
-    getenv = getenv or os.getenv
-    local env = {}
-
-    local enable = getenv(Settings.ENV.enable)
-    if enable ~= nil then
-        enable = enable:gsub("^%s+", ""):gsub("%s+$", ""):lower()
-        if enable ~= "" then
-            env.enable = not (enable == "0" or enable == "no" or enable == "false")
-        end
-    end
-
-    local host = getenv(Settings.ENV.host)
-    if host ~= nil then
-        host = host:gsub("^%s+", ""):gsub("%s+$", "")
-        if host ~= "" then env.host = host end
-    end
-
-    local port = getenv(Settings.ENV.port)
-    if port ~= nil then
-        local n = tonumber(port)
-        if n and n == math.floor(n) and n >= 1 and n <= 65535 then
-            env.port = math.floor(n)
-        else
-            logger.warn("vnc: ignoring an invalid", Settings.ENV.port .. ":", port)
-        end
-    end
-
-    local password = getenv(Settings.ENV.password)
-    if password ~= nil then env.password = password end
-
-    return env
-end
-
 --- Opens (and returns) the settings store at `path`.
 --- @param path string
---- @param[opt] function getenv lookup seam for @{Settings.read_env}; defaults to `os.getenv`
 --- @treturn table settings object with fields `ls` (LuaSettings) and `data` (raw table)
-function Settings.open(path, getenv)
+function Settings.open(path)
     local ls = LuaSettings:open(path)
-    -- The environment is read once, here, and kept away from `data` so it can never be flushed.
-    local self = setmetatable({ ls = ls, data = ls.data, env = Settings.read_env(getenv) }, Settings)
+    local self = setmetatable({ ls = ls, data = ls.data }, Settings)
     self:normalise()
-    local names = {}
-    for _, key in ipairs({ "enable", "host", "port", "password" }) do
-        if self.env[key] ~= nil then names[#names + 1] = key end
-    end
-    if #names > 0 then
-        logger.info("vnc: environment overrides in effect for this run: " .. table.concat(names, ", "))
-    end
     return self
 end
 
@@ -464,9 +385,6 @@ function Settings:normalise()
         old.toolbar_buttons = buttons
     end
     normalise_section("settings", Settings.DEFAULTS, SETTING_CHECKS)
-    local server = normalise_section("server", Settings.SERVER_DEFAULTS)
-    server.port = math.max(1, math.min(65535, math.floor(server.port)))
-    if server.ip == "" then server.ip = Settings.SERVER_DEFAULTS.ip end
 
     if type(data.profiles) ~= "table" then data.profiles = {} end
     local cleaned = {}
@@ -617,40 +535,6 @@ function Settings:delete_profile(name)
         end
     end
     return false
-end
-
---- The VNC server configuration sub-table (bind address, port, password).
---- @treturn table
-function Settings:server()
-    return self.data.server
-end
-
---- Whether the server should start with KOReader. The environment's enable variable, when it has
---- an opinion, wins over the stored `autostart` setting; otherwise the stored setting decides.
---- @treturn boolean
-function Settings:should_autostart()
-    if self.env.enable ~= nil then return self.env.enable end
-    return self.data.server.autostart == true
-end
-
---- The server settings this *run* uses: the stored table with the environment overrides merged in.
----
---- The overrides live outside `data.server`, so `flush()` cannot persist them. Without an override
---- the stored table itself is returned, so the menu and a running server share it exactly as
---- before; with one, the run gets a snapshot and the menu keeps showing/editing the stored values.
---- @treturn table
-function Settings:server_for_run()
-    local stored = self.data.server
-    local env = self.env
-    if env.host == nil and env.port == nil and env.password == nil then
-        return stored
-    end
-    return {
-        ip = env.host ~= nil and env.host or stored.ip,
-        port = env.port ~= nil and env.port or stored.port,
-        password = env.password ~= nil and env.password or stored.password,
-        autostart = stored.autostart,
-    }
 end
 
 --- @treturn any the global setting `key`, or nil
