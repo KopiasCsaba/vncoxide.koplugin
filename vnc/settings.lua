@@ -270,7 +270,7 @@ local function level_or_off(value)
 end
 
 --- The picture-quality presets of the viewer's Display panel, each a set of the four profile
---- fields above (false = the server's default). Documented in README.md.
+--- fields above (false = the server's default). Documented in docs/USER_GUIDE.md.
 Settings.QUALITY_PRESETS = {
     { id = "best", label = _("Best"), color_depth = 24, enable_tight = false, jpeg_quality = false,
       compress_level = false },
