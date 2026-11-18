@@ -2,24 +2,24 @@
 The remote framebuffer plane and the view transform that maps it onto the screen.
 
 The plane is a `TYPE_BBRGB24` BlitBuffer holding the remote pixels 1:1 (that is the format
-@{vnc.pxfmt} negotiates, so decoders write straight into it). The view transform is a
+@{vncoxide.pxfmt} negotiates, so decoders write straight into it). The view transform is a
 uniform `scale` (screen pixels per remote pixel) plus an offset `view_x, view_y` naming the
 remote coordinate shown at the canvas' top-left corner.
 
 What the view shows is kept in a persistent canvas-sized buffer (see @{Remote:draw_to}): a remote
 update rescales only the canvas pixels that depend on the remote rects it changed
-(@{vnc.scaler}), and every paint blits the whole buffer. The contrast of the picture
+(@{vncoxide.scaler}), and every paint blits the whole buffer. The contrast of the picture
 (@{Remote:set_contrast}) is applied on that plane-to-canvas step, so the plane always holds the
 remote pixels as sent.
 
-@module vnc.framebuffer
+@module vncoxide.framebuffer
 ]]
 
 local BB = require("ffi/blitbuffer")
-local Renderer = require("vnc/renderer")
-local Scaler = require("vnc/scaler")
-local SharedMem = require("vnc/sharedmem")
-local Util = require("vnc/util")
+local Renderer = require("vncoxide/renderer")
+local Scaler = require("vncoxide/scaler")
+local SharedMem = require("vncoxide/sharedmem")
+local Util = require("vncoxide/util")
 local time = require("ui/time")
 
 local Remote = {}
@@ -59,7 +59,7 @@ Creates a plane of `width` x `height` remote pixels.
 --- @tparam number width
 --- @tparam number height
 --- @tparam[opt] table opts `shared = true`: the plane lives in memory shared with forked
----   worker processes (see @{vnc.workers})
+---   worker processes (see @{vncoxide.workers})
 ]]
 function Remote.new(width, height, opts)
     local self = setmetatable({
@@ -129,7 +129,7 @@ Chooses how the view is scaled: `"smooth"` (bilinear up, area average down) or `
 --- @tparam string mode
 ]]
 function Remote:set_scaling(mode)
-    assert(mode == "smooth" or mode == "sharp", "vnc.framebuffer: unknown scaling mode")
+    assert(mode == "smooth" or mode == "sharp", "vncoxide.framebuffer: unknown scaling mode")
     if mode ~= self.scaling then
         self.scaling = mode
         self._all_stale = true
@@ -139,7 +139,7 @@ end
 --[[--
 Sets the contrast of the picture as it is drawn (`1`: as the server sent it).
 
-The plane keeps the remote pixels untouched; the curve (@{vnc.scaler.contrast_lut}) is applied
+The plane keeps the remote pixels untouched; the curve (@{vncoxide.scaler.contrast_lut}) is applied
 where the canvas is computed from the plane, folded into the scaler's per-pixel conversion. So a
 change needs no new update from the server: the whole canvas is recomputed from the plane on the
 next paint, exactly like after a scaling-mode change. At neutral there is no curve at all.
@@ -433,11 +433,11 @@ what dithering the whole canvas would give), and that buffer is blitted as is.
 Sets `last_recomputed_px` (canvas pixels rescaled) and, when dithering, `last_blit_ms` (the
 dithering plus the blit).
 
-While worker processes run (`worker_link`, see @{vnc.workers}) nothing is scaled here: a view
+While worker processes run (`worker_link`, see @{vncoxide.workers}) nothing is scaled here: a view
 (scale, offset, canvas size and type, dithering, scaling mode, contrast, inversion) other than the
 one last sent goes to the scale worker as a `G` message with a new id, and the shared canvas the
 workers keep is blitted as it is. The canvas rects the scale worker then reports for that id are
-repainted by the session's poll (@{vnc.session}).
+repainted by the session's poll (@{vncoxide.session}).
 --- @tparam BlitBuffer bb destination
 --- @tparam boolean dither use the dithered blit (grey-screen screenshot path)
 --- @treturn boolean whether the canvas area was painted

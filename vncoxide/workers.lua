@@ -1,10 +1,10 @@
 --[[--
 The decode worker and the scale worker: a session's per-pixel work in two forked processes.
 
-After the RFB handshake the UI process forks (see @{vnc.worker}) a **decode worker**, which
+After the RFB handshake the UI process forks (see @{vncoxide.worker}) a **decode worker**, which
 inherits the socket and the protocol state and decodes updates into the remote plane, and a
 **scale worker**, which scales the visible part of the plane into a canvas. Plane and canvas are
-`MAP_SHARED` memory (@{vnc.sharedmem}); the pipes carry only small messages:
+`MAP_SHARED` memory (@{vncoxide.sharedmem}); the pipes carry only small messages:
 
 - UI → decode: `K <keysym> <0|1>[ r]` (r: a held key's repeat), `P <x> <y> <mask>`, `V <x> <y> <w> <h>` | `V -`, `F`,
   `N <what>`, `T <len>` + bytes (cut text), `S` (detached: stop reading), `R` (attached:
@@ -28,15 +28,15 @@ the user is idle shows the reconnect box instead of a frozen picture. A pong is 
 the poll interval (@{Link:interval}): an idle session costs one ping and pong per `PING_AFTER`
 and stays at `Session.POLL_INTERVAL`.
 
-@module vnc.workers
+@module vncoxide.workers
 ]]
 
 local BB = require("ffi/blitbuffer")
 local ffi = require("ffi")
-local Renderer = require("vnc/renderer")
-local Session = require("vnc/session")
-local SharedMem = require("vnc/sharedmem")
-local Worker = require("vnc/worker")
+local Renderer = require("vncoxide/renderer")
+local Session = require("vncoxide/session")
+local SharedMem = require("vncoxide/sharedmem")
+local Worker = require("vncoxide/worker")
 local logger = require("logger")
 require("ffi/posix_h") -- pipe, poll, close, _exit
 local C = ffi.C
@@ -476,7 +476,7 @@ end
 
 --[[--
 The watchdogs, after a tick's reads and writes: the scale worker's message when no `C` arrived
-for `SCALE_STALL` seconds while a `G` (`view_id`, see @{vnc.framebuffer.Remote:draw_to}) is
+for `SCALE_STALL` seconds while a `G` (`view_id`, see @{vncoxide.framebuffer.Remote:draw_to}) is
 unanswered; a decode worker's stall when the commands queued for it have not moved for
 `DECODE_STALL` seconds, or nothing at all came from it for `DECODE_STALL` seconds after a ping.
 Sends that ping (`I <n>`, one outstanding at a time) once nothing came from the decode worker for
@@ -622,7 +622,7 @@ function Workers.start(session)
         link:stop()
         return nil, "starting the worker processes failed: " .. tostring(perr), true
     end
-    logger.info("vnc: decoding in worker processes")
+    logger.info("vncoxide: decoding in worker processes")
     return link
 end
 

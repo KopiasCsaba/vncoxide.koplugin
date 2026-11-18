@@ -1,12 +1,12 @@
 --[[--
-vnc.koplugin — a VNC (RFB 3.8) client for KOReader.
+VNCoxide (vncoxide.koplugin) — a VNC (RFB 3.8) viewer for KOReader.
 
 Adds one entry to the file-browser main menu ("More tools - VNC viewer") and owns the
 lifecycle of the single viewer app and of the connection sessions. Sessions outlive the app:
 leaving the app only detaches it, so the connection (and the plane) is still there when the
 viewer is reopened.
 
-@module vnc.main
+@module vncoxide.main
 ]]
 
 local _ = require("gettext")
@@ -20,22 +20,22 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 
-local Dialogs = require("vnc/dialogs")
-local Session = require("vnc/session")
-local Settings = require("vnc/settings")
-local ViewerApp = require("vnc/app")
+local Dialogs = require("vncoxide/dialogs")
+local Session = require("vncoxide/session")
+local Settings = require("vncoxide/settings")
+local ViewerApp = require("vncoxide/app")
 
 --- Whether the once-per-run boot work has been scheduled. KOReader instantiates the plugin once per
 --- FileManager and once per ReaderUI; only the first instance of a run may schedule it.
 local boot_scheduled = false
 
 local VNC = WidgetContainer:extend{
-    name = "vnc",
+    name = "vncoxide",
     is_doc_only = false,
     settings_file = nil, -- set in init()
-    settings = nil,      -- @{vnc.settings} store
-    sessions = {},       -- profile name -> @{vnc.session}
-    app = nil,           -- the (single) live @{vnc.app}
+    settings = nil,      -- @{vncoxide.settings} store
+    sessions = {},       -- profile name -> @{vncoxide.session}
+    app = nil,           -- the (single) live @{vncoxide.app}
     connection_list = nil, -- the connection list while it is on screen
 }
 
@@ -45,10 +45,37 @@ local VNC = WidgetContainer:extend{
 --- @{apps.filemanager.filemanagermenu.FileManagerMenu:getStartWithMenuTable} and reader.lua);
 --- an unknown one simply leaves it starting in the file browser, which is exactly where the
 --- deferred autoconnect wants it.
-VNC.START_WITH = "vnc_autoconnect"
+VNC.START_WITH = "vncoxide_autoconnect"
+
+--- The settings file this plugin used while it was named vnc.koplugin.
+VNC.LEGACY_SETTINGS = "vnc.lua"
+VNC.LEGACY_START_WITH = "vnc_autoconnect"
+
+--- One-time import from the vnc.koplugin era: copies `settings/vnc.lua` to the new file when the
+--- new file does not exist yet (the old file is left alone), and carries KOReader's `start_with`
+--- choice over to the new value.
+function VNC.migrate_legacy_settings(settings_dir, new_path)
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(new_path, "mode") then return false end
+    local old = io.open(settings_dir .. "/" .. VNC.LEGACY_SETTINGS, "rb")
+    if not old then return false end
+    local content = old:read("*a")
+    old:close()
+    local out = io.open(new_path, "wb")
+    if not out then return false end
+    out:write(content)
+    out:close()
+    if G_reader_settings:readSetting("start_with") == VNC.LEGACY_START_WITH then
+        G_reader_settings:saveSetting("start_with", VNC.START_WITH)
+    end
+    logger.info("vncoxide: imported settings from " .. VNC.LEGACY_SETTINGS)
+    return true
+end
 
 function VNC:init()
-    self.settings_file = DataStorage:getSettingsDir() .. "/vnc.lua"
+    local settings_dir = DataStorage:getSettingsDir()
+    self.settings_file = settings_dir .. "/vncoxide.lua"
+    VNC.migrate_legacy_settings(settings_dir, self.settings_file)
     self.settings = Settings.open(self.settings_file)
 
     -- File manager only (we have nothing to show inside a document).
@@ -80,7 +107,7 @@ function VNC:schedule_autoconnect()
         if G_reader_settings:readSetting("start_with") == VNC.START_WITH then
             -- The setting still names us but there is nothing to connect: KOReader starts
             -- normally (core does not know the value) and this is the only trace of it.
-            logger.warn("vnc: start_with is \"" .. VNC.START_WITH
+            logger.warn("vncoxide: start_with is \"" .. VNC.START_WITH
                 .. "\" but no connection is flagged to auto connect")
         end
         return
@@ -100,7 +127,7 @@ function VNC:autoconnect_at_boot()
 end
 
 function VNC:addToMainMenu(menu_items)
-    menu_items.vnc = {
+    menu_items.vncoxide = {
         text = _("VNC viewer"),
         sorting_hint = "more_tools",
         callback = function() self:show() end,
@@ -155,7 +182,7 @@ function VNC:add_start_with_entry(menu_items)
             plugin.settings:flush()
         end,
     }
-    menu_items.vnc_start = entry
+    menu_items.vncoxide_start = entry
 
     -- The sorter appends `entry` to this table once the menu is built; hiding it here (rather than
     -- not adding it) keeps the placement in the sorter's hands while presence follows the flag.
@@ -406,7 +433,7 @@ end
 function VNC:save_profile(profile, existing_name)
     local ok, err = self.settings:save_profile(profile, existing_name)
     if not ok then
-        logger.warn("vnc: could not save profile:", err)
+        logger.warn("vncoxide: could not save profile:", err)
         return false, err
     end
     if existing_name and existing_name ~= profile.name then
@@ -446,7 +473,7 @@ dithering on a BB8 screen, see `ViewerApp:paintTo`). View: the zoom factor, or `
 for both fitted zoom modes (so "Fit (with keyboard)" is measured as "Fit"), and the global
 scaling.
 
---- @treturn table `{ w, h, bb_type, dither, view_mode, scaling }` (see @{vnc.benchmark})
+--- @treturn table `{ w, h, bb_type, dither, view_mode, scaling }` (see @{vncoxide.benchmark})
 ]]
 function VNC:benchmark_canvas()
     local Screen = Device.screen

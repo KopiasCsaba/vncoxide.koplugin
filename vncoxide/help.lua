@@ -4,7 +4,7 @@ strip, the display panel, the menu and the reconnect behaviour. `Help.ROWS` is t
 source of the gesture rows; `Help.text(mode)` builds the whole page, the current mode's gestures
 first. Shown by `ViewerApp:open_help` in a TextViewer.
 
-@module vnc.help
+@module vncoxide.help
 ]]
 
 local _ = require("gettext")

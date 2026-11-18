@@ -5,7 +5,7 @@ set has nothing fitting for.
 KOReader looks icons up by name in its own folders only, so these are handed over by path: an
 absolute one, as KOReader's working directory is not the plugin's.
 
-@module vnc.icons
+@module vncoxide.icons
 ]]
 
 local IconWidget = require("ui/widget/iconwidget")
@@ -13,9 +13,9 @@ local lfs = require("libs/libkoreader-lfs")
 
 local Icons = {}
 
--- this file is <plugin>/vnc/icons.lua: the plugin folder is two levels up
+-- this file is <plugin>/vncoxide/icons.lua: the plugin folder is two levels up
 local source = debug.getinfo(1, "S").source:gsub("^@", "")
-local plugin_dir = source:match("^(.*)[/\\]vnc[/\\][^/\\]*$") or "."
+local plugin_dir = source:match("^(.*)[/\\]vncoxide[/\\][^/\\]*$") or "."
 if plugin_dir:sub(1, 1) ~= "/" then
     plugin_dir = lfs.currentdir() .. (plugin_dir == "." and "" or "/" .. plugin_dir:gsub("^%./", ""))
 end

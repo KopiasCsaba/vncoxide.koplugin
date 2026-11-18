@@ -3,14 +3,14 @@
 Headless test for the viewer's UI plumbing: the connection dialogs' back-flow and the toolbar's
 reflow on rotation.
 
-It drives the real @{vnc.main} plugin, its @{vnc.dialogs} and a real
-@{vnc.app} against KOReader's widget stack (no KOReader process and no VNC server are
+It drives the real @{vncoxide.main} plugin, its @{vncoxide.dialogs} and a real
+@{vncoxide.app} against KOReader's widget stack (no KOReader process and no VNC server are
 needed; a profile pointing at a closed port is used to exercise the failure path).
 
 Run it from the KOReader root, with a writable data directory (KOReader wants a `cache/` dir):
 
   cd /usr/lib/koreader
-  PLUGIN=~/.config/koreader/plugins/vnc.koplugin
+  PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
   KO_HOME=/tmp/vncv_ui_home \
     LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
     ./luajit "$PLUGIN/tools/ui_smoke.lua"
@@ -179,7 +179,7 @@ end
 -- ---------------------------------------------------------------- a plugin with two profiles
 
 local plugin_module = assert(dofile(plugin_dir .. "/main.lua"))
-plugin_module.name = "vnc"
+plugin_module.name = "vncoxide"
 local settings_path = data_dir .. "/ui_smoke_store.lua"
 os.remove(settings_path)
 os.remove(settings_path .. ".old")
@@ -317,8 +317,8 @@ end)
 --- Every Display panel zoom choice survives a restart: the numeric presets (100%, ...) used to be
 --- dropped on load, the type of the default being a string, so the viewer reopened fitted.
 check("every_zoom_choice_survives_a_restart", function()
-    local Settings = require("vnc/settings")
-    local DisplayPanel = require("vnc/displaypanel")
+    local Settings = require("vncoxide/settings")
+    local DisplayPanel = require("vncoxide/displaypanel")
     local path = data_dir .. "/ui_smoke_zoom_mode.lua"
     for _i, choice in ipairs(DisplayPanel.ZOOM_CHOICES) do
         os.remove(path)
@@ -339,7 +339,7 @@ end)
 -- ---------------------------------------------------------------- auto connect on start
 
 check("autoconnect_flag_round_trips", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_autoconnect_roundtrip.lua"
     os.remove(path)
     os.remove(path .. ".old")
@@ -390,7 +390,7 @@ end)
 
 check("settings_normalise_keeps_a_single_autoconnect", function()
     -- A hand-edited file may flag several profiles; loading must normalise it down to one.
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local writeToFile = require("util").writeToFile
     local path = data_dir .. "/ui_smoke_autoconnect_normalise.lua"
     os.remove(path)
@@ -512,6 +512,32 @@ check("boot_autoconnect_failure_is_reported_like_a_manual_one", function()
     UIManager._window_stack = {}
 end)
 
+check("legacy_vnc_settings_are_imported_once", function()
+    local dir = data_dir .. "/legacy_settings"
+    lfs.mkdir(dir)
+    local new_path = dir .. "/vncoxide.lua"
+    os.remove(new_path)
+    local function write(path, text) local f = assert(io.open(path, "wb")); f:write(text); f:close() end
+    local function read(path) local f = io.open(path, "rb"); if not f then return nil end
+        local t = f:read("*a"); f:close(); return t end
+    assert_true(plugin_module.migrate_legacy_settings(dir, new_path) == false,
+        "nothing to import without a vnc.lua")
+    assert_true(read(new_path) == nil, "and no new file is made")
+    write(dir .. "/vnc.lua", "return { marker = 1 }\n")
+    local saved_start = G_reader_settings:readSetting("start_with")
+    G_reader_settings:saveSetting("start_with", "vnc_autoconnect")
+    assert_true(plugin_module.migrate_legacy_settings(dir, new_path) == true, "vnc.lua is imported")
+    assert_true(read(new_path) == "return { marker = 1 }\n", "byte for byte")
+    assert_true(read(dir .. "/vnc.lua") ~= nil, "the old file is left alone")
+    assert_true(G_reader_settings:readSetting("start_with") == plugin_module.START_WITH,
+        "the old start_with value is carried over")
+    write(dir .. "/vnc.lua", "return { marker = 2 }\n")
+    assert_true(plugin_module.migrate_legacy_settings(dir, new_path) == false,
+        "never again once the new file exists")
+    assert_true(read(new_path) == "return { marker = 1 }\n", "so the new file is not overwritten")
+    G_reader_settings:saveSetting("start_with", saved_start)
+end)
+
 check("start_with_entry_lands_in_the_submenu_only_while_flagged", function()
     -- The extension point is `sorting_hint = "start_with"`: KOReader's own MenuSorter nests such an
     -- item into the "Start with" submenu (whose id comes from ui/elements/filemanager_menu_order).
@@ -531,7 +557,7 @@ check("start_with_entry_lands_in_the_submenu_only_while_flagged", function()
         }
         plugin:addToMainMenu(menu_items)
         -- this scoped probe only has ids for the file-manager menus; drop the plugin's other items
-        menu_items.vnc = nil
+        menu_items.vncoxide = nil
         return menu_items, MenuSorter:mergeAndSort("filemanager", menu_items, order)
     end
     local function find_start_with(tbl)
@@ -651,8 +677,8 @@ end)
 --- @tparam[opt] number plane_w, plane_h the remote plane's size (400x300 by default)
 --- @treturn table, table, table the app, its remote plane and a record of what it sent
 local function new_app(plane_w, plane_h, opts)
-    local ViewerApp = require("vnc/app")
-    local Remote = require("vnc/framebuffer")
+    local ViewerApp = require("vncoxide/app")
+    local Remote = require("vncoxide/framebuffer")
     local remote = Remote.new(plane_w or 400, plane_h or 300)
     local sent = { pointer = {}, key = {}, input = 0, areas = {}, profile_updates = {}, full_updates = 0,
                    connects = {}, attaches = 0, hangups = 0 }
@@ -737,7 +763,7 @@ local function hold_toolbar(app, id)
 end
 
 check("pointer_mode_is_cleaned_and_kept_per_profile", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_pointer_mode.lua"; os.remove(path)
     local s = Settings.open(path)
     s:save_profile{ name = "m", host = "h", port = 1, pointer_mode = "mouse" }
@@ -1013,7 +1039,7 @@ end)
 --- `sessions` is shared by all instances; a session made by an instance that KOReader has since
 --- replaced must report its drop to the instance showing the viewer, i.e. to its reconnect box.
 check("a_session_reports_to_the_instance_that_shows_it", function()
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local session = Session.new{ profile = store:get_profile("good") }
     local old = setmetatable({ sessions = plugin.sessions }, { __index = plugin_module })
     session.on_state = function(state, err) old:on_session_state(session, state, err) end
@@ -1132,7 +1158,7 @@ check("settings_file_is_kept_in_shape", function()
     -- There is no schema version and no migration; the store still has to survive a file that a
     -- user edited by hand (or that does not exist yet). `LuaSettings` caches one instance per
     -- path (and flushing on close would overwrite the file), so each case gets its own path.
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local writeToFile = require("util").writeToFile   -- (data, path, force_flush, lua_dofile_ready)
 
     local fresh = data_dir .. "/ui_smoke_settings_fresh.lua"
@@ -1236,7 +1262,7 @@ check("keyboard_yields_to_popups", function()
 end)
 
 check("keyboard_always_visible_migrates_to_keyboard_shown", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local writeToFile = require("util").writeToFile
     for _, case in ipairs({ { "true", true }, { "false", false }, { nil, false } }) do
         local path = data_dir .. "/ui_smoke_keyboard_shown.lua"
@@ -1385,7 +1411,7 @@ check("physical_modifiers_reach_the_remote_through_koreader_input", function()
     assert_true(got == "+FFE3 +FFE1 +54 -54 -FFE1 -FFE3", "Ctrl+Shift+T released modifiers first, got " .. got)
     -- Ctrl+Left (a named key; at the rotation the test runs in, Left stays Left)
     local rota = Screen:getRotationMode()
-    local expect_left = string.format("%X", require("vnc/keysyms").special[Device.input.rotation_map[rota].Left or "Left"])
+    local expect_left = string.format("%X", require("vncoxide/keysyms").special[Device.input.rotation_map[rota].Left or "Left"])
     sdl(CTRL, 1); sdl(LEFT, 1); sdl(LEFT, 0); sdl(CTRL, 0)
     got = take()
     assert_true(got == "+FFE3 +" .. expect_left .. " -" .. expect_left .. " -FFE3", "Ctrl+Left, got " .. got)
@@ -1454,7 +1480,7 @@ end)
 --- A reconnect (and a DesktopSize that changes nothing) reports the same size again: that is not a
 --- new desktop, so a numeric zoom and the place it shows stay, and the plane is not reallocated.
 check("remote_resize_to_the_same_size_keeps_the_view", function()
-    local Remote = require("vnc/framebuffer")
+    local Remote = require("vncoxide/framebuffer")
     local remote = Remote.new(800, 600)
     remote:fit_view(400, 300)
     remote:set_scale(2)
@@ -1490,7 +1516,7 @@ check("page_buttons_count_as_input_taps_do_not", function()
     assert_true(sent.input >= 1, "a wheel page button must hold screen updates")
 
     -- the real session: a key marks input, a pointer event does not
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local real_now = Session._now
     Session._now = function() return 50 end
     local s = Session.new{ profile = { name = "t", host = "127.0.0.1", port = 1, password = "" } }
@@ -1509,7 +1535,7 @@ check("page_buttons_count_as_input_taps_do_not", function()
 end)
 
 check("page_buttons_setting_validates", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     assert_true(Settings.DEFAULTS.page_buttons == "keys", "default must be keys")
     local path = data_dir .. "/ui_smoke_page_buttons.lua"
     for _, bad in ipairs({ "bogus", 5, true }) do
@@ -1554,7 +1580,7 @@ check("page_buttons_menu_entry", function()
 end)
 
 check("scaling_setting_defaults_and_validates", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     assert_true(Settings.DEFAULTS.scaling == "smooth", "default must be smooth")
     local path = data_dir .. "/ui_smoke_scaling.lua"
     for _, bad in ipairs({ '"blurry"', "5", "true" }) do
@@ -1680,7 +1706,7 @@ end)
 --- Worker processes are the viewer's architecture, not a setting: no menu switch, and a
 --- `worker_processes` key left in a settings file by an older version loads cleanly and is dropped.
 check("worker_processes_is_no_setting", function()
-    assert_true(require("vnc/settings").DEFAULTS.worker_processes == nil, "no default")
+    assert_true(require("vncoxide/settings").DEFAULTS.worker_processes == nil, "no default")
     local app, remote = new_app()
     local menu = app:open_menu()
     for _, item in ipairs(menu.item_table) do
@@ -1693,7 +1719,7 @@ check("worker_processes_is_no_setting", function()
         local f = io.open(path, "w")
         f:write('return { settings = { worker_processes = ' .. stored .. ', scaling = "sharp" } }')
         f:close()
-        local st = require("vnc/settings").open(path)
+        local st = require("vncoxide/settings").open(path)
         assert_true(st.data.settings.worker_processes == nil, "a stored " .. stored .. " is dropped")
         assert_true(st:get_setting("worker_processes") == nil, "and not read back")
         assert_true(st.data.settings.scaling == "sharp", "the rest of the file loads")
@@ -1706,7 +1732,7 @@ end)
 
 --- Every viewer connection asks for the workers; the picture benchmark's sessions stay in-process.
 check("viewer_connections_start_workers_benchmark_sessions_do_not", function()
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local real_new = Session.new
     local seen = {}
     -- (false, not nil, for an absent flag: the list keeps its length)
@@ -1718,7 +1744,7 @@ check("viewer_connections_start_workers_benchmark_sessions_do_not", function()
         plugin:connect_profile("dead")
         settle_connects(plugin)
         assert_true(#seen == 1 and seen[1] == true, "connect_profile asks for workers: " .. tostring(seen[1]))
-        local Benchmark = require("vnc/benchmark")
+        local Benchmark = require("vncoxide/benchmark")
         bench = Benchmark.new{
             profile = store:get_profile("dead"),
             combinations = { Benchmark.COMBINATIONS[1] },
@@ -2193,7 +2219,7 @@ end)
 -- ---------------------------------------------------------------- picture settings (per connection)
 
 check("picture_settings_are_profile_fields_kept_in_shape", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local writeToFile = require("util").writeToFile
     local path = data_dir .. "/ui_smoke_settings_picture.lua"
     writeToFile([==[
@@ -2226,7 +2252,7 @@ end)
 
 check("a_stored_global_tight_becomes_the_profile_default", function()
     -- `enable_tight` was a global setting in released versions: a user who had it on keeps it.
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local writeToFile = require("util").writeToFile
     local path = data_dir .. "/ui_smoke_settings_legacy_tight.lua"
     writeToFile([==[
@@ -2254,7 +2280,7 @@ check("a_stored_global_tight_becomes_the_profile_default", function()
 end)
 
 check("save_profile_keeps_omitted_picture_fields", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_settings_picture_save.lua"
     os.remove(path)
     local s = Settings.open(path)
@@ -2289,7 +2315,7 @@ end
 local SUB = "   \u{21B3} "
 --- A connected session for profile `name` whose remote records `set_scaling` calls.
 local function live_session(name)
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local session = Session.new{ profile = store:get_profile(name) }
     session.state = "connected"
     session.remote = { calls = {}, set_scaling = function(self, mode) self.calls[#self.calls + 1] = mode end }
@@ -2306,7 +2332,7 @@ local function button_starting(widget, prefix)
 end
 
 check("editor_picture_settings_save_and_cancel", function()
-    local Dialogs = require("vnc/dialogs")
+    local Dialogs = require("vncoxide/dialogs")
     store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, color_depth = 24,
         enable_tight = false, jpeg_quality = false, compress_level = false }, "good")
     local NEXT = "Takes effect on the next connection."
@@ -2455,8 +2481,8 @@ end)
 
 check("session_hands_the_profile_picture_settings_to_the_protocol", function()
     local socket = require("socket")
-    local Protocol = require("vnc/protocol")
-    local Session = require("vnc/session")
+    local Protocol = require("vncoxide/protocol")
+    local Session = require("vncoxide/session")
     local listener = assert(socket.bind("127.0.0.1", 0))
     local _, port = listener:getsockname()
     local session = Session.new{
@@ -2483,7 +2509,7 @@ check("session_hands_the_profile_picture_settings_to_the_protocol", function()
 end)
 
 check("editor_reconnect_notice_only_for_per_connection_fields", function()
-    local Dialogs = require("vnc/dialogs")
+    local Dialogs = require("vncoxide/dialogs")
     local RECONNECT = "Reconnect to apply the new settings."
     store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, color_depth = 24,
         enable_tight = false, jpeg_quality = false, compress_level = false}, "good")
@@ -2519,8 +2545,8 @@ end)
 
 check("session_applies_the_global_scaling_to_its_remote", function()
     local socket = require("socket")
-    local Protocol = require("vnc/protocol")
-    local Session = require("vnc/session")
+    local Protocol = require("vncoxide/protocol")
+    local Session = require("vncoxide/session")
     local listener = assert(socket.bind("127.0.0.1", 0))
     local _, port = listener:getsockname()
     local session = Session.new{
@@ -2549,7 +2575,7 @@ check("session_applies_the_global_scaling_to_its_remote", function()
 end)
 
 check("session_teardown_drops_the_timing_state", function()
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local session = Session.new{ profile = { name = "t", host = "h", port = 1 } }
     session.tm = { bytes = 0 }
     session:_teardown_connection()
@@ -2609,7 +2635,7 @@ end)
 
 check("onscreen_keyboard_enter_and_tab_send_their_keys", function()
     -- the on-screen keyboard's Enter types "\n" through the inputbox stub
-    local Keysyms = require("vnc/keysyms")
+    local Keysyms = require("vncoxide/keysyms")
     assert_true(Keysyms.from_char("\n") == 0xFF0D and Keysyms.from_char("\r") == 0xFF0D, "newline is Return")
     assert_true(Keysyms.from_char("\t") == 0xFF09, "tab is Tab")
     assert_true(Keysyms.from_char("\1") == nil and Keysyms.from_char("\127") == nil, "other control characters have no key")
@@ -2618,7 +2644,7 @@ check("onscreen_keyboard_enter_and_tab_send_their_keys", function()
 end)
 
 check("wifi_is_turned_off_by_the_last_connection_only", function()
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local offs = 0
     local net = { turnOffWifi = function() offs = offs + 1 end }
     local fake_plugin = { sessions = {} }
@@ -2637,7 +2663,7 @@ check("wifi_is_turned_off_by_the_last_connection_only", function()
 end)
 
 check("retry_mode_keeps_wifi_on_until_the_loop_ends", function()
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local offs, ons = 0, 0
     local net = { isWifiOn = function() return true end, turnOffWifi = function() offs = offs + 1 end,
                   turnOnWifiAndWaitForConnection = function() ons = ons + 1 end }
@@ -2660,7 +2686,7 @@ check("retry_mode_keeps_wifi_on_until_the_loop_ends", function()
 end)
 
 check("a_retrying_session_inherits_the_wifi_duty", function()
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local offs = 0
     local net = { isWifiOn = function() return true end, turnOffWifi = function() offs = offs + 1 end }
     local plugin = { sessions = {} }
@@ -2772,7 +2798,7 @@ end)
 local BENCH_BUTTON = "Find fastest picture settings"
 local BENCH_INTRO = "Tries 11 picture-setting combinations on this connection, twice each, in opposite order, a few seconds per try.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end."
 
---- A stand-in for vnc/benchmark: records what the UI asks of it; the test drives the callbacks.
+--- A stand-in for vncoxide/benchmark: records what the UI asks of it; the test drives the callbacks.
 local FakeBench = { instances = {} }
 FakeBench.__index = FakeBench
 function FakeBench.new(opts)
@@ -2799,7 +2825,7 @@ local BENCH_RESULTS = {
 
 --- Opens the Connect/Edit/Delete dialog for `good` with the fake benchmark injected.
 local function open_bench_actions()
-    local Dialogs = require("vnc/dialogs")
+    local Dialogs = require("vncoxide/dialogs")
     Dialogs.Benchmark = FakeBench
     FakeBench.instances = {}
     plugin.sessions = {}
@@ -2832,7 +2858,7 @@ check("bench_button_and_intro_text", function()
     answer_confirm(intro, false)
     expect_top(is_actions, "the actions dialog after Cancel in the intro")
     assert_true(#FakeBench.instances == 0, "Cancel in the intro starts nothing")
-    require("vnc/dialogs").Benchmark = nil
+    require("vncoxide/dialogs").Benchmark = nil
 end)
 
 check("bench_start_shows_progress_and_cancel_returns", function()
@@ -2864,7 +2890,7 @@ check("bench_start_shows_progress_and_cancel_returns", function()
     for _, k in ipairs{ "color_depth", "enable_tight", "jpeg_quality", "compress_level" } do
         assert_true(after[k] == before[k], "cancel must not change " .. k)
     end
-    require("vnc/dialogs").Benchmark = nil
+    require("vncoxide/dialogs").Benchmark = nil
 end)
 
 check("bench_canvas_follows_zoom_scaling_and_orientation", function()
@@ -2947,7 +2973,7 @@ check("bench_results_table_and_apply_best", function()
     UIManager:close(info)
     expect_top(is_actions, "the actions dialog under the message")
     for _, w in ipairs(stack()) do assert_true(w ~= viewer, "results viewer closed") end
-    require("vnc/dialogs").Benchmark = nil
+    require("vncoxide/dialogs").Benchmark = nil
 end)
 
 check("bench_results_rows_fit_one_line_on_era_portrait", function()
@@ -2956,7 +2982,7 @@ check("bench_results_rows_fit_one_line_on_era_portrait", function()
     local era = require("ffi/blitbuffer").new(1264, 1680, saved_bb:getType())
     Screen.bb = era
     local ok, err = pcall(function()
-        local Dialogs = require("vnc/dialogs")
+        local Dialogs = require("vncoxide/dialogs")
         local worst = { combination = bench_combo(24, true, 2, 4, "24-bit, Tight, compr. 2, JPEG 4"), ok = true,
             tile_px_per_s = 10e6, full_px_per_s = 1e6, tile_ms = 999, full_ms = 9999, full_bytes = 9999 * 1024 }
         local results = { worst, BENCH_RESULTS[1], BENCH_RESULTS[2] }
@@ -2989,7 +3015,7 @@ check("bench_results_close_returns_without_saving", function()
     viewer_buttons(top())["Close"].callback()
     expect_top(is_actions, "the actions dialog after Close")
     assert_true(store:get_profile("good").color_depth == before, "Close saves nothing")
-    require("vnc/dialogs").Benchmark = nil
+    require("vncoxide/dialogs").Benchmark = nil
 end)
 
 check("bench_nothing_scored_has_no_apply", function()
@@ -3003,7 +3029,7 @@ check("bench_nothing_scored_has_no_apply", function()
         "says nothing was scored:\n" .. viewer.text)
     assert_true(viewer.text:find("failed: no update within 15 s", 1, true), "rows still listed")
     viewer_buttons(viewer)["Close"].callback()
-    require("vnc/dialogs").Benchmark = nil
+    require("vncoxide/dialogs").Benchmark = nil
 end)
 
 check("bench_connect_failure_shows_reason", function()
@@ -3019,7 +3045,7 @@ check("bench_connect_failure_shows_reason", function()
     end
     UIManager:close(info)
     expect_top(is_actions, "the actions dialog under the message")
-    require("vnc/dialogs").Benchmark = nil
+    require("vncoxide/dialogs").Benchmark = nil
 end)
 
 -- ---------------------------------------------------------------- persistent canvas buffer
@@ -3042,7 +3068,7 @@ end
 
 --- Number of canvas pixels of `target` (canvas at cx, cy) that differ from a fresh full render.
 local function canvas_mismatch(remote, target, cx, cy, cw, ch, mode)
-    local Scaler = require("vnc/scaler")
+    local Scaler = require("vncoxide/scaler")
     local bb = require("ffi/blitbuffer")
     local ref = bb.new(cw, ch, target:getType())
     local s = remote.scale
@@ -3066,7 +3092,7 @@ end
 local CB_TYPES = { { "BB8", 1 }, { "RGB32", 9 } }
 
 local function canvas_fixture(btype)
-    local Remote = require("vnc/framebuffer")
+    local Remote = require("vncoxide/framebuffer")
     local bb = require("ffi/blitbuffer")
     local remote = Remote.new(120, 90)
     local cx, cy, cw, ch = 7, 5, 160, 120
@@ -3222,7 +3248,7 @@ end)
 check("canvas_dithered_paint_reports_its_blit_time", function()
     local bb = require("ffi/blitbuffer")
     local remote, target, cx, cy, cw, ch = canvas_fixture(bb.TYPE_BB8)
-    local Util = require("vnc/util")
+    local Util = require("vncoxide/util")
     local real_on = Util.timing_enabled
     Util.timing_enabled = function() return false end
     remote:draw_to(target, cx, cy, cw, ch, true)
@@ -3236,7 +3262,7 @@ end)
 
 check("a_failed_plane_resize_leaves_no_freed_plane", function()
     -- BB.new asserts when it cannot allocate; the old plane must not stay behind freed
-    local Remote = require("vnc/framebuffer")
+    local Remote = require("vncoxide/framebuffer")
     local bb = require("ffi/blitbuffer")
     local remote = Remote.new(40, 30)
     local real_new = bb.new
@@ -3323,7 +3349,7 @@ end)
 -- The timing trace (debug log only): paint, blocked polls and input, silent when off.
 local function capture_dbg(timing_on, fn)
     local logger = require("logger")
-    local Util = require("vnc/util")
+    local Util = require("vncoxide/util")
     local real_dbg, real_on, lines = logger.dbg, Util.timing_enabled, {}
     logger.dbg = function(...)
         local parts = {}
@@ -3342,7 +3368,7 @@ local function capture_dbg(timing_on, fn)
 end
 
 local function timing_scenario()
-    local Session = require("vnc/session")
+    local Session = require("vncoxide/session")
     local app, remote = new_app()
     app:paintTo(Screen.bb, 0, 0)
     local real_now, clock = Session._now, 10
@@ -3702,13 +3728,13 @@ check("menu_toolbar_buttons_submenu", function()
 end)
 
 check("toolbar_settings_migrate_and_clean", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_toolbar_migrate.lua"
     local function load(body)
         local f = io.open(path, "w"); f:write("return { settings = " .. body .. " }\n"); f:close()
         return Settings.open(path).data.settings
     end
-    local Toolbar = require("vnc/toolbar")
+    local Toolbar = require("vncoxide/toolbar")
     local s = load("{}")
     assert_true(next(s.toolbar_buttons) == nil and next(s.toolbar_pinned) == nil, "only choices are stored")
     assert_true(Toolbar.is_enabled(s, "toggle") and not Toolbar.is_enabled(s, "scroll_up")
@@ -4396,7 +4422,7 @@ check("key_strip_comes_and_goes_with_the_keyboard", function()
         assert_true(app.vk_visible and strip ~= nil, "the keyboard comes with the strip")
         assert_true(count(function(w) return w == strip end) == 1, "the strip is on the stack once")
         assert_true(strip.dimen.w == Screen:getWidth(), "full width")
-        assert_true(strip.dimen.h == require("vnc/keypanel").row_height(), "one row tall: " .. strip.dimen.h)
+        assert_true(strip.dimen.h == require("vncoxide/keypanel").row_height(), "one row tall: " .. strip.dimen.h)
         assert_true(strip_bottom(strip) == Screen:getHeight() - app.vk:getSize().h,
             "right above the keyboard: " .. strip_bottom(strip))
         assert_true(strip.title_bar == nil and strip.button_by_id["modifiers_only"] == nil, "no title bar, no tabs")
@@ -4524,7 +4550,7 @@ check("key_strip_keys_button_opens_the_panel_keeping_armed_modifiers", function(
     local keys = strip.button_by_id["panel"]
     assert_true(keys ~= nil, "the strip has a Send keys button")
     assert_true(keys.text == nil, "an icon, not a label, got " .. tostring(keys.text))
-    assert_true(keys.label_widget.file == require("vnc/icons").path("keys"),
+    assert_true(keys.label_widget.file == require("vncoxide/icons").path("keys"),
         "the plugin's keys icon, got " .. tostring(keys.label_widget.file))
     local wire = wire_log(app)
     touch(strip, "mod:Ctrl")
@@ -4566,7 +4592,7 @@ check("key_strip_close_button_hides_the_keyboard", function()
 end)
 
 check("keyboard_shown_is_remembered_across_viewers", function()
-    local ViewerApp = require("vnc/app")
+    local ViewerApp = require("vncoxide/app")
     local app, remote = new_app(400, 300, { toolbar = true })
     local flushes = 0
     app.plugin.settings.flush = function() flushes = flushes + 1 end
@@ -4666,7 +4692,7 @@ check("keyboard_accent_popup_closes_after_any_pick", function()
 end)
 
 check("key_panel_top_row_is_the_strip_row_with_close_and_keyboard", function()
-    local KeyPanel = require("vnc/keypanel")
+    local KeyPanel = require("vncoxide/keypanel")
     local Size = require("ui/size")
     local app, remote, sent = new_app()
     local panel = open_key_panel(app)
@@ -4694,7 +4720,7 @@ check("key_panel_top_row_is_the_strip_row_with_close_and_keyboard", function()
     for i, e in ipairs(row) do ids[i] = e.id end
     assert_true(table.concat(ids, ",") == table.concat(want, ","), "the top row: " .. table.concat(ids, ","))
     assert_true(panel.button_by_id["close"].icon == "close", "KOReader's close icon")
-    assert_true(panel.button_by_id["keyboard"].label_widget.file == require("vnc/icons").path("keyboard"),
+    assert_true(panel.button_by_id["keyboard"].label_widget.file == require("vncoxide/icons").path("keyboard"),
         "the plugin keyboard icon")
     assert_true(panel.button_by_id["panel"] == nil, "no Send keys icon on the panel itself")
     -- the Keys tab: 4 columns x 3 rows, Modifiers only last
@@ -4748,7 +4774,7 @@ check("key_panel_keyboard_icon_switches_back_to_the_keyboard", function()
 end)
 
 check("toolbar_keyboard_button_uses_the_plugin_icon", function()
-    local Icons = require("vnc/icons")
+    local Icons = require("vncoxide/icons")
     local path = Icons.path("keyboard")
     assert_true(path:sub(1, 1) == "/", "an absolute path: " .. path)
     local here, there = lfs.attributes(path), lfs.attributes(plugin_dir .. "/icons/keyboard.svg")
@@ -4800,7 +4826,7 @@ check("key_strip_follows_rotation_and_layout_height", function()
 end)
 
 check("recent_combos_setting_is_kept_in_shape", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local store = Settings.open(data_dir .. "/recent_combos_check.lua")
     store.data.settings.recent_combos = {
         { mods = { "Shift", "Ctrl", "Shift" }, keysym = 0x74, label = "T" }, -- repeated, out of order
@@ -5035,7 +5061,7 @@ end)
 axis, a pointer at or past the view centre moving outwards takes the view along while the view has
 room to the remote's edge; otherwise the pointer moves alone, kept inside the view and the remote. ]]
 check("pointer_follow_axis_rules", function()
-    local PF = require("vnc/pointerfollow")
+    local PF = require("vncoxide/pointerfollow")
     local function is(cur, d, lo, hi, want_cur, want_shift, what)
         local c, s = PF.axis(cur, d, lo, hi, 0, 400)
         assert_true(math.abs(c - want_cur) < 1e-9 and math.abs(s - want_shift) < 1e-9,
@@ -5383,7 +5409,7 @@ check("held_backspace_stops_with_the_keyboard_viewer_or_session", function()
 end)
 
 check("untracked_backspace_repeat_stops_after_10_s", function()
-    local Keyboard = require("vnc/keyboard")
+    local Keyboard = require("vncoxide/keyboard")
     assert_true(Keyboard.REPEAT_UNTRACKED_MAX == 100, "the cap is 100 ticks (10 s)")
     local gd = Device.input.gesture_detector
     for _, case in ipairs{ "no finger", "two fingers, no start" } do
@@ -5443,8 +5469,8 @@ tripped, the lift came 20-80 ms after the hold in one burst with the next key's 
 the key's popup, which then took that next tap to close itself: both keys lost. A key's long press
 counts only once it lasts Keyboard.HOLD_CONFIRM, like the canvas's. ]]
 check("keyboard_false_hold_is_a_tap_not_a_popup", function()
-    local Keyboard = require("vnc/keyboard")
-    assert_true(Keyboard.HOLD_CONFIRM == require("vnc/app").HOLD_CONFIRM, "the canvas's confirmation time")
+    local Keyboard = require("vncoxide/keyboard")
+    assert_true(Keyboard.HOLD_CONFIRM == require("vncoxide/app").HOLD_CONFIRM, "the canvas's confirmation time")
     local app, remote = new_app()
     app:toggle_keyboard()
     UIManager:forceRePaint()
@@ -6129,7 +6155,7 @@ end)
 check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     assert_true(app.toolbar_visible, "shown on open")
-    local Toolbar = require("vnc/toolbar")
+    local Toolbar = require("vncoxide/toolbar")
     assert_true(table.concat(Toolbar.IDS, ",") == "toggle,display,zoom,mode,keyboard,rotate,scroll_up,scroll_down,brightness,contrast,invert,close,more",
         table.concat(Toolbar.IDS, ","))
     local before = Screen:getRotationMode()
@@ -6191,7 +6217,7 @@ check("toolbar_long_press_shows_a_tooltip_and_does_nothing_else", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     local restore = all_toolbar_buttons(app)
     local ok, err = pcall(function()
-        local Toolbar = require("vnc/toolbar")
+        local Toolbar = require("vncoxide/toolbar")
         local want = {
             toggle = "Collapse toolbar", display = "Display settings", zoom = "Zoom: fit, 1:1, your own view",
             mode = "Pointer mode: touch, mouse or hybrid", keyboard = "Keyboard (drag onto a field to click it and type)", rotate = "Rotate the screen",
@@ -6254,7 +6280,7 @@ end)
 
 check("toolbar_collapses_into_a_bubble_and_back", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
-    local Icons = require("vnc/icons")
+    local Icons = require("vncoxide/icons")
     local bar = app.toolbar.dimen
     local toggle = app.toolbar.button_by_id.toggle
     assert_true(app.toolbar:visible_ids()[1] == "toggle", "the collapse button is the leftmost")
@@ -6463,7 +6489,7 @@ end
 local function near(a, b) return math.abs(a - b) < 1e-6 end
 
 check("toolbar_zoom_button_cycles_fit_and_one_to_one", function()
-    local Icons = require("vnc/icons")
+    local Icons = require("vncoxide/icons")
     local app, remote = new_app(800, 600, { toolbar = true })
     local ids = table.concat(app.toolbar:visible_ids(), ",")
     assert_true(ids:find("display,zoom,mode", 1, true), "right after Display: " .. ids)
@@ -6523,7 +6549,7 @@ check("toolbar_zoom_button_follows_the_display_panel_and_two_finger_tap", functi
     tap_toolbar(app, "zoom")
     assert_true(app:view_state() == "fit", "the button goes to fit from there")
     app:zoom_to(1)
-    assert_true(app:view_state() == "1:1" and zoom_icon(app) == require("vnc/icons").path("zoom-1to1"),
+    assert_true(app:view_state() == "1:1" and zoom_icon(app) == require("vncoxide/icons").path("zoom-1to1"),
         "the 100% preset is the 1:1 state")
     app:onTwoFingerTap(nil, { pos = { x = 300, y = 300 } })
     assert_true(app:view_state() == "fit" and zoom_icon(app) == "zoom.page", "a two-finger tap fits")
@@ -6531,7 +6557,7 @@ check("toolbar_zoom_button_follows_the_display_panel_and_two_finger_tap", functi
 end)
 
 check("toolbar_brightness_and_contrast_buttons_follow_their_settings", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     assert_true(Settings.TOOLBAR_BUTTONS.brightness == true, "brightness on by default")
     assert_true(Settings.TOOLBAR_BUTTONS.contrast == true, "contrast on by default")
     local app, remote = new_app(400, 300, { toolbar = true })
@@ -6543,7 +6569,7 @@ check("toolbar_brightness_and_contrast_buttons_follow_their_settings", function(
         local ids = table.concat(app.toolbar:visible_ids(), ",")
         assert_true(ids:find("brightness,contrast,invert,close,more", 1, true), "both before Close and More: " .. ids)
         assert_true(app.toolbar.button_by_id.contrast.icon == "appbar.contrast", "KOReader's contrast icon")
-        assert_true(app.toolbar.button_by_id.brightness.label_widget.file == require("vnc/icons").path("brightness"),
+        assert_true(app.toolbar.button_by_id.brightness.label_widget.file == require("vncoxide/icons").path("brightness"),
             "the plugin's brightness icon")
         Device.hasFrontlight = function() return false end
         app.toolbar:relayout()
@@ -6590,7 +6616,7 @@ check("toolbar_brightness_button_opens_the_frontlight_dialog", function()
 end)
 
 check("contrast_setting_is_kept_and_cleaned", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     assert_true(Settings.DEFAULTS.remote_contrast == 1, "neutral by default")
     local levels = Settings.CONTRAST_LEVELS
     assert_true(type(levels) == "table" and #levels >= 5, "a list of levels")
@@ -6623,7 +6649,7 @@ local function open_contrast(app)
 end
 
 check("contrast_dialog_steps_through_the_levels", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local levels = Settings.CONTRAST_LEVELS
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     app.settings.remote_contrast = 1
@@ -6727,7 +6753,7 @@ check("stored_contrast_applies_when_the_viewer_paints", function()
 end)
 
 check("contrast_lut_inverts", function()
-    local Scaler = require("vnc/scaler")
+    local Scaler = require("vncoxide/scaler")
     local inv = Scaler.contrast_lut(1, true)
     assert_true(inv.g[0] == 255 and inv.g[255] == 0 and inv.w[0] == 255 * 256, "plain inversion")
     assert_true(Scaler.contrast_lut(1, false) == nil and Scaler.contrast_lut(1) == nil, "neutral: no curve")
@@ -6738,7 +6764,7 @@ check("contrast_lut_inverts", function()
 end)
 
 check("invert_is_a_toolbar_button", function()
-    local Settings, Toolbar = require("vnc/settings"), require("vnc/toolbar")
+    local Settings, Toolbar = require("vncoxide/settings"), require("vncoxide/toolbar")
     local function after_contrast(list)
         for i, id in ipairs(list) do if id == "contrast" then return list[i + 1] end end
     end
@@ -6939,8 +6965,8 @@ check("two_finger_drag_does_not_take_armed_modifiers", function()
 end)
 
 check("no_scroll_lock_button", function()
-    local Toolbar = require("vnc/toolbar")
-    local Settings = require("vnc/settings")
+    local Toolbar = require("vncoxide/toolbar")
+    local Settings = require("vncoxide/settings")
     local function has(list, id)
         for _, v in ipairs(list) do if v == id then return true end end
         return false
@@ -6965,7 +6991,7 @@ check("no_scroll_lock_button", function()
 end)
 
 check("stale_scroll_lock_settings_load", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_stale_scroll_lock.lua"
     local f = io.open(path, "w")
     f:write("return { settings = { toolbar_buttons = { scroll_lock = true }, "
@@ -7061,7 +7087,7 @@ check("reconnect_close_and_back_disconnect_without_confirm", function()
 end)
 
 check("quality_presets_map_and_match", function()
-    local S = require("vnc/settings")
+    local S = require("vncoxide/settings")
     local ids = {}
     for i, p in ipairs(S.QUALITY_PRESETS) do ids[i] = p.id end
     assert_true(table.concat(ids, ",") == "best,balanced,fast", "order: " .. table.concat(ids, ","))
@@ -7199,7 +7225,7 @@ end)
 --- recorder; `before_each` runs before each button's gestures. Returns the ids that fired.
 local function toolbar_actions_fired(app, before_each)
     local fired = {}
-    for _, id in ipairs(require("vnc/toolbar").IDS) do
+    for _, id in ipairs(require("vncoxide/toolbar").IDS) do
         local b = app.toolbar.button_by_id[id]
         if b then
             local pos = toolbar_button_centre(app, id)
@@ -7526,7 +7552,7 @@ check("hybrid_notch_follows_the_zoom", function()
 end)
 
 check("hybrid_notch_px_is_cleaned_and_kept_per_profile", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_hybrid_notch.lua"; os.remove(path)
     local s = Settings.open(path)
     s:save_profile{ name = "d", host = "h", port = 1 }
@@ -7736,7 +7762,7 @@ check("hybrid_drag_on_toolbar_does_not_scroll", function()
 end)
 
 check("unknown_pointer_mode_is_touch", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_pointer_mode2.lua"; os.remove(path)
     local s = Settings.open(path)
     s:save_profile{ name = "b", host = "h", port = 1, pointer_mode = "banana" }
@@ -7751,7 +7777,7 @@ check("unknown_pointer_mode_is_touch", function()
 end)
 
 check("help_lists_hybrid", function()
-    local Help = require("vnc/help")
+    local Help = require("vncoxide/help")
     assert_true(Help.TITLES.hybrid == "Hybrid mode", "title")
     local text = Help.text("hybrid")
     assert_true(text:find("Hybrid mode", 1, true) < text:find("Touch mode", 1, true), "current mode first")
@@ -7985,7 +8011,7 @@ end)
 -- ---------------------------------------------------------------- matching the remote's orientation
 
 check("orientation_settings_default_and_clean", function()
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local path = data_dir .. "/ui_smoke_orientation.lua"; os.remove(path)
     local f = assert(io.open(path, "w"))
     f:write('return { settings = { landscape_orientation = 7, portrait_orientation = "x" } }')
@@ -8137,7 +8163,7 @@ check("orientation_match_menu_switch_and_help", function()
     menu = app:open_menu()
     assert_true(find_item(menu.item_table, MATCH).mandatory == "-", "unchecked while off")
     app:close_menu()
-    assert_true(require("vnc/help").text("touch"):find(MATCH, 1, true), "the help names it")
+    assert_true(require("vncoxide/help").text("touch"):find(MATCH, 1, true), "the help names it")
     close_viewer(app, remote)
 end)
 
@@ -8275,7 +8301,7 @@ check("toolbar_pinned_buttons_stay_when_collapsed", function()
         app.settings.toolbar_pinned = nil
         app:set_toolbar_collapsed(false)
         -- the setting only keeps known ids, all false unless true
-        local Settings = require("vnc/settings")
+        local Settings = require("vncoxide/settings")
         assert_true(Settings.TOOLBAR_PINNABLE[#Settings.TOOLBAR_PINNABLE] == "more", "More can be pinned")
     end)
     Device.hasFrontlight = has
@@ -8629,9 +8655,9 @@ mock's picture (default "quadrants", the only one `env.shows` knows).
 local function with_worker_viewer(name, fn, pattern)
     local socket = require("socket")
     local ffi = require("ffi")
-    local Session = require("vnc/session")
-    local Workers = require("vnc/workers")
-    local Scaler = require("vnc/scaler")
+    local Session = require("vncoxide/session")
+    local Workers = require("vncoxide/workers")
+    local Scaler = require("vncoxide/scaler")
     local probe = assert(socket.bind("127.0.0.1", 0))
     local _, port = probe:getsockname()
     probe:close()
@@ -8762,7 +8788,7 @@ check("worker_viewer_shows_the_remote", function()
 end)
 
 check("pan_does_not_scale_on_the_ui_thread", function()
-    local Scaler = require("vnc/scaler")
+    local Scaler = require("vncoxide/scaler")
     with_worker_viewer("wk_pan", function(env)
         local bad
         assert_true(env.pump(function() bad = env.shows("quadrants"); return bad == nil end, 10),
@@ -8919,7 +8945,7 @@ local function physical_helpers(env)
     --- views of the target's memory all the paints made (1 on the physical-layout path, which
     --- keeps it, 0 on the old one).
     function h.paint(target, cx, cy, cw, ch, dither, native)
-        local Remote = require("vnc/framebuffer")
+        local Remote = require("vncoxide/framebuffer")
         Remote.NO_NATIVE = not native or nil
         local n0 = #h.sent
         link.screen_view = nil   -- (a freed target's memory may come back for the next one)
@@ -9104,7 +9130,7 @@ check("night_mode_viewer_paints_what_the_old_path_paints", function()
     -- The real viewer over inverted and turned screen buffers of the same logical size: the
     -- emulator's own, and BB8 ones (rotations 1 and 3 over a buffer of the turned shape).
     with_worker_viewer("wk_phys_night", function(env)
-        local Remote = require("vnc/framebuffer")
+        local Remote = require("vncoxide/framebuffer")
         local h = physical_helpers(env)
         local sbb, sdither = Screen.bb, Screen.sw_dithering
         local rot0, inv0 = sbb:getRotation(), sbb:getInverse()
@@ -9165,7 +9191,7 @@ end)
 check("an_inversion_the_blitter_ignores_stays_plain", function()
     -- KOReader on Android: its C blitter takes every pair, the invert flag is ignored (the screen
     -- buffer holds plain values, the framebuffer inverts on flip)
-    local Remote = require("vnc/framebuffer")
+    local Remote = require("vncoxide/framebuffer")
     local fake = function(inv, cbb)
         return { getInverse = function() return inv end, canUseCbbTogether = function() return cbb end }
     end

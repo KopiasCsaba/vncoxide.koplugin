@@ -8,13 +8,13 @@ nothing of the viewer's geometry: the view, the stale rects and the size come in
 the caller (`opts.canvas_mem`), e.g. shared memory a forked worker renders into: the canvas
 buffer, or while dithering the dithered buffer (the canvas is then private).
 
-@module vnc.renderer
+@module vncoxide.renderer
 ]]
 
 local BB = require("ffi/blitbuffer")
-local Scaler = require("vnc/scaler")
-local SharedMem = require("vnc/sharedmem")
-local Util = require("vnc/util")
+local Scaler = require("vncoxide/scaler")
+local SharedMem = require("vncoxide/sharedmem")
+local Util = require("vncoxide/util")
 local time = require("ui/time")
 
 local Renderer = {}
@@ -96,7 +96,7 @@ function Renderer:render(plane, view, mode, cw, ch, btype, dither, stale_rects, 
         if mem then
             local need = cw * ch * assert(BPP[btype], "unsupported canvas type")
             if need > mem.bytes then
-                error("vnc.renderer: a " .. cw .. "x" .. ch .. " canvas needs " .. need
+                error("vncoxide.renderer: a " .. cw .. "x" .. ch .. " canvas needs " .. need
                     .. " bytes, the canvas memory has " .. tostring(mem.bytes))
             end
             -- the picture goes into the caller's memory: the dithered buffer while dithering

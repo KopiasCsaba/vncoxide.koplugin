@@ -3,14 +3,14 @@
 Standalone test harness for the vnc protocol layer.
 
 Starts `tools/mock_vnc_server.py` (one instance per case, on an ephemeral port) and drives
-@{vnc.protocol} against it over a real socket, plus a few in-memory byte-stream cases. The last
-two checks drive @{vnc.session}'s own transport (queue flush and read buffering) rather than the
+@{vncoxide.protocol} against it over a real socket, plus a few in-memory byte-stream cases. The last
+two checks drive @{vncoxide.session}'s own transport (queue flush and read buffering) rather than the
 protocol directly.
 
 Run with KOReader's own LuaJIT from the KOReader root:
 
   cd /usr/lib/koreader
-  PLUGIN=~/.config/koreader/plugins/vnc.koplugin
+  PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
   LUA_PATH="$PLUGIN/?.lua;./common/?.lua;./common/?/init.lua;;" \
   LUA_CPATH="./common/?.so;;" \
   ./luajit "$PLUGIN/tools/proto_smoke.lua" --tmp /tmp/vncv_smoke
@@ -30,11 +30,11 @@ local socket = require("socket")
 
 local BB = require("ffi/blitbuffer")
 
-local Des = require("vnc/des")
-local Encodings = require("vnc/encodings")
-local Keysyms = require("vnc/keysyms")
-local PxFmt = require("vnc/pxfmt")
-local Protocol = require("vnc/protocol")
+local Des = require("vncoxide/des")
+local Encodings = require("vncoxide/encodings")
+local Keysyms = require("vncoxide/keysyms")
+local PxFmt = require("vncoxide/pxfmt")
+local Protocol = require("vncoxide/protocol")
 
 local bxor = bit.bxor
 
@@ -218,7 +218,7 @@ end
 -- ---------------------------------------------------------------- driver
 
 --[[--
-Drives @{vnc.protocol} against a real socket until `want_updates` updates have been
+Drives @{vncoxide.protocol} against a real socket until `want_updates` updates have been
 seen, or `body` signals a stop.
 
 `o` fields: name, port, password, encodings, want_updates, body, stop_after_body,
@@ -378,7 +378,7 @@ local function run_mem(bytes, o)
 end
 
 --[[--
-Loads @{vnc.session} for the transport-level checks. The session requires `ui/uimanager` for
+Loads @{vncoxide.session} for the transport-level checks. The session requires `ui/uimanager` for
 its poll task, which drags in the whole widget stack; the harness has none, so stand one in
 that only provides the two scheduling calls the session makes. It is installed lazily so the
 protocol-only checks keep running without it.
@@ -387,7 +387,7 @@ local function load_session()
     package.preload["ui/uimanager"] = package.preload["ui/uimanager"] or function()
         return { scheduleIn = function() end, unschedule = function() end }
     end
-    return require("vnc/session")
+    return require("vncoxide/session")
 end
 
 --[[--
@@ -409,7 +409,7 @@ end
 local function proxy_env()
     load_session()
     local UIManager = require("ui/uimanager")
-    local Workers = require("vnc/workers")
+    local Workers = require("vncoxide/workers")
     local real_si, real_un, real_start = UIManager.scheduleIn, UIManager.unschedule, Workers.start
     local env = { tasks = {}, links = {} }
     UIManager.scheduleIn = function(_, delay, fn, ...)
@@ -489,7 +489,7 @@ the target, painted now, shows `pattern` as the remote's current view scales it 
 does, else the first mismatching probe).
 ]]
 local function canvas_probe(remote, cw, ch)
-    local Scaler = require("vnc/scaler")
+    local Scaler = require("vncoxide/scaler")
     local target = BB.new(cw, ch, BB.TYPE_BB8)
     local cache = {}
     return target, function(pattern)
@@ -526,7 +526,7 @@ local function wait_canvas(env, shows, pattern, timeout)
 end
 local function proxy_session(env, name, mock, network_mgr)
     local Session = load_session()
-    require("vnc/workers").canvas_bytes = function() return 400 * 400 * 4 end
+    require("vncoxide/workers").canvas_bytes = function() return 400 * 400 * 4 end
     mock.name = name
     local pid, port, log = start_mock(mock)
     local states = {}
@@ -697,7 +697,7 @@ local SC_TYPES = { { "BB8", BB.TYPE_BB8 }, { "RGB32", BB.TYPE_BBRGB32 }, { "RGB2
 local SC_VIEWS = { { x = -3.3, y = 2.6 }, { x = 5.25, y = -1.5 }, { x = 0, y = 0 }, { x = 7, y = 3 } }
 
 local function scaler_checks()
-    local Scaler = require("vnc/scaler")
+    local Scaler = require("vncoxide/scaler")
     local PW, PH, CW, CH = 37, 29, 64, 48
     local plane = scaler_plane(PW, PH)
 
@@ -910,7 +910,7 @@ picture of a plane whose pixels went through the curve first (per channel into R
 value into BB8), in every mode, scale, destination type and view, for any partition into rects.
 ]]
 local function contrast_checks()
-    local Scaler = require("vnc/scaler")
+    local Scaler = require("vncoxide/scaler")
     local PW, PH, CW, CH = 37, 29, 64, 48
 
     check("contrast_lut_curve", function()
@@ -980,7 +980,7 @@ local function contrast_checks()
     end
 
     check("remote_contrast_repaints_without_an_update", function()
-        local Remote = require("vnc/framebuffer")
+        local Remote = require("vncoxide/framebuffer")
         local r = Remote.new(PW, PH)
         r.plane:blitFrom(plane, 0, 0, 0, 0, PW, PH)
         r:mark_dirty()
@@ -1186,7 +1186,7 @@ local function main()
     -- The zlib streams take a pointer and a length: the decoders hand them memory straight out of
     -- the receive buffer, which is not a string and not cut to the payload.
     check("zstream_takes_pointer_and_length", function()
-        local ZStream = require("vnc/zstream")
+        local ZStream = require("vncoxide/zstream")
         local plain = ("pointer and length, "):rep(40)
         local src = ffi.new("uint8_t[?]", #plain + 8, 0xEE) -- junk around the input
         ffi.copy(src + 3, plain, #plain)
@@ -1211,8 +1211,8 @@ local function main()
     -- Inflated ZRLE data that ends before its tiles do fails the rect with a message about the
     -- data (it used to read "encodings.lua:444: transport returned 21 bytes, wanted 32").
     check("zrle_short_inflated_data_reads_as_a_data_error", function()
-        local ZStream = require("vnc/zstream")
-        local Util = require("vnc/util")
+        local ZStream = require("vncoxide/zstream")
+        local Util = require("vncoxide/util")
         local d = ZStream.new_deflate()
         local z = assert(d:deflate("\0\1\2\3", 4)) -- a raw tile, 16 pixels short
         d:free()
@@ -1232,8 +1232,8 @@ local function main()
 
     -- ZRLE and Tight (zlib and JPEG) payloads are consumed with reader:ptr, never as a string.
     check("zrle_and_tight_payloads_never_become_strings", function()
-        local ZStream = require("vnc/zstream")
-        local Util = require("vnc/util")
+        local ZStream = require("vncoxide/zstream")
+        local Util = require("vncoxide/util")
         local function deflated(raw)
             local d = ZStream.new_deflate()
             local z = assert(d:deflate(raw, #raw))
@@ -1359,7 +1359,7 @@ local function main()
 
     -- Decoder edge and error paths: packed palette tiles, Hextile/RRE malformed or cut streams.
     local function decode_raw(enc, w, h, data, depth, wrap)
-        local Util = require("vnc/util")
+        local Util = require("vncoxide/util")
         local plane = BB.new(w, h, BB.TYPE_BBRGB24)
         local streams = Encodings.new_streams()
         local ok, res = pcall(Encodings.decode, { x = 0, y = 0, w = w, h = h, encoding = enc,
@@ -1429,8 +1429,8 @@ local function main()
     end)
 
     check("encodings_zrle_packed_palette_tiles", function()
-        local ZStream = require("vnc/zstream")
-        local Util = require("vnc/util")
+        local ZStream = require("vncoxide/zstream")
+        local Util = require("vncoxide/util")
         return packed_palette_case(Encodings.ZRLE, function(data)
             local d = ZStream.new_deflate()
             local z = assert(d:deflate(data, #data))
@@ -1454,7 +1454,7 @@ local function main()
     end)
 
     check("encodings_hextile_and_rre_cut_streams_error", function()
-        local Util = require("vnc/util")
+        local Util = require("vncoxide/util")
         for _, d in ipairs({ 8, 16, 24 }) do
             local nb = d == 24 and 4 or d / 8
             local px = string.rep("\7", nb)
@@ -1489,7 +1489,7 @@ local function main()
     check("encodings_tight_no_zlib_with_explicit_filter", function()
         -- libvncserver at compression level 0 sends mono/indexed rects as control 0x0E: "no zlib"
         -- plus an explicit (palette) filter; small data comes inline, larger with a compact length
-        local Util = require("vnc/util")
+        local Util = require("vncoxide/util")
         local pal = "\255\0\0" .. "\0\0\255" -- red, blue (24-bit TPIXELs)
         for _, c in ipairs({
             { w = 8, h = 2, data = "\240\015", bits = "\240\015" },     -- 2 bytes: inline
@@ -1723,7 +1723,7 @@ local function main()
 
     -- 9. A rectangle with an encoding we never advertised is fatal, with the encoding number.
     check("unsupported_encoding", function()
-        local w = require("vnc/util").writer()
+        local w = require("vncoxide/util").writer()
         w:raw("RFB 003.008\n")
         w:u8(1); w:u8(1)                          -- one security type: None
         w:u32(0)                                  -- SecurityResult: OK
@@ -2079,7 +2079,7 @@ local function main()
             local got = {}
             local fake = { state = "connected",
                 send_key = function(_, k, d, r) got[#got + 1] = string.format("%d %s %s", k, tostring(d), tostring(r)) end }
-            require("vnc/workers")._apply_commands({}, fake, lines, true)
+            require("vncoxide/workers")._apply_commands({}, fake, lines, true)
             assert(table.concat(got, "|") == "65288 true true|65288 false true|97 true false",
                 "the decode worker's calls, got " .. table.concat(got, "|"))
         end)
@@ -2195,7 +2195,7 @@ local function main()
     local function timing_case(name, timing_on)
         local Session = load_session()
         local logger = require("logger")
-        local Util = require("vnc/util")
+        local Util = require("vncoxide/util")
         local pid, port = start_mock{
             name = name, encoding = "raw", pattern = "gradient", width = 32, height = 24,
         }
@@ -2305,13 +2305,13 @@ local function main()
         return done(true)
     end)
 
-    -- 18-22. The picture-settings benchmark (vnc/benchmark.lua) against the real mock, on a fake
+    -- 18-22. The picture-settings benchmark (vncoxide/benchmark.lua) against the real mock, on a fake
     -- clock: a stand-in UIManager runs scheduled tasks in time order and advances the clock to
     -- each task's due time, sleeping a little real time per task so the mock can answer.
     local function bench_env()
         local Session = load_session()
         local UIManager = require("ui/uimanager")
-        local Benchmark = require("vnc/benchmark")
+        local Benchmark = require("vncoxide/benchmark")
         local real_now, real_si, real_un = Session._now, UIManager.scheduleIn, UIManager.unschedule
         local clock, tasks = 100, {}
         Session._now = function() return clock end
@@ -2371,7 +2371,7 @@ local function main()
 
     -- Records every session the benchmark creates.
     local function track_sessions()
-        local Session = require("vnc/session")
+        local Session = require("vncoxide/session")
         local real_new, list = Session.new, {}
         Session.new = function(o)
             local s = real_new(o)
@@ -2391,7 +2391,7 @@ local function main()
     end
 
     check("benchmark_combination_list", function()
-        local Benchmark = require("vnc/benchmark")
+        local Benchmark = require("vncoxide/benchmark")
         local C = Benchmark.COMBINATIONS
         if #C ~= 11 then return nil, "expected 11 combinations, got " .. #C end
         local want = {
@@ -2422,7 +2422,7 @@ local function main()
     end)
 
     check("benchmark_sort_order", function()
-        local Benchmark = require("vnc/benchmark")
+        local Benchmark = require("vncoxide/benchmark")
         local rows = {
             { ok = false, error = "x", tag = "fail" },
             { ok = true, tile_px_per_s = 10, full_px_per_s = 99999, tag = "slow" },
@@ -2459,7 +2459,7 @@ local function main()
     -- grid, all non-incremental, one at a time; drawn into a 2x canvas with sharp scaling.
     check("benchmark_scores_still_screen", function()
         local env = bench_env()
-        local Remote = require("vnc/framebuffer")
+        local Remote = require("vncoxide/framebuffer")
         local pid, port, log = start_multi{ name = "bench_still" }
         local real_draw, draws = Remote.draw_to, {}
         Remote.draw_to = function(self, bb, ...)
@@ -2626,7 +2626,7 @@ local function main()
 
     -- Tiles below 1 px are not requested; the rest cover the framebuffer exactly.
     check("benchmark_tiles_skip_empty", function()
-        local Benchmark = require("vnc/benchmark")
+        local Benchmark = require("vncoxide/benchmark")
         for _, sz in ipairs{ { 3, 2 }, { 200, 150 }, { 1, 1 } } do
             local area = 0
             for _, t in ipairs(Benchmark._tiles(sz[1], sz[2], 16)) do
@@ -2643,7 +2643,7 @@ local function main()
     -- does a framebuffer that is empty or would take more than 256 MiB as a plane - with an error
     -- that says so, before anything is read or allocated.
     do
-        local Util = require("vnc/util")
+        local Util = require("vncoxide/util")
         --- Drives a fresh Protocol over `script` (the server's bytes); returns the error it stopped
         --- with, what it was waiting for when the script ran out, and the sizes it reported.
         local function run_script(script, callbacks)
@@ -2874,7 +2874,7 @@ local function main()
     -- never fires, and an attached bystander session (the viewer's) keeps its poll task.
     check("benchmark_cancel_mid_tiles", function()
         local env = bench_env()
-        local Session = require("vnc/session")
+        local Session = require("vncoxide/session")
         local pid, port = start_multi{ name = "bench_cancel" }
         local bpid, bport = start_mock{ name = "bench_bystander", encoding = "raw", pattern = "gradient" }
         local by = Session.new{ profile = { host = "127.0.0.1", port = bport, password = "", name = "by" },
@@ -3030,7 +3030,7 @@ local function main()
     -- Every attached session of the plugin (the viewer's) is detached for the run, so it does not
     -- compete with the measurement, and attached again with its app after done and after cancel.
     check("benchmark_detaches_live_sessions", function()
-        local Session = require("vnc/session")
+        local Session = require("vncoxide/session")
         local pid, port = start_multi{ name = "bench_detach" }
         local problem
         for _, ending in ipairs{ "done", "cancel" } do
@@ -3088,7 +3088,7 @@ local function main()
     -- The "tiles" progress (an e-ink refresh of the dialog title) is reported before the first
     -- tile is requested, and that request goes out on a later tick.
     check("benchmark_tiles_start_after_progress", function()
-        local Session = require("vnc/session")
+        local Session = require("vncoxide/session")
         local pid, port = start_multi{ name = "bench_window" }
         local env = bench_env()
         local t_report, reqs_at_report, results, b
@@ -3130,7 +3130,7 @@ local function main()
     -- Scores are medians over every sample of both passes, so one slow outlier (a Wi-Fi hiccup)
     -- does not move them the way a mean would; the full frame's bytes stay a mean.
     check("benchmark_scoring_medians", function()
-        local Benchmark = require("vnc/benchmark")
+        local Benchmark = require("vncoxide/benchmark")
         if Benchmark.PASSES ~= 2 then return nil, "PASSES " .. tostring(Benchmark.PASSES) end
         local function smp(px, elapsed, bytes)
             return { px = px, elapsed = elapsed, bytes = bytes or 10, decode = 0.001, draw = 0.002 }
@@ -3375,7 +3375,7 @@ local function main()
     end
 
     check("remote_visible_rect_fit_and_zoomed", function()
-        local Remote = require("vnc/framebuffer")
+        local Remote = require("vncoxide/framebuffer")
         local r = Remote.new(160, 120)
         r:fit_view(320, 200)
         local a = r:visible_remote_rect()
@@ -3916,7 +3916,7 @@ local function main()
         local _, port = listener:getsockname()
         local s = Session.new{ profile = { host = "127.0.0.1", port = tonumber(port), password = "", name = "early" },
             network_mgr = { isWifiOn = function() return true end, turnOffWifi = function() end } }
-        s.remote = require("vnc/framebuffer").new(8, 8) -- the previous connection's picture, kept for the reconnect
+        s.remote = require("vncoxide/framebuffer").new(8, 8) -- the previous connection's picture, kept for the reconnect
         s:connect(function() end)
         local written, write = 0, s.proto.io.write
         s.proto.io.write = function(m) written = written + 1; return write(m) end
@@ -3969,7 +3969,7 @@ local function main()
     -- loopback peer that writes a scripted server stream in chosen pieces, pumping the session
     -- after each piece, and compare what it decoded with a run that got the stream in one piece.
     do
-        local Util = require("vnc/util")
+        local Util = require("vncoxide/util")
         local W, H = 64, 48
         local function rnd_bytes(n, seed)
             math.randomseed(seed)
@@ -4195,7 +4195,7 @@ local function main()
             return true
         end)
         check("shared_memory_is_shared_across_fork", function()
-            local SharedMem = require("vnc/sharedmem")
+            local SharedMem = require("vncoxide/sharedmem")
             local ffiutil = require("ffi/util")
             local bytes = 64 * 32 * 3
             local ptr = SharedMem.alloc(bytes)
@@ -4214,7 +4214,7 @@ local function main()
         end)
     end
 
-    -- Worker processes (vnc/worker.lua): forked over a line protocol, descriptor hygiene, nice.
+    -- Worker processes (vncoxide/worker.lua): forked over a line protocol, descriptor hygiene, nice.
     do
         local ESRCH = 3
         local function alive(pid)
@@ -4277,7 +4277,7 @@ local function main()
             if w.pid then wait_gone(w.pid, 2) end
         end
         local function spawn_echo(keep_fds)
-            local Worker = require("vnc/worker")
+            local Worker = require("vncoxide/worker")
             local w, err = Worker.spawn("echo", echo_main, keep_fds)
             if not w then error("spawn failed: " .. tostring(err)) end
             return w, Worker
@@ -4320,7 +4320,7 @@ local function main()
         end
 
         check("worker_codec_holds_a_header_until_its_payload", function()
-            local Worker = require("vnc/worker")
+            local Worker = require("vncoxide/worker")
             local stream = "H 12\nT 5\na\nb cX 1 2\nT 0\nT 3\nT 1Y\nQ\n"
             local want = { "H 12", "T 5", "a\nb c", "X 1 2", "T 0", "", "T 3", "T 1", "Y", "Q" }
             local r = Worker.Reader.new()
@@ -4379,7 +4379,7 @@ local function main()
         end)
 
         check("worker_send_never_blocks_the_ui", function()
-            local Worker = require("vnc/worker")
+            local Worker = require("vncoxide/worker")
             -- Reads nothing for 0.5 s, then answers each payload with its length.
             local w = assert(Worker.spawn("slow", function(ctx)
                 socket.sleep(0.5)
@@ -4411,7 +4411,7 @@ local function main()
         end)
 
         check("stop_never_blocks_on_a_full_pipe", function()
-            local Worker = require("vnc/worker")
+            local Worker = require("vncoxide/worker")
             Worker._test_ignore_quit = true
             local w = assert(Worker.spawn("deaf", function()
                 while true do socket.sleep(1) end
@@ -4467,7 +4467,7 @@ local function main()
         end)
 
         check("hangup_kills_a_stuck_worker", function()
-            local Worker = require("vnc/worker")
+            local Worker = require("vncoxide/worker")
             Worker._test_ignore_quit = true
             local w = spawn_echo()
             Worker._test_ignore_quit = nil
@@ -4566,8 +4566,8 @@ local function main()
 
         -- The renderer over caller-given memory: what canvas() returns is what that memory holds.
         check("renderer_dithered_output_is_in_canvas_mem", function()
-            local Renderer = require("vnc/renderer")
-            local SharedMem = require("vnc/sharedmem")
+            local Renderer = require("vncoxide/renderer")
+            local SharedMem = require("vncoxide/sharedmem")
             local W, H = 64, 48
             local plane = BB.new(W, H, BB.TYPE_BBRGB24)
             for y = 0, H - 1 do
@@ -4598,7 +4598,7 @@ local function main()
         end)
 
         check("renderer_reports_no_change_as_nil", function()
-            local Renderer = require("vnc/renderer")
+            local Renderer = require("vncoxide/renderer")
             local plane = BB.new(64, 48, BB.TYPE_BBRGB24)
             local r = Renderer.new()
             local view = { x = 0, y = 0, scale = 1 }
@@ -4611,10 +4611,10 @@ local function main()
             return true
         end)
 
-        -- Decode and scale workers (vnc/workers.lua) behind a live session, over the mock.
+        -- Decode and scale workers (vncoxide/workers.lua) behind a live session, over the mock.
         local function worker_session(name, mock, workers_on)
             local Session = load_session()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             -- (no device screen here: any canvas up to 400x400 at 4 bytes per pixel)
             Workers.canvas_bytes = function() return 400 * 400 * 4 end
             mock.name = name
@@ -4672,8 +4672,8 @@ local function main()
         end
 
         check("workers_decode_and_scale_into_shared_memory", function()
-            local Scaler = require("vnc/scaler")
-            local SharedMem = require("vnc/sharedmem")
+            local Scaler = require("vncoxide/scaler")
+            local SharedMem = require("vncoxide/sharedmem")
             local W, H = 200, 150
             local s, _, mpid = worker_session("wk_quads", { encoding = "raw", pattern = "quadrants", width = W, height = H })
             local link = s.workers
@@ -4751,8 +4751,8 @@ local function main()
         -- and renders the plain canvas; with them the shared memory holds the canvas in that
         -- physical layout; a malformed tail is no view at all.
         check("g_view_rotation_tail_is_optional", function()
-            local Scaler = require("vnc/scaler")
-            local SharedMem = require("vnc/sharedmem")
+            local Scaler = require("vncoxide/scaler")
+            local SharedMem = require("vncoxide/sharedmem")
             local W, H = 200, 150
             local s, _, mpid = worker_session("wk_gtail", { encoding = "raw", pattern = "gradient", width = W, height = H })
             local link = s.workers
@@ -4828,7 +4828,7 @@ local function main()
 
         -- The scale worker drains every pending message before it renders, not one read's worth.
         check("latest_view_wins_across_reads", function()
-            local Worker = require("vnc/worker")
+            local Worker = require("vncoxide/worker")
             local chunk = Worker.READ_CHUNK
             Worker.READ_CHUNK = 64 -- (the workers inherit it: a G line or so per read)
             local ok0, s, _, mpid = pcall(worker_session, "wk_latest_reads", { encoding = "raw", pattern = "quadrants" })
@@ -4910,7 +4910,7 @@ local function main()
         end)
 
         check("decode_rects_reach_the_canvas", function()
-            local Scaler = require("vnc/scaler")
+            local Scaler = require("vncoxide/scaler")
             -- An 80x80 desktop: the mock's 40x40 repaint box at (0, 0) is exactly its top-left quadrant.
             local s, _, mpid = worker_session("wk_rects", { encoding = "raw", pattern = "quadrants",
                 width = 80, height = 80, repaint = 0.15 })
@@ -5187,7 +5187,7 @@ local function main()
         -- DECODE_STALL (plus a tick), not a frozen picture.
         check("hung_decode_worker_fails_the_session", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             local s, mpid, waited
             local ok, err = pcall(function()
                 Workers._test_decode_stuck = true
@@ -5219,7 +5219,7 @@ local function main()
         -- all the session stays connected well past PING_AFTER + DECODE_STALL.
         check("idle_decode_worker_answers_pings", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             local s, mpid
             local ok, err = pcall(function()
                 local states, _log
@@ -5253,7 +5253,7 @@ local function main()
         -- the unanswered ping fails the session within PING_AFTER + DECODE_STALL (plus ticks).
         check("decode_worker_hung_while_idle_fails_the_session", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             local s, mpid
             local hang = 1.5
             local ok, err = pcall(function()
@@ -5285,7 +5285,7 @@ local function main()
         -- come in (one ping per PING_AFTER of silence).
         check("pongs_keep_the_idle_poll_interval", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             local Session = load_session()
             local s, mpid
             local function next_poll()
@@ -5331,7 +5331,7 @@ local function main()
         -- blocks writing to a hung scale worker); a gap between ticks restarts the ping's clock.
         check("ping_watchdog_blames_the_right_worker", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             local Session = load_session()
             local s, mpid
             local ok, err = pcall(function()
@@ -5422,7 +5422,7 @@ local function main()
         -- A scale worker that never answers a G is a session error after SCALE_STALL.
         check("hung_scale_worker_fails_the_session", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             local stall = Workers.SCALE_STALL
             local s, mpid
             local ok, err = pcall(function()
@@ -5495,8 +5495,8 @@ local function main()
         -- no in-process session on it, both workers stopped.
         check("late_worker_start_failure_fails_the_connection", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
-            local Worker = require("vnc/worker")
+            local Workers = require("vncoxide/workers")
+            local Worker = require("vncoxide/worker")
             local Session = load_session()
             Workers.canvas_bytes = function() return 400 * 400 * 4 end
             local real_spawn = Worker.spawn
@@ -5550,7 +5550,7 @@ local function main()
         -- with no G unanswered; a G makes it UI_POLL again.
         check("idle_workers_poll_at_the_idle_interval", function()
             local env = proxy_env()
-            local Workers = require("vnc/workers")
+            local Workers = require("vncoxide/workers")
             local Session = load_session()
             local s, mpid
             local function next_poll()
@@ -5595,7 +5595,7 @@ local function main()
         check("worker_mode_logs_a_poll_gap", function()
             local env = proxy_env()
             local logger = require("logger")
-            local Util = require("vnc/util")
+            local Util = require("vncoxide/util")
             local real_dbg, real_on = logger.dbg, Util.timing_enabled
             local lines = {}
             local s, mpid

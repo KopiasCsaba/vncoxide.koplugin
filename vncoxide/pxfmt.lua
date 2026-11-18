@@ -15,7 +15,7 @@ The lower-bandwidth 16-bit (RGB565) and 8-bit (BGR233) true-colour formats from
 @{PxFmt.for_depth} are expanded to RGB24 by @{PxFmt.to_rgb24}/@{PxFmt.unpack}; at those depths
 PIXEL and CPIXEL/TPIXEL are both `bpp / 8` bytes (RFC 6143 §7.7.5).
 
-@module vnc.pxfmt
+@module vncoxide.pxfmt
 ]]
 
 local ffi = require("ffi")

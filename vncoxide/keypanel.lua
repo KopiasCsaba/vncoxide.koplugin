@@ -34,7 +34,7 @@ The last few distinct combos sent from the panel are kept in the `recent_combos`
 one sends exactly that combo again. That counts as the action: the armed modifiers are cleared, not
 added to it.
 
-@module vnc.keypanel
+@module vncoxide.keypanel
 ]]
 
 local _ = require("gettext")
@@ -55,9 +55,9 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 
-local Icons = require("vnc/icons")
-local Keysyms = require("vnc/keysyms")
-local Settings = require("vnc/settings")
+local Icons = require("vncoxide/icons")
+local Keysyms = require("vncoxide/keysyms")
+local Settings = require("vncoxide/settings")
 
 local Screen = Device.screen
 local X = Keysyms.x11
@@ -125,7 +125,7 @@ local GRID_ROWS = 3
 
 local KeyPanel = InputContainer:extend{
     name = "VNCKeyPanel",
-    app = nil,            -- the @{vnc.app} that owns us (mandatory)
+    app = nil,            -- the @{vncoxide.app} that owns us (mandatory)
     variant = nil,        -- nil: the full panel; "strip": the one-row strip above the keyboard
     bottom_offset = 0,    -- the strip: pixels between its bottom and the bottom of the screen
     modal = false,        -- the viewer's keyboard and dialogs stack above us normally
@@ -329,7 +329,7 @@ end
 
 --- A row of buttons in the ButtonTable style. `entries` are `{ id, text, width, callback,
 --- enabled, preselect, bold }`, all `row_height` tall; instead of `text` an entry may carry a
---- KOReader `icon` name or a plugin `icon_file` (a path, see @{vnc.icons}).
+--- KOReader `icon` name or a plugin `icon_file` (a path, see @{vncoxide.icons}).
 function KeyPanel:_button_row(entries, row_height)
     local sep_w = Size.line.medium
     local group = HorizontalGroup:new{}

@@ -6,7 +6,7 @@ is drawn as part of), so any partition of the canvas into rects yields the same 
 full-canvas call. That is what lets the caller redraw only the pixels a remote update touched.
 
 The view is `{x = view_x, y = view_y, scale = s}` with the same meaning as in
-@{vnc.framebuffer}: canvas pixel `(cx, cy)` shows the remote point
+@{vncoxide.framebuffer}: canvas pixel `(cx, cy)` shows the remote point
 `(view_x + (cx + 0.5) / s - 0.5, view_y + (cy + 0.5) / s - 0.5)` (pixel centres).
 
 Modes:
@@ -28,7 +28,7 @@ The source is the `TYPE_BBRGB24` plane; the destination may be `TYPE_BB8` (grey 
 `(r*77 + g*150 + b*29) >> 8`), `TYPE_BBRGB24` or `TYPE_BBRGB32`, unrotated and not inverted.
 The destination's pixel `(x, y)` is canvas pixel `(x, y)`.
 
-@module vnc.scaler
+@module vncoxide.scaler
 ]]
 
 local ffi = require("ffi")
@@ -620,9 +620,9 @@ Writes exactly the pixels of `rect` (which must lie inside `dst_bb`).
 ]]
 function Scaler.render(dst_bb, plane, view, rect, mode, lut)
     local bpp = BPP[dst_bb:getType()]
-    assert(bpp, "vnc.scaler: unsupported destination type")
+    assert(bpp, "vncoxide.scaler: unsupported destination type")
     assert(dst_bb:getRotation() == 0 and dst_bb:getInverse() == 0,
-        "vnc.scaler: destination must be unrotated and not inverted")
+        "vncoxide.scaler: destination must be unrotated and not inverted")
     local rx, ry, rw, rh = rect.x, rect.y, rect.w, rect.h
     if rw <= 0 or rh <= 0 then return end
     local x1, y1 = rx + rw, ry + rh

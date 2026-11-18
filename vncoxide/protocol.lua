@@ -9,13 +9,13 @@ and flushed by the driver.
 
 Normative reference: RFC 6143 (sections 7.1-7.7 and Appendix A).
 
-@module vnc.protocol
+@module vncoxide.protocol
 ]]
 
-local Des = require("vnc/des")
-local Encodings = require("vnc/encodings")
-local PxFmt = require("vnc/pxfmt")
-local Util = require("vnc/util")
+local Des = require("vncoxide/des")
+local Encodings = require("vncoxide/encodings")
+local PxFmt = require("vncoxide/pxfmt")
+local Util = require("vncoxide/util")
 local logger = require("logger")
 
 local Protocol = {}
@@ -26,7 +26,7 @@ Protocol.__index = Protocol
 --- of having the device allocate whatever was claimed.
 Protocol.MAX_STRING = 1024 * 1024
 --- Largest framebuffer accepted, in bytes of the 3-byte-per-pixel plane it becomes (c.f.,
---- @{vnc.framebuffer}): 256 MiB is far beyond any real desktop and still an allocation a device
+--- @{vncoxide.framebuffer}): 256 MiB is far beyond any real desktop and still an allocation a device
 --- can refuse cleanly; 65535x65535 would be 12 GiB.
 Protocol.MAX_FRAMEBUFFER_BYTES = 256 * 1024 * 1024
 
@@ -59,7 +59,7 @@ Creates a client.
 --- @tparam[opt=true] boolean opts.shared ClientInit shared-flag
 --- @tparam[opt=nil] string opts.password empty/nil disables VNC Authentication
 --- @tparam[opt] table opts.encodings encoding list for SetEncodings
---- @tparam[opt] table opts.pixel_format client pixel format from @{vnc.pxfmt.for_depth}
+--- @tparam[opt] table opts.pixel_format client pixel format from @{vncoxide.pxfmt.for_depth}
 ---   (default: depth 24)
 --- @tparam[opt] function opts.get_plane -> the current remote plane BlitBuffer
 --- @tparam[opt] table opts.callbacks on_connected|on_update_start|on_rect|on_desktop_resize|on_bell|on_cut_text
@@ -277,7 +277,7 @@ function Protocol:_message_loop()
             r:u8()
             local first, count = r:u16(), r:u16()
             r:bytes(count * 6)
-            logger.dbg("vnc: ignoring SetColorMapEntries", first, count)
+            logger.dbg("vncoxide: ignoring SetColorMapEntries", first, count)
         elseif t == 2 then -- Bell
             self:_fire("on_bell")
         elseif t == 3 then -- ServerCutText

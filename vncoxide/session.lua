@@ -1,23 +1,23 @@
 --[[--
 VNC session: socket transport, Wi-Fi handling, attach/detach and reconnect.
 
-A session owns one connection to one server. It drives @{vnc.protocol} from a poll
+A session owns one connection to one server. It drives @{vncoxide.protocol} from a poll
 task registered with `UIManager:scheduleIn`, so the app can be closed (detached) without
 dropping the connection: while detached the poll task is simply not scheduled, so nothing
 is read, nothing is requested, and at most the single outstanding update request is
 buffered by the kernel until we resume.
 
-@module vnc.session
+@module vncoxide.session
 ]]
 
 local ffi = require("ffi")
 require("ffi/posix_h")
 local C = ffi.C
-local Encodings = require("vnc/encodings")
-local Protocol = require("vnc/protocol")
-local PxFmt = require("vnc/pxfmt")
-local Remote = require("vnc/framebuffer")
-local Util = require("vnc/util")
+local Encodings = require("vncoxide/encodings")
+local Protocol = require("vncoxide/protocol")
+local PxFmt = require("vncoxide/pxfmt")
+local Remote = require("vncoxide/framebuffer")
+local Util = require("vncoxide/util")
 local logger = require("logger")
 local time = require("ui/time")
 
@@ -27,8 +27,8 @@ local UIManager = require("ui/uimanager")
 -- Wi-Fi, so that merely loading the plugin at startup stays cheap.
 local NetworkMgr
 
--- (required lazily: vnc/workers requires this module)
-local function Workers() return require("vnc/workers") end
+-- (required lazily: vncoxide/workers requires this module)
+local function Workers() return require("vncoxide/workers") end
 
 local Session = {}
 Session.__index = Session
@@ -100,7 +100,7 @@ do
         local _ = C.memmove, C.realloc, C.free, C.strerror
     end)
     if not ok then
-        error("vnc.session: ffi/posix_h lacks recv/EAGAIN/EINTR/memmove/realloc/free: " .. tostring(err), 0)
+        error("vncoxide.session: ffi/posix_h lacks recv/EAGAIN/EINTR/memmove/realloc/free: " .. tostring(err), 0)
     end
 end
 -- EWOULDBLOCK is EAGAIN on every platform posix_h supports (Linux, Android, macOS). posix_h has
@@ -137,7 +137,7 @@ end
 Creates a session. Nothing is opened until @{Session:connect} is called.
 
 --- @tparam table opts
---- @tparam table opts.profile connection profile (see @{vnc.settings})
+--- @tparam table opts.profile connection profile (see @{vncoxide.settings})
 --- @tparam[opt] table opts.plugin the plugin instance
 --- @tparam[opt] function opts.on_state `(state, err)` on every transition (one exception: in
 ---   worker mode a desktop resize reconnects, which goes connected → connecting → connected
@@ -147,7 +147,7 @@ Creates a session. Nothing is opened until @{Session:connect} is called.
 ---   `tm = { px, bytes, cpu, rects, t0 }`: the summed rect area (remote pixels), the bytes read,
 ---   the decode CPU seconds, the rect count and the `Session._now()` it started at
 --- @tparam[opt] boolean opts.worker_processes after the handshake, decode and scale in worker
----   processes (@{vnc.workers}); the plane is then in shared memory. Internal, not a setting:
+---   processes (@{vncoxide.workers}); the plane is then in shared memory. Internal, not a setting:
 ---   every viewer connection passes true (VNC:connect_profile); off (in-process) for the
 ---   picture benchmark's sessions and for tests of the in-process internals
 ]]
@@ -184,7 +184,7 @@ function Session.new(opts)
         _network_mgr = opts.network_mgr,
         on_update = opts.on_update,
         worker_processes = opts.worker_processes and true or false,
-        workers = nil,     -- the worker link (@{vnc.workers}) while they run
+        workers = nil,     -- the worker link (@{vncoxide.workers}) while they run
         -- true holds the incremental request that follows every update, like key input does
         hold_incremental = false,
         -- The remote area incremental requests ask for (see `set_view_area`); nil = the whole
@@ -210,10 +210,10 @@ end
 --- @tparam[opt] string err
 function Session:_set_state(state, err)
     self.state, self.err = state, err
-    logger.dbg("vnc: session", self.profile and self.profile.name, "->", state, err or "")
+    logger.dbg("vncoxide: session", self.profile and self.profile.name, "->", state, err or "")
     if self.on_state then
         local ok, e = pcall(self.on_state, state, err)
-        if not ok then logger.warn("vnc: on_state handler failed:", e) end
+        if not ok then logger.warn("vncoxide: on_state handler failed:", e) end
     end
 end
 
@@ -323,7 +323,7 @@ function Session:_finish_connect(ok, err)
     local cb = self._connect_cb
     self._connect_cb = nil
     if ok and self.worker_processes and not self.workers then
-        local pok, link, werr, lost = pcall(function() return require("vnc/workers").start(self) end)
+        local pok, link, werr, lost = pcall(function() return require("vncoxide/workers").start(self) end)
         if pok and not link and lost then
             -- (a worker may have held the socket: the connection fails, the callback hears of it)
             self._connect_cb = cb
@@ -331,12 +331,12 @@ function Session:_finish_connect(ok, err)
             return
         end
         if not (pok and link) then
-            logger.warn("vnc: worker processes not started, decoding in-process:", pok and werr or link)
+            logger.warn("vncoxide: worker processes not started, decoding in-process:", pok and werr or link)
         end
     end
     if cb then
         local ok2, e = pcall(cb, ok, err)
-        if not ok2 then logger.warn("vnc: connect callback failed:", e) end
+        if not ok2 then logger.warn("vncoxide: connect callback failed:", e) end
     end
 end
 
@@ -348,7 +348,7 @@ link is still down after `WIFI_WAIT_TIMEOUT`.
 function Session:_wifi_tick()
     if self._phase ~= "wifi" or self.state ~= "connecting" then return end
     if self:_link_up() then
-        logger.dbg("vnc: the Wi-Fi link is up")
+        logger.dbg("vncoxide: the Wi-Fi link is up")
         self:_do_connect(self._attempt)
         return
     end
@@ -366,7 +366,7 @@ local function set_keepalive(sock)
     for _, o in ipairs{ { "keepalive", true }, { "tcp-keepidle", k.idle },
                         { "tcp-keepintvl", k.interval }, { "tcp-keepcnt", k.count } } do
         local ok, res, err = pcall(sock.setoption, sock, o[1], o[2])
-        if not (ok and res) then logger.dbg("vnc: socket option", o[1], "not set:", ok and err or res) end
+        if not (ok and res) then logger.dbg("vncoxide: socket option", o[1], "not set:", ok and err or res) end
     end
 end
 
@@ -374,12 +374,12 @@ end
 --- failed, was disconnected, or a newer one started since Wi-Fi was asked for) or already dialled.
 function Session:_do_connect(attempt)
     if attempt ~= self._attempt or self.state ~= "connecting" or self.sock then
-        logger.dbg("vnc: ignoring the Wi-Fi callback of an attempt that is over or dialled")
+        logger.dbg("vncoxide: ignoring the Wi-Fi callback of an attempt that is over or dialled")
         return
     end
     UIManager:unschedule(self._wifi_task)
     local p = self.profile
-    logger.dbg("vnc: connecting to", p.host, p.port)
+    logger.dbg("vncoxide: connecting to", p.host, p.port)
     local socket = require("socket")
     local sock = socket.tcp()
     if not sock then
@@ -426,7 +426,7 @@ function Session:_do_connect(attempt)
         request_area = function() return self_ref:_request_area() end,
         callbacks = {
             on_connected = function(name, w, h)
-                logger.info("vnc: connected to", name, w, h)
+                logger.info("vncoxide: connected to", name, w, h)
                 -- a fresh connection starts with the whole screen; the app narrows it again
                 self_ref.view_area, self_ref.forced = nil, nil
                 if self_ref.remote then
@@ -464,7 +464,7 @@ function Session:_do_connect(attempt)
                 if self_ref.remote then self_ref.remote:mark_dirty(x, y, w, h) end
             end,
             on_desktop_resize = function(w, h)
-                logger.info("vnc: remote desktop resized to", w, h)
+                logger.info("vncoxide: remote desktop resized to", w, h)
                 if self_ref.remote then
                     self_ref.remote:resize(w, h)
                 else
@@ -482,7 +482,7 @@ function Session:_do_connect(attempt)
             end,
             on_cut_text = function(text)
                 -- (its length only: a clipboard may hold passwords)
-                logger.dbg("vnc: server cut text:", #text, "bytes")
+                logger.dbg("vncoxide: server cut text:", #text, "bytes")
             end,
         },
     }
@@ -599,7 +599,7 @@ function Session:_resume()
             end
             if self.on_update then
                 local ok, e = pcall(self.on_update, tm)
-                if not ok then logger.warn("vnc: on_update handler failed:", e) end
+                if not ok then logger.warn("vncoxide: on_update handler failed:", e) end
             end
         end
     end
@@ -628,8 +628,8 @@ then serves them without any further check.
 Pointer lifetime: the buffer is compacted, grown or shrunk (`_rx_reserve`) and freed only by
 `_pump` and `_teardown_connection`, i.e. only while the coroutine is suspended in such a yield. A
 pointer is therefore valid until the next read that yields, and the reader contract
-(@{vnc.util.Reader:ptr}) is stricter still: valid until the next read from the reader. Every
-decoder in @{vnc.encodings} uses a pointer before its next read (checked when this path was
+(@{vncoxide.util.Reader:ptr}) is stricter still: valid until the next read from the reader. Every
+decoder in @{vncoxide.encodings} uses a pointer before its next read (checked when this path was
 written; no decoder holds one across reads).
 
 `_read(n)` is the same as a Lua string, for the few text fields (versions, names, reasons, cut
@@ -797,7 +797,7 @@ end
 -- ---------------------------------------------------------------- lifecycle
 
 --- Registers the poll task and resynchronises the framebuffer. No-op unless connected (a session
---- that dropped is attached again once it is back, c.f. @{vnc.reconnect}).
+--- that dropped is attached again once it is back, c.f. @{vncoxide.reconnect}).
 function Session:attach(app)
     if not self:is_connected() then return end
     self.app = app
@@ -907,9 +907,9 @@ function Session:_poll()
 end
 
 --[[--
-The poll task while the workers run (@{vnc.workers}): drains their messages. The scale worker's
+The poll task while the workers run (@{vncoxide.workers}): drains their messages. The scale worker's
 canvas rects of the view the viewer last asked for (`link.view_id`, see
-@{vnc.framebuffer.Remote:draw_to}) become one `app:on_framebuffer_dirty_canvas(rects)` per tick
+@{vncoxide.framebuffer.Remote:draw_to}) become one `app:on_framebuffer_dirty_canvas(rects)` per tick
 (those of an older view are dropped: that view's paint is already superseded); `B` rings the
 bell; a worker's error or end fails the session (`Link:poll`); a desktop resize reconnects.
 ]]
@@ -967,7 +967,7 @@ size; a failure fails the session. Wi-Fi stays as it is (this session keeps any 
 off).
 ]]
 function Session:_reconnect_resized(w, h)
-    logger.info("vnc: remote desktop resized to", w, h, "- reconnecting")
+    logger.info("vncoxide: remote desktop resized to", w, h, "- reconnecting")
     local app = self.app
     self:_teardown_connection()
     -- (the connection is gone: connect() refuses a session that is still "connected")
@@ -1042,7 +1042,7 @@ function Session:_restore_wifi()
         if heir then
             heir.wifi_was_on = false
         else
-            logger.dbg("vnc: turning Wi-Fi back off")
+            logger.dbg("vncoxide: turning Wi-Fi back off")
             self:_net():turnOffWifi()
         end
     end
@@ -1052,7 +1052,7 @@ end
 --- Fails the session, keeping the app (and the last picture) alive for a reconnect.
 function Session:_fail(err)
     local msg = tostring(err)
-    logger.warn("vnc: session failed:", msg)
+    logger.warn("vncoxide: session failed:", msg)
     self:_teardown_connection()
     -- Listeners hear of it before Wi-Fi is restored: one that retries (the viewer's reconnect box)
     -- turns retry mode on from here, and Wi-Fi stays on for its first attempt.
@@ -1149,7 +1149,7 @@ function Session:_request_area()
 end
 
 --[[--
-Tells the session which remote area the viewer shows (see @{vnc.framebuffer:visible_remote_rect}).
+Tells the session which remote area the viewer shows (see @{vncoxide.framebuffer:visible_remote_rect}).
 
 From now on the incremental requests ask for that area only, so the server sends (and we decode)
 nothing that is off screen. The pixels of the new area that the previous one did not cover were

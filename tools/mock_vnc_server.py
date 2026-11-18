@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A small RFB 3.8 server used as the test target for vnc.koplugin.
+"""A small RFB 3.8 server used as the test target for vncoxide.koplugin.
 
 There is no real VNC server available in the dev environment, so this fixture serves a
 deterministic synthetic framebuffer in any of the encodings the plugin implements and logs

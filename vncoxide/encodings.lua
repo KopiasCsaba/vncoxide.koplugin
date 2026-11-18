@@ -10,26 +10,26 @@ Every decoder takes one `ctx` table and returns `true`, or `nil` plus an error s
 
     ctx = {
       x, y, w, h,     -- rect geometry, in remote framebuffer coordinates
-      r,              -- @{vnc.util|reader} positioned at the rect payload
+      r,              -- @{vncoxide.util|reader} positioned at the rect payload
       plane,          -- the whole remote plane (BlitBuffer, TYPE_BBRGB24)
       vp,             -- plane:viewport(x, y, w, h); decoders write rect-local coords
       streams,        -- per-connection persistent state (zlib streams, palettes)
-      fmt,            -- client pixel format (@{vnc.pxfmt.for_depth}); default depth 24
+      fmt,            -- client pixel format (@{vncoxide.pxfmt.for_depth}); default depth 24
     }
 
 At 32 bpp a PIXEL is `[R, G, B, X]` and a CPIXEL/TPIXEL `[R, G, B]`; at 16/8 bpp both are
-`fmt.bytes` wide and go through @{vnc.pxfmt.to_rgb24}.
+`fmt.bytes` wide and go through @{vncoxide.pxfmt.to_rgb24}.
 
-@module vnc.encodings
+@module vncoxide.encodings
 ]]
 
 local bit = require("bit")
 local ffi = require("ffi")
 
 local BB = require("ffi/blitbuffer")
-local PxFmt = require("vnc/pxfmt")
-local Util = require("vnc/util")
-local ZStream = require("vnc/zstream")
+local PxFmt = require("vncoxide/pxfmt")
+local Util = require("vncoxide/util")
+local ZStream = require("vncoxide/zstream")
 
 local band, bor, rshift, lshift, tobit = bit.band, bit.bor, bit.rshift, bit.lshift, bit.tobit
 

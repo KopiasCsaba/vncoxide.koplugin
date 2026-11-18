@@ -2,13 +2,13 @@
 Settings store for the vnc plugin.
 
 Thin wrapper over @{luasettings|LuaSettings}, holding connection profiles and global
-application settings in `~/.config/koreader/settings/vnc.lua`.
+application settings in `~/.config/koreader/settings/vncoxide.lua`.
 
 There is no schema version. The file is kept in shape instead - missing keys get their defaults,
 unknown keys are dropped, and profiles that cannot be used are dropped - so a hand-edited file still
 loads. A renamed key is read once in its old form (`Settings:normalise`) and written in the new one.
 
-@module vnc.settings
+@module vncoxide.settings
 ]]
 
 local _ = require("gettext")
@@ -16,7 +16,7 @@ local _ = require("gettext")
 local LuaSettings = require("luasettings")
 local logger = require("logger")
 
-local Keysyms = require("vnc/keysyms")
+local Keysyms = require("vncoxide/keysyms")
 
 local Settings = {}
 Settings.__index = Settings
@@ -28,7 +28,7 @@ Settings.PROFILE_FIELDS = {
     "hybrid_notch_px",               -- Hybrid mode: remote pixels one wheel notch scrolls (@{Settings.hybrid_notch_px})
     -- Picture: read once per connection, so a change applies on the next one (see NOTES.txt,
     -- "Pixel format").
-    "color_depth",                   -- client pixel format: 24, 16 or 8 bits (@{vnc.pxfmt.for_depth})
+    "color_depth",                   -- client pixel format: 24, 16 or 8 bits (@{vncoxide.pxfmt.for_depth})
     "enable_tight",                  -- opt-in Tight encoding (not in RFC 6143; see NOTES.txt)
     "jpeg_quality",                  -- Tight JPEG quality 0..9, false = server default
     "compress_level",                -- Tight zlib level 0..9, false = server default
@@ -111,7 +111,7 @@ end
 Settings.POINTER_SPEEDS = { slow = 0.75, normal = 1.25, fast = 2.0 }
 
 --- The contrast levels of the remote picture (the contrast dialog's steps): a factor applied around
---- mid grey, 1 is the picture as the server sends it (see @{vnc.scaler.contrast_lut}).
+--- mid grey, 1 is the picture as the server sends it (see @{vncoxide.scaler.contrast_lut}).
 Settings.CONTRAST_LEVELS = { 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3 }
 
 --- The numeric zoom modes: the Display panel's scale presets (DisplayPanel.ZOOM_CHOICES), 1 is 1:1.
@@ -337,7 +337,7 @@ function Settings:normalise()
 
     for key in pairs(data) do
         if not known_data_key[key] then
-            logger.dbg("vnc: dropping unknown settings key", key)
+            logger.dbg("vncoxide: dropping unknown settings key", key)
             data[key] = nil
         end
     end
@@ -355,7 +355,7 @@ function Settings:normalise()
         end
         for name in pairs(section) do
             if defaults[name] == nil then
-                logger.dbg("vnc: dropping unknown", key, "key", name)
+                logger.dbg("vncoxide: dropping unknown", key, "key", name)
                 section[name] = nil
             end
         end
@@ -393,7 +393,7 @@ function Settings:normalise()
         if c then
             cleaned[#cleaned + 1] = c
         else
-            logger.dbg("vnc: dropping an unusable connection profile")
+            logger.dbg("vncoxide: dropping an unusable connection profile")
         end
     end
     data.profiles = cleaned
@@ -404,7 +404,7 @@ function Settings:normalise()
     for _, p in ipairs(cleaned) do
         if p.autoconnect then
             if autoconnect_seen then
-                logger.dbg("vnc: clearing a second autoconnect profile:", p.name)
+                logger.dbg("vncoxide: clearing a second autoconnect profile:", p.name)
                 p.autoconnect = false
             else
                 autoconnect_seen = true

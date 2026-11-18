@@ -1,4 +1,4 @@
-# VNC for KOReader — User Guide
+# VNCoxide — User Guide
 
 The complete manual: every gesture, menu, setting and tool. For an overview, credits and the
 license, see the [README](../README.md).
@@ -43,7 +43,7 @@ compatibility mode, ...) all understand.
 2. Unpack the ZIP.
 3. Move the plugin folder into the `plugins` directory in your KOReader folder (create it if it is
    not there yet). GitHub names the unpacked folder after the repository and the branch —
-   `vnc.koplugin-main` — so rename it to **`vnc.koplugin`**: KOReader only loads plugin directories
+   `vncoxide.koplugin-main` — so rename it to **`vncoxide.koplugin`**: KOReader only loads plugin directories
    whose name ends in `.koplugin`.
 4. Restart KOReader.
 
@@ -271,7 +271,7 @@ implies.
 ## Settings
 
 Connection profiles live in a plain Lua file inside KOReader's settings directory,
-`settings/vnc.lua`:
+`settings/vncoxide.lua`:
 
 ```lua
 return {
@@ -437,7 +437,7 @@ tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; e
 verified. The two Lua suites it describes live in `tools/` and are run from the KOReader root with
 KOReader's own LuaJIT:
 
-    PLUGIN=~/.config/koreader/plugins/vnc.koplugin
+    PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
     cd /usr/lib/koreader
 
     # the client protocol stack, over a real socket, against tools/mock_vnc_server.py

@@ -1,7 +1,7 @@
 --[[--
 Picture-settings benchmark: measures picture-setting combinations against the live server.
 
-Each combination gets its own fresh @{vnc.session} (a copy of the profile with the combination's
+Each combination gets its own fresh @{vncoxide.session} (a copy of the profile with the combination's
 picture fields, `shared = true` like every session), so a live session of the same profile is never
 disturbed and no setting is ever written. The whole list runs `PASSES` (2) times: pass 1 in list
 order, pass 2 in reverse order, so warm-up and order effects (the last runs tended to score best)
@@ -62,11 +62,11 @@ may be called from anywhere, `on_progress` included: the run checks after every 
 An unexpected Lua error inside the run (a tick, `start()`, the connect callback, the draw) fails the
 current run with the error message, tears it down, and the run goes on.
 
-@module vnc.benchmark
+@module vncoxide.benchmark
 ]]
 
 local BB = require("ffi/blitbuffer")
-local Session = require("vnc/session")
+local Session = require("vncoxide/session")
 local logger = require("logger")
 
 local UIManager = require("ui/uimanager")
@@ -226,7 +226,7 @@ same way, so the loop always ends: every turn advances the run index.
 function Benchmark:_guarded(fn)
     local ok, err = pcall(fn, self)
     while not ok and not self.stopped do
-        logger.warn("vnc: benchmark error:", err)
+        logger.warn("vncoxide: benchmark error:", err)
         local entry = self.order[self.index]
         if not entry then
             -- the error came from finishing: stop, but still hand over what was collected
@@ -260,7 +260,7 @@ function Benchmark:_reattach_sessions()
     self.detached = {}
     for s, app in pairs(list) do
         local ok, e = pcall(s.attach, s, app)
-        if not ok then logger.warn("vnc: benchmark could not re-attach a session:", e) end
+        if not ok then logger.warn("vncoxide: benchmark could not re-attach a session:", e) end
     end
 end
 
@@ -269,7 +269,7 @@ function Benchmark:_progress(phase)
         local entry = self.order[self.index]
         local ok, e = pcall(self.on_progress, self.index, #self.order, self.combinations[entry.ci].label, phase,
             entry.pass, Benchmark.PASSES)
-        if not ok then logger.warn("vnc: benchmark on_progress failed:", e) end
+        if not ok then logger.warn("vncoxide: benchmark on_progress failed:", e) end
     end
 end
 
@@ -289,7 +289,7 @@ function Benchmark:_fail(entry, err)
     if entry.failed then return end
     entry.failed = true
     err = tostring(err)
-    logger.info("vnc: benchmark:", self.combinations[entry.ci].label, "failed in pass", entry.pass .. ":", err)
+    logger.info("vncoxide: benchmark:", self.combinations[entry.ci].label, "failed in pass", entry.pass .. ":", err)
     agg.error = agg.error or string.format("failed in pass %d: %s", entry.pass, err)
 end
 
@@ -334,7 +334,7 @@ function Benchmark:_next()
         end
         local ok2, e = pcall(self._on_connected, self, run, session)
         if not ok2 then
-            logger.warn("vnc: benchmark connect callback failed:", e)
+            logger.warn("vncoxide: benchmark connect callback failed:", e)
             if self.run == run then run.err = run.err or tostring(e) end
         end
     end)
@@ -420,7 +420,7 @@ function Benchmark:_on_dirty(run)
     -- an error here would escape into the session's poll task: the tick fails the combination
     local ok, e = pcall(self._draw, self, run)
     if not ok then
-        logger.warn("vnc: benchmark draw failed:", e)
+        logger.warn("vncoxide: benchmark draw failed:", e)
         run.err = run.err or tostring(e)
     end
 end
@@ -474,7 +474,7 @@ function Benchmark:_advance()
     local run = self.run
     local now = Session._now()
     if run.connect_failed then
-        logger.info("vnc: benchmark:", run.combination.label, "could not connect, stopping:", run.err)
+        logger.info("vncoxide: benchmark:", run.combination.label, "could not connect, stopping:", run.err)
         self:_fail(run.entry, run.err)
         self:_stop()
         self:_report(run.err)
@@ -631,7 +631,7 @@ function Benchmark:_report(connect_error)
     local ok, e = pcall(function()
         return self.on_done(Benchmark._sort(self:_rows()), connect_error)
     end)
-    if not ok then logger.warn("vnc: benchmark on_done failed:", e) end
+    if not ok then logger.warn("vncoxide: benchmark on_done failed:", e) end
 end
 
 return Benchmark

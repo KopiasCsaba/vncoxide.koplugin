@@ -13,7 +13,7 @@ the same spot; a tap on that brings the bar back), Display (the display panel), 
 state: `zoom.page`, the plugin's `zoom-1to1`, `zoom.manual`), Mode (Touch/Mouse, the label shows the
 current one), Keyboard (shows or hides the on-screen keyboard with the key strip, or closes the
 "Send keys" panel), Rotate, Scroll up/down, Brightness (KOReader's frontlight dialog; only on a device with
-a frontlight), Contrast (the contrast dialog, @{vnc.contrastdialog}), Invert (a toggle, drawn inverted
+a frontlight), Contrast (the contrast dialog, @{vncoxide.contrastdialog}), Invert (a toggle, drawn inverted
 while on: the remote picture drawn inverted), Close (disconnect, after a
 confirmation) and More (the menu). All but Close and More can be hidden (`toolbar_buttons`, the
 menu's "Toolbar buttons…"); by default only the scroll pair is.
@@ -29,7 +29,7 @@ rotations and resizes. One that starts on the Keyboard button instead drags a ke
 dropped on the remote it clicks there and brings the keyboard up (`ViewerApp:drop_keyboard_at`),
 dropped anywhere else it does nothing.
 
-@module vnc.toolbar
+@module vncoxide.toolbar
 ]]
 
 local _ = require("gettext")
@@ -44,17 +44,17 @@ local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local IconWidget = require("ui/widget/iconwidget")
-local Icons = require("vnc/icons")
+local Icons = require("vncoxide/icons")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Size = require("ui/size")
 local UIManager = require("ui/uimanager")
 
-local Settings = require("vnc/settings")
+local Settings = require("vncoxide/settings")
 
 local Screen = Device.screen
 
 local Toolbar = InputContainer:extend{
-    app = nil, -- the @{vnc.app} instance
+    app = nil, -- the @{vncoxide.app} instance
 }
 
 Toolbar.IDS = { "toggle", "display", "zoom", "mode", "keyboard", "rotate", "scroll_up", "scroll_down",

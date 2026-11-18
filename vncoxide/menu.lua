@@ -5,7 +5,7 @@ Built fresh on every open, so the checkmarks and the title (the connection's nam
 always reflect the live session state. Naming: a row that switches something on or off is the plain
 name of that thing, with ✓ or - beside it; a row that does something is a verb.
 
-@module vnc.menu
+@module vncoxide.menu
 ]]
 
 local _ = require("gettext")
@@ -20,9 +20,9 @@ local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 local time = require("ui/time")
 
-local Dialogs = require("vnc/dialogs")
-local Settings = require("vnc/settings")
-local Toolbar = require("vnc/toolbar")
+local Dialogs = require("vncoxide/dialogs")
+local Settings = require("vncoxide/settings")
+local Toolbar = require("vncoxide/toolbar")
 
 local MenuBuilder = {}
 
@@ -94,7 +94,7 @@ function VncMenu:onMenuSelect(item)
 end
 
 --- Opens the in-app menu for `app`.
---- @tparam table app the @{vnc.app} instance
+--- @tparam table app the @{vncoxide.app} instance
 --- @treturn table the Menu
 function MenuBuilder.open(app)
     local plugin = app.plugin

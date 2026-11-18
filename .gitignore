@@ -1,3 +1,6 @@
 *.old
 __pycache__/
 .superpowers/
+tmp/
+.idea/
+vnc.passwd

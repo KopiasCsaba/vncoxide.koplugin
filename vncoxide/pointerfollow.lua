@@ -18,7 +18,7 @@ Not taken from RustDesk:
 remote on both axes (after snapping by 5 pixels); here each axis is clamped instead, so a pointer
 pushed past a corner of a picture panned beyond its edges still reaches that corner.
 
-@module vnc.pointerfollow
+@module vncoxide.pointerfollow
 ]]
 
 local PointerFollow = {}

@@ -11,7 +11,7 @@ the `keep_fds` it was given (sockets, display or input devices the UI process ho
 the UI process), and runs at nice `Worker.NICE`. It exits when the UI end of its pipe closes,
 or on `Q`; `stop()` SIGKILLs it `Worker.KILL_AFTER` seconds later should it still be running.
 
-@module vnc.worker
+@module vncoxide.worker
 ]]
 
 local bit = require("bit")
@@ -152,7 +152,7 @@ local function close_others(keep)
     for _, fd in ipairs(fds) do C.close(fd) end
 end
 
--- For workers with descriptors of their own (vnc.workers): a blocking write of a whole string
+-- For workers with descriptors of their own (vncoxide.workers): a blocking write of a whole string
 -- (false when the other end is gone) and a read of up to `size` bytes ("" at EOF, nil on error).
 Worker.write_all = write_all
 Worker.read_some = read_some
@@ -162,7 +162,7 @@ Worker.read_some = read_some
 local function stuck_forever()
     while true do socket.sleep(1) end
 end
--- (for vnc.workers' test hooks: a worker that hangs)
+-- (for vncoxide.workers' test hooks: a worker that hangs)
 Worker._stuck_forever = stuck_forever
 
 --- Sets FD_CLOEXEC on `fd`: a program the UI process may exec does not inherit it.

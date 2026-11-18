@@ -2,7 +2,7 @@
 The on-screen keyboard, wired to the RFB KeyEvent stream.
 
 `VirtualKeyboard` never type-checks its `inputbox`: it just calls 12 methods on it, so a
-stub that forwards those calls to @{vnc.session} is all the glue that is needed.
+stub that forwards those calls to @{vncoxide.session} is all the glue that is needed.
 
 Layouts that ship an IME (`zh`, `zh_CN`, `ja`, `ko_KR`, `vi`) export `wrapInputBox()`,
 which is written for `InputText`: it proxies methods our stub does not have and buffers
@@ -10,11 +10,11 @@ typed characters into IME candidates. For the lifetime of this keyboard we there
 the layout to `en` (restoring the user's choice in @{Keyboard.restore_layout}), so that a
 tap always sends exactly the character on the key.
 
-@module vnc.keyboard
+@module vncoxide.keyboard
 ]]
 
-local Keysyms = require("vnc/keysyms")
-local Util = require("vnc/util")
+local Keysyms = require("vncoxide/keysyms")
+local Util = require("vncoxide/util")
 
 local Keyboard = {}
 
@@ -187,7 +187,7 @@ end
 function Keyboard.stop_repeat(vk, reason)
     local rep = vk and vk.vnc_backspace_repeat
     if not rep then return end
-    if rep.running then require("logger").dbg("vnc: Backspace repeat stops:", reason) end
+    if rep.running then require("logger").dbg("vncoxide: Backspace repeat stops:", reason) end
     rep.running = false
     rep.finger = nil
     require("ui/uimanager"):unschedule(rep.task)
@@ -208,7 +208,7 @@ end
 function Keyboard.drop_key_hold(vk, reason)
     local h = vk and vk.vnc_key_hold
     if not (h and h.event) then return end
-    require("logger").dbg("vnc: key hold dropped:", reason)
+    require("logger").dbg("vncoxide: key hold dropped:", reason)
     h.event = nil
     h.ges = nil
     require("ui/uimanager"):unschedule(h.task)
@@ -217,7 +217,7 @@ end
 --[[--
 Creates the on-screen keyboard.
 
---- @tparam table session the @{vnc.session} to send key events to
+--- @tparam table session the @{vncoxide.session} to send key events to
 --- @tparam function on_height_changed called when the keyboard height changes
 --- @tparam[opt] function press called with the keysym of each key (and true for a held
 --- Backspace's repeats) instead of sending its down and up to the session directly
@@ -272,7 +272,7 @@ function Keyboard.new(session, on_height_changed, press)
         hold.event, hold.ges = nil, nil
         require("ui/uimanager"):unschedule(hold.task)
         if not vk.visible then return end
-        require("logger").dbg("vnc: key hold confirmed:", why)
+        require("logger").dbg("vncoxide: key hold confirmed:", why)
         pass(vk, event)
     end
     hold.task = function() confirm("still down after " .. Keyboard.HOLD_CONFIRM .. " s") end

@@ -1,7 +1,7 @@
 --[[--
 KOReader key names / typed characters -> X11 keysyms (RFC 6143 Appendix A).
 
-@module vnc.keysyms
+@module vncoxide.keysyms
 ]]
 
 local Keysyms = {}

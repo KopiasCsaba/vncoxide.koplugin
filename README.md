@@ -1,6 +1,6 @@
-# VNC for KOReader
+# VNCoxide
 
-**A full-screen VNC viewer for e-readers running [KOReader](https://koreader.rocks).**
+**VNCoxide (`vncoxide.koplugin`) is a full-screen VNC viewer for e-readers running [KOReader](https://koreader.rocks).**
 Drive a remote desktop by touch, on-screen keyboard or physical keyboard, with decoding,
 scaling and screen refreshes tuned for e-ink.
 
@@ -17,14 +17,14 @@ helper for sharing part of an X11 screen at the reader's resolution.
 
 ## Contents
 
-1. [Origin and credits](#origin-and-credits)
-2. [What this fork adds](#what-this-fork-adds)
-3. [Feature overview](#feature-overview)
-4. [Installation](#installation)
-5. [Quick start](#quick-start)
-6. [Compatibility](#compatibility)
-7. [Security](#security)
-8. [Development and testing](#development-and-testing)
+1. [Highlights](#highlights)
+2. [Feature overview](#feature-overview)
+3. [Installation](#installation)
+4. [Quick start](#quick-start)
+5. [Compatibility](#compatibility)
+6. [Security](#security)
+7. [Development and testing](#development-and-testing)
+8. [Origin and credits](#origin-and-credits)
 9. [License](#license)
 
 Every gesture, menu, setting and tool is described in the
@@ -32,31 +32,11 @@ Every gesture, menu, setting and tool is described in the
 
 ---
 
-## Origin and credits
+## Highlights
 
-This project is a fork of **[hwhw/vnc.koplugin](https://github.com/hwhw/vnc.koplugin)**,
-created by **Hans-Werner Hilse**. The original plugin laid the foundation:
-
-1. The RFB 3.8 client, with every encoding in RFC 6143 (ZRLE, TRLE, Hextile, RRE, CopyRect and
-   Raw), DesktopSize, VNC authentication and opt-in Tight.
-2. The full-screen viewer with zoom presets, panning and touch control.
-3. Forwarding from the on-screen and physical keyboards.
-4. Connection profiles, auto connect at start-up and Wi-Fi handling.
-5. The headless protocol and UI test suites that pin the behaviour down.
-
-The original's documentation describes it as *vibe coded*: written by **DeepSeek V4 Flash** from
-a specification, prompt by prompt, and checked by those test suites.
-
-**Kopiás Csaba** has maintained this fork since 2026-11-06. The upstream history is kept intact
-in git (70 commits by the original author), and every change since is recorded on top of it.
-Many thanks to Hans-Werner Hilse for the original work and for releasing it under the AGPL.
-
----
-
-## What this fork adds
-
-The fork turns a working protocol demo into a viewer you can use every day on an e-reader. It
-was developed and measured on a PocketBook. Highlights, grouped by area:
+VNCoxide is built for everyday use on an e-reader. It was developed and measured on a
+PocketBook. Compared with the prototype it grew out of (see [Origin and credits](#origin-and-credits)),
+grouped by area:
 
 ### 1. Performance on low-power hardware
 
@@ -134,10 +114,10 @@ was developed and measured on a PocketBook. Highlights, grouped by area:
    (`-z 2`, `--sharp`), so the reader can draw at 1:1 with no scaling of its own. It supports
    ZRLE, XTest input injection and CIDR allow-lists.
 
-### 6. Scope change
+### 6. Scope
 
-The original also included a VNC **server** for sharing KOReader's own screen. This fork removed
-it to focus entirely on the viewer.
+VNCoxide is a viewer only. The prototype also shipped a VNC **server** for sharing KOReader's own
+screen; it was dropped to focus entirely on the viewer.
 
 ---
 
@@ -157,12 +137,16 @@ it to focus entirely on the viewer.
 ## Installation
 
 1. Download this repository as a ZIP: **Code** ▸ **Download ZIP**.
-2. Unpack it and rename the folder from `vnc.koplugin-main` to **`vnc.koplugin`**. KOReader only
+2. Unpack it and rename the folder from `vncoxide.koplugin-main` to **`vncoxide.koplugin`**. KOReader only
    loads plugin folders whose names end in `.koplugin`.
 3. Copy the folder into the `plugins` directory of your KOReader installation.
 4. Restart KOReader.
 
-There are no releases to download and nothing to compile.
+There is nothing to compile.
+
+**Coming from `vnc.koplugin`?** Remove the old `vnc.koplugin` folder. On its first start VNCoxide
+imports your connections and settings from `settings/vnc.lua` into `settings/vncoxide.lua`; the
+old file is left untouched.
 
 ---
 
@@ -199,7 +183,7 @@ settings and troubleshooting.
 ## Security
 
 VNC is not encrypted, and VNC Authentication is a weak scheme based on DES. Passwords are stored
-in clear text in `settings/vnc.lua`, the same way KOReader stores OPDS and sync credentials.
+in clear text in `settings/vncoxide.lua`, the same way KOReader stores OPDS and sync credentials.
 Use the plugin on a trusted network, or tunnel the connection over SSH or WireGuard. Never expose
 a VNC server to the internet.
 
@@ -222,12 +206,35 @@ Bug reports and patches are welcome.
 
 ---
 
+## Origin and credits
+
+VNCoxide is written and maintained by **Kopiás Csaba**.
+
+It started on 2026-11-06 as a fork of **[hwhw/vnc.koplugin](https://github.com/hwhw/vnc.koplugin)**
+by **Hans-Werner Hilse**, an experimental prototype, and has since been largely rewritten: about
+four fifths of the current Lua code is new. The prototype laid the foundation:
+
+1. The RFB 3.8 client, with every encoding in RFC 6143 (ZRLE, TRLE, Hextile, RRE, CopyRect and
+   Raw), DesktopSize, VNC authentication and opt-in Tight.
+2. The full-screen viewer with zoom presets, panning and touch control.
+3. Forwarding from the on-screen and physical keyboards.
+4. Connection profiles, auto connect at start-up and Wi-Fi handling.
+5. The headless protocol and UI test suites that pin the behaviour down.
+
+Its history is kept intact in git (71 commits by the original author), and every change since is
+recorded on top of it. Many thanks to Hans-Werner Hilse for the original work and for releasing
+it under the AGPL.
+
+---
+
 ## License
 
-Copyright © Hans-Werner Hilse (original work) and Kopiás Csaba (modifications since 2026-11-06).
+Copyright © 2026 Kopiás Csaba.
+Portions copyright © 2026 Hans-Werner Hilse (the original
+[vnc.koplugin](https://github.com/hwhw/vnc.koplugin)), modified by Kopiás Csaba since 2026-11-06.
 
 This program is free software, licensed under the **GNU Affero General Public License v3.0**,
 the same license as the original. See [`LICENSE`](LICENSE). The complete source of this version
-is available at <https://github.com/KopiasCsaba/vnc.koplugin>.
+is available at <https://github.com/KopiasCsaba/vncoxide.koplugin>.
 
 This software comes with **no warranty** of any kind. Use it at your own risk.

@@ -5,7 +5,7 @@ A ButtonDialog that hangs under the toolbar (above it when there is no room belo
 fresh on every open and re-opened in place after a choice, so the checkmarks always show the live
 state. Only a rotation closes it: the dialog is laid out for the old orientation.
 
-@module vnc.displaypanel
+@module vncoxide.displaypanel
 ]]
 
 local _ = require("gettext")
@@ -14,7 +14,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local Device = require("device")
 local Geom = require("ui/geometry")
-local Settings = require("vnc/settings")
+local Settings = require("vncoxide/settings")
 local UIManager = require("ui/uimanager")
 
 local Screen = Device.screen
@@ -65,7 +65,7 @@ local function rows_of(list, per_row)
 end
 
 --- Opens the display panel for `app`.
---- @tparam table app the @{vnc.app} instance
+--- @tparam table app the @{vncoxide.app} instance
 --- @treturn table the ButtonDialog
 function DisplayPanel.open(app)
     local settings = app.settings

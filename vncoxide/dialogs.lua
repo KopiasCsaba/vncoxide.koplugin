@@ -8,7 +8,7 @@ back to whatever opened it, and a failed connection returns to the list instead 
 the user out of the plugin. `Menu`, `ButtonDialog` and the editor's own `id = "close"` button
 (which `InputDialog:onCloseDialog` invokes for the Back key) all funnel into those callbacks.
 
-@module vnc.dialogs
+@module vncoxide.dialogs
 ]]
 
 local _ = require("gettext")
@@ -102,7 +102,7 @@ end
 -- Marks the Tight pseudo-encodings as sub-items of the Tight row.
 local SUB_ITEM = "   \u{21B3} "
 
---- Profile fields that are only read when connecting (see @{vnc.session}).
+--- Profile fields that are only read when connecting (see @{vncoxide.session}).
 local RECONNECT_FIELDS = {
     "host", "port", "password", "color_depth", "enable_tight", "jpeg_quality", "compress_level",
 }
@@ -328,7 +328,7 @@ end
 
 -- ---------------------------------------------------------------- picture benchmark
 
---- The benchmark engine; tests replace it with a stand-in (nil means @{vnc.benchmark}).
+--- The benchmark engine; tests replace it with a stand-in (nil means @{vncoxide.benchmark}).
 Dialogs.Benchmark = nil
 
 local BENCH_INTRO = _("Tries 11 picture-setting combinations on this connection, twice each, in opposite order, a few seconds per try.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end.")
@@ -345,7 +345,7 @@ The benchmark results as text: a header, then one entry per result in the given 
 the label on its own line and the figures indented below it, so that a narrow screen does not
 wrap the columns. Scored rows are numbered; failed rows are marked "-".
 
---- @tparam table results sorted rows from @{vnc.benchmark}
+--- @tparam table results sorted rows from @{vncoxide.benchmark}
 --- @treturn string
 ]]
 function Dialogs.benchmark_table(results)
@@ -390,7 +390,7 @@ row's four picture fields to the profile) and "Close". Both, and the viewer's ow
 
 --- @tparam table plugin
 --- @tparam string profile_name
---- @tparam table results sorted rows from @{vnc.benchmark}
+--- @tparam table results sorted rows from @{vncoxide.benchmark}
 --- @tparam function on_back
 --- @treturn table the TextViewer (the caller shows it)
 ]]
@@ -437,7 +437,7 @@ end
 
 --[[--
 "Find fastest picture settings": the intro (Start / Cancel), then a progress dialog with Cancel
-while @{vnc.benchmark} runs on the stored profile (the plugin's attached sessions are detached
+while @{vncoxide.benchmark} runs on the stored profile (the plugin's attached sessions are detached
 meanwhile), then @{Dialogs.benchmark_results}, or "Could not connect: <reason>" when the run
 stopped on a connect failure. Every way out (Cancel in the intro or the progress, Close, Apply
 best, the connect failure) ends in `on_back`.
@@ -448,7 +448,7 @@ best, the connect failure) ends in `on_back`.
 ]]
 function Dialogs.picture_benchmark(plugin, profile, on_back)
     local function run()
-        local Benchmark = Dialogs.Benchmark or require("vnc/benchmark")
+        local Benchmark = Dialogs.Benchmark or require("vncoxide/benchmark")
         local stored = plugin.settings:get_profile(profile.name) or profile
         local copy = {}
         for k, v in pairs(stored) do copy[k] = v end

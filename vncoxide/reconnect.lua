@@ -7,7 +7,7 @@ Every attempt is `Session:connect` on the same session, which keeps the app and 
 the loop runs the session keeps Wi-Fi on (`Session:set_keep_wifi`); it is handed back when the loop
 ends, however it ends. The loop lives with the open viewer only: closing the viewer stops it.
 
-@module vnc.reconnect
+@module vncoxide.reconnect
 ]]
 
 local _ = require("gettext")

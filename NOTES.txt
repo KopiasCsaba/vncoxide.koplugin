@@ -1,4 +1,4 @@
-NOTES.txt -- vnc.koplugin internals, tests and open ends
+NOTES.txt -- vncoxide.koplugin internals, tests and open ends
 ==============================================================
 
 This file is for people reading or changing the code. The README is for users.
@@ -9,7 +9,7 @@ WHAT THIS IS
 
 An out-of-tree KOReader plugin with a VNC (RFB 3.8) **client** that renders a remote desktop
 through KOReader's BlitBuffer abstraction. Pure Lua + LuaJIT FFI: no build step, no C component, nothing to compile.
-The directory is `vnc.koplugin` and its Lua modules live in `vnc/`.
+The directory is `vncoxide.koplugin` and its Lua modules live in `vncoxide/`.
 
 
 CODE STRUCTURE
@@ -19,57 +19,57 @@ main.lua                  Plugin entry point. Owns the settings store, registers
                           file-browser menu entry, keeps the session registry (one Session per
                           profile) and the app lifecycle.
 
-vnc/protocol.lua    RFB 3.8 state machine: version/security handshake, ClientInit,
+vncoxide/protocol.lua    RFB 3.8 state machine: version/security handshake, ClientInit,
                           ServerInit, SetPixelFormat, SetEncodings, the server message loop, and
                           the client input messages. Transport agnostic - it never touches a
                           socket.
-vnc/encodings.lua   Rectangle decoders: Raw, CopyRect, RRE, Hextile, TRLE, ZRLE, Tight and
+vncoxide/encodings.lua   Rectangle decoders: Raw, CopyRect, RRE, Hextile, TRLE, ZRLE, Tight and
                           the DesktopSize pseudo-encoding.
-vnc/zstream.lua     Stateful zlib inflate (one stream per RFB zlib stream) - KOReader's
+vncoxide/zstream.lua     Stateful zlib inflate (one stream per RFB zlib stream) - KOReader's
                           ffi/zlib.lua only offers one-shot uncompress().
-vnc/des.lua         DES-ECB in FFI, used by VNC Authentication.
-vnc/pxfmt.lua       The client pixel format we negotiate, plus the pixel write helpers.
-vnc/util.lua        Byte reader/writer for protocol fields, rect unions, UTF-8 splitting.
-vnc/keysyms.lua     KOReader key names / characters -> X11 keysyms.
-vnc/session.lua     The transport driver: LuaSocket TCP, Wi-Fi, the poll task, tx/rx
+vncoxide/des.lua         DES-ECB in FFI, used by VNC Authentication.
+vncoxide/pxfmt.lua       The client pixel format we negotiate, plus the pixel write helpers.
+vncoxide/util.lua        Byte reader/writer for protocol fields, rect unions, UTF-8 splitting.
+vncoxide/keysyms.lua     KOReader key names / characters -> X11 keysyms.
+vncoxide/session.lua     The transport driver: LuaSocket TCP, Wi-Fi, the poll task, tx/rx
                           buffering, attach/detach, reconnect, dirty-rect plumbing.
-vnc/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer), the view transform
+vncoxide/framebuffer.lua The remote plane (a TYPE_BBRGB24 BlitBuffer), the view transform
                           (fit / zoom / pan / draw) and the persistent canvas buffer that
                           holds the scaled view between draws.
-vnc/scaler.lua      Global-coordinate sharp/smooth scaler used for partial redraws.
-vnc/app.lua         The full-screen viewer widget: canvas, gestures (Touch and Mouse pointer
+vncoxide/scaler.lua      Global-coordinate sharp/smooth scaler used for partial redraws.
+vncoxide/app.lua         The full-screen viewer widget: canvas, gestures (Touch and Mouse pointer
                           modes), on-screen keyboard, toolbar routing, remote input.
-vnc/pointerfollow.lua  Mouse mode, zoomed in: one axis of the view following the pointer
+vncoxide/pointerfollow.lua  Mouse mode, zoomed in: one axis of the view following the pointer
                           (RustDesk's CursorModel.updatePan rule), a pure function.
-vnc/toolbar.lua     The floating, draggable toolbar (Collapse, Display, Zoom cycle, Mode,
+vncoxide/toolbar.lua     The floating, draggable toolbar (Collapse, Display, Zoom cycle, Mode,
                           Keyboard, Rotate, Scroll up/down, Brightness, Contrast,
                           Close, More; all but the last two can be hidden), or while collapsed its
                           round button; a child of the viewer, not a window.
-vnc/icons.lua       Absolute paths of the plugin's own icons (the icons/ folder: keyboard.svg,
+vncoxide/icons.lua       Absolute paths of the plugin's own icons (the icons/ folder: keyboard.svg,
                           keys.svg, zoom-1to1.svg, brightness.svg, toolbar.svg), which
                           KOReader's icon folders do not hold, and how a Button / IconButton
                           gets one.
-vnc/contrastdialog.lua  The contrast dialog (toolbar Contrast button): a ButtonProgressWidget
-                          over Settings.CONTRAST_LEVELS; the curve is applied in vnc/scaler.lua.
-vnc/displaypanel.lua  The Display panel under the toolbar: zoom, scaling, orientation, picture
+vncoxide/contrastdialog.lua  The contrast dialog (toolbar Contrast button): a ButtonProgressWidget
+                          over Settings.CONTRAST_LEVELS; the curve is applied in vncoxide/scaler.lua.
+vncoxide/displaypanel.lua  The Display panel under the toolbar: zoom, scaling, orientation, picture
                           quality presets, pointer speed.
-vnc/help.lua        The Help page text (gesture rows per pointer mode, toolbar, key strip, menu,
+vncoxide/help.lua        The Help page text (gesture rows per pointer mode, toolbar, key strip, menu,
                           reconnect); shown in a TextViewer by ViewerApp:open_help.
-vnc/reconnect.lua   The reconnect loop and its box (backoff, Retry now, Close).
-vnc/menu.lua        The "More" menu (the toolbar's last button). Its rows act on a long press only on its release:
+vncoxide/reconnect.lua   The reconnect loop and its box (backoff, Retry now, Close).
+vncoxide/menu.lua        The "More" menu (the toolbar's last button). Its rows act on a long press only on its release:
                           a release within HOLD_CONFIRM of the hold is the device's false hold
                           (InkView's late burst), i.e. a tap (VncMenu:onMenuHold).
-vnc/keypanel.lua    The "Send keys" panel: one-shot modifier toggles and every key, for
+vncoxide/keypanel.lua    The "Send keys" panel: one-shot modifier toggles and every key, for
                           any hotkey; owned by the viewer (ViewerApp:open_key_panel). Its
                           variant = "strip" is the one-row key strip above the on-screen keyboard.
-vnc/dialogs.lua     Connection list, per-connection actions, profile editor (with its picture
+vncoxide/dialogs.lua     Connection list, per-connection actions, profile editor (with its picture
                     settings).
-vnc/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via a stub inputbox.
+vncoxide/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via a stub inputbox.
                           A key's long press (its popup, Backspace's repeat) reaches the key only
                           once it lasted Keyboard.HOLD_CONFIRM (= HOLD_CONFIRM) with no lift, or moved
                           (hold_pan); lifted sooner it is InkView's late burst of a tap, and the lift
                           alone types the key (VirtualKey:onHoldReleaseKey).
-vnc/settings.lua    LuaSettings wrapper: profiles + global settings.
+vncoxide/settings.lua    LuaSettings wrapper: profiles + global settings.
 
 tools/mock_vnc_server.py  Test fixture: an RFB 3.8 server in Python (all encodings, both security
                           types, deterministic patterns, logs every client message).
@@ -139,16 +139,16 @@ A Disconnect confirmed from the toolbar (ViewerApp:disconnect_session) then open
 list; other disconnects (list actions, errors) and Leave do not.
 
 Settings. There is no schema version. The only migration is for the released global `enable_tight`
-(see "Pixel format and bandwidth" below). vnc/settings.lua:normalise() otherwise just keeps the
+(see "Pixel format and bandwidth" below). vncoxide/settings.lua:normalise() otherwise just keeps the
 file in shape on load: missing global settings get their defaults, unknown keys are dropped,
 profiles without a usable name are dropped. One invariant is enforced there too: at most one
 profile may carry `autoconnect` (see below), so the first flagged one keeps it and the rest are
 cleared.
 
-Pixel format and bandwidth. These are per-connection profile fields (vnc/settings.lua
+Pixel format and bandwidth. These are per-connection profile fields (vncoxide/settings.lua
 PROFILE_FIELDS), edited behind the connection editor's Picture button (Dialogs.picture_settings)
 and stored only on Save; save_profile keeps a field the caller omits. The session reads them from
-the connecting profile once per connection: `color_depth` (24, 16 or 8; vnc/pxfmt.lua:for_depth
+the connecting profile once per connection: `color_depth` (24, 16 or 8; vncoxide/pxfmt.lua:for_depth
 gives 32 bpp RGB, RGB565 or BGR233, all expanded to the RGB24 plane), and `jpeg_quality`/`compress_level` (false or 0..9), which
 Encodings.order appends as the Tight pseudo-encodings -32+q and -256+l - only when `enable_tight`
 is on, since without Tight no server reads them. Servers only send Tight JPEG at 32 bpp, so JPEG
@@ -170,13 +170,13 @@ reloaded one.
 Worker processes. The viewer's architecture: there is no setting and no menu switch. Every
 session VNC:connect_profile creates is Session.new{ worker_processes = true } (an internal
 parameter; only the picture benchmark and tests that inspect the in-process internals leave it
-off), which makes the session, after the RFB handshake (also after a reconnect), fork (vnc/worker.lua) two processes (vnc/workers.lua): a decode worker, which inherits the socket
+off), which makes the session, after the RFB handshake (also after a reconnect), fork (vncoxide/worker.lua) two processes (vncoxide/workers.lua): a decode worker, which inherits the socket
 and the protocol state and decodes updates into the remote plane, and a scale worker, which scales
 the visible part of the plane into the canvas. The UI process keeps the keyboard/pointer/view
-logic, the e-ink refresh and the paint. Plane and canvas are MAP_SHARED memory (vnc/sharedmem.lua);
+logic, the e-ink refresh and the paint. Plane and canvas are MAP_SHARED memory (vncoxide/sharedmem.lua);
 the pipes carry only small messages, so a big update no longer blocks the UI thread for its decode
-and scale. vnc/renderer.lua holds the scaling the in-process path shares. Messages (the table in
-vnc/workers.lua's header is the source):
+and scale. vncoxide/renderer.lua holds the scaling the in-process path shares. Messages (the table in
+vncoxide/workers.lua's header is the source):
   UI -> decode    K <keysym> <0|1>[ r] (r: a repeat); P <x> <y> <mask>; V <x> <y> <w> <h> | V -; F; N <what>;
                   T <len> + bytes (cut text); S (detached: stop reading); R (attached: resume);
                   I <n> (ping; answered at once, also while detached); Q
@@ -233,10 +233,10 @@ ends are FD_CLOEXEC. What stays in-process: the fallback above when the workers 
 viewer's drawing while a session has no link (Remote:draw_to scales the plane itself, e.g. in the
 resize reconnect window between the decode worker's Z and the new workers); the session and
 decoder code itself, which the decode worker runs after the fork; the picture benchmark
-(vnc/benchmark.lua creates its own sessions without the flag, so it measures one process's
+(vncoxide/benchmark.lua creates its own sessions without the flag, so it measures one process's
 decode and draw; a test asserts it).
 
-Picture benchmark. vnc/benchmark.lua measures combinations (see its header); the UI is
+Picture benchmark. vncoxide/benchmark.lua measures combinations (see its header); the UI is
 Dialogs.picture_benchmark, behind "Find fastest picture settings" in the per-connection dialog:
 intro ConfirmBox (Start/Cancel) -> a non-dismissable ButtonDialog whose title shows
 "<run>/<total> (pass <p>/2): <label> — <phase>" (setTitle on every on_progress) with Cancel (bench:cancel()) ->
@@ -268,7 +268,7 @@ first failure (shown as is, not prefixed "failed: " again). Result rows ("%.1f M
 columns) must fit one line of the monospace TextViewer on the Era: the photo's old row, which
 wrapped there, measures about 0.97 of the emulated 1264x1680 text width, so ui_smoke holds the
 worst case to 0.85 of it (and checks the old row exceeds that).
-The benchmark session polls every 5 ms while a request is in flight (see the vnc/benchmark.lua
+The benchmark session polls every 5 ms while a request is in flight (see the vncoxide/benchmark.lua
 header). It needs no changing content: every request is non-incremental (3 whole-screen ones, the first a
 warm-up, then the 16 tiles of a 4x4 grid, one at a time, the held incremental request settled by
 each), so the server re-encodes and re-sends identical pixels every time and every combination
@@ -283,7 +283,7 @@ tap" preference and shows/hides the toolbar on a swipe down in KOReader's menu z
 "tap only" the toolbar would be unreachable, and intercepting taps would put a dead spot on the
 remote desktop. See ViewerApp:init_menu_zones().
 
-The toolbar is a child of the viewer, not a window of its own (vnc/toolbar.lua). The viewer paints
+The toolbar is a child of the viewer, not a window of its own (vncoxide/toolbar.lua). The viewer paints
 it after the canvas and its handleEvent hands the toolbar every gesture that started on it
 (ViewerApp:_toolbar_owns), so a tap on the bar never reaches the remote and the canvas around it
 stays live; a window of its own would take the screen's input and hide the viewer from UIManager.
@@ -382,7 +382,7 @@ space the keyboard leaves (and therefore follows the keyboard); "Fit screen" fil
 fixed ratios are absolute. Remote:set_canvas() keeps the view's own idea of its space in step,
 which matters because set_scale()/zoom_at() clamp and centre against it.
 
-Send keys panel (vnc/keypanel.lua). A bottom-anchored, non-modal widget above the viewer that the
+Send keys panel (vncoxide/keypanel.lua). A bottom-anchored, non-modal widget above the viewer that the
 viewer treats as part of itself, like its keyboard (ViewerApp:_is_overlay): canvas taps still reach
 the remote, remote updates keep repainting under it, and the canvas places a view that fits above
 it, exactly as for the keyboard (ViewerApp:_bottom_cover_height; the keyboard hides while it is
@@ -464,7 +464,7 @@ A swipe reaches the viewer *after* the pans that led up to it and *instead of* a
 the modifiers at the last pointer position, and the top-zone toolbar swipe ends the drag itself
 too. Withholding the press until a gesture is known not to be a swipe would delay every canvas drag.
 
-Reconnect (vnc/reconnect.lua). ViewerApp:on_session_error opens a box over the last picture
+Reconnect (vncoxide/reconnect.lua). ViewerApp:on_session_error opens a box over the last picture
 (ButtonDialog: Retry now, Close; Back = Close) and retries with Reconnect.BACKOFF 2, 4, 8, 15, then
 30 s forever; every attempt is Session:connect on the same session, which keeps the app and the
 plane, and there is one loop per session. The loop lives with the open viewer only: a session that
@@ -534,7 +534,7 @@ and the core label function is wrapped additively, because core's `text_func` fa
 it. (TouchMenu resolves that
 function; the legacy non-touch `Menu` path reads the static table the sorter filled, so there the
 entry is unconditional - that path is only for a device with neither touch nor a d-pad.) The
-choice itself is stored as `start_with = "vnc_autoconnect"`. Core's boot branch cannot be
+choice itself is stored as `start_with = "vncoxide_autoconnect"`. Core's boot branch cannot be
 intercepted (external plugins are not loaded before FileManager:init), so selecting the entry makes
 KOReader open the file manager first and the deferred autoconnect then shows the viewer over it;
 that first frame is inherent to doing this without shipping a userpatch. With nothing flagged the
@@ -553,7 +553,7 @@ through BlitBuffer, and the grey path uses ditherblitFrom when Screen.sw_ditheri
 Drawing: Remote keeps the scaled view in one persistent canvas-sized buffer (`_canvas_bb`, of the
 screen buffer's type: BB8, RGB24 or RGB32; any other type gets RGB24), reallocated only when the
 canvas size or that type changes. The session calls `Remote:mark_dirty(x, y, w, h)` per decoded
-rect; `draw_to` rescales (vnc/scaler.lua) only `Scaler.dst_rect_for` of those rects, merged, and
+rect; `draw_to` rescales (vncoxide/scaler.lua) only `Scaler.dst_rect_for` of those rects, merged, and
 recomputes the whole buffer after a pan/zoom, a canvas resize, a scaling-mode change
 (`Remote:set_scaling`), a plane resize or `mark_dirty()` without arguments. Every paint then blits
 the whole buffer, so a popup closing or the keyboard going away needs no special handling: only the
@@ -615,7 +615,7 @@ TESTS
 Protocol layer (needs python3 with the standard library, libcrypto with the legacy provider for the
 mock's DES, and KOReader's own LuaJIT):
 
-    PLUGIN=~/.config/koreader/plugins/vnc.koplugin
+    PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
     cd /usr/lib/koreader && \
       LUA_PATH="$PLUGIN/?.lua;./common/?.lua;./common/?/init.lua;;" \
       LUA_CPATH="./common/?.so;;" \
@@ -627,11 +627,11 @@ encoding list as they hit the wire, None/VNC security (including a wrong passwor
 decoded pixel-exactly, ZRLE stream continuity across many rectangles, DesktopSize, the exact bytes
 of pointer/key/cut-text messages, and the fatal path for an encoding we never advertised. The mock
 verifies VNC Authentication with OpenSSL's DES (through ctypes), i.e. with an implementation
-independent of vnc/des.lua.
+independent of vncoxide/des.lua.
 
 UI plumbing (headless, no KOReader process, no server):
 
-    PLUGIN=~/.config/koreader/plugins/vnc.koplugin
+    PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
     cd /usr/lib/koreader && \
       rm -rf /tmp/vncv_ui_home && KO_HOME=/tmp/vncv_ui_home \
       LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
@@ -671,14 +671,14 @@ widget cache lives under it.
 Live end-to-end (GUI): run the mock, run KOReader, drive the plugin through KOReader's HTTP
 inspector (port 8989, httpinspector.autostart = true):
 
-    PLUGIN=~/.config/koreader/plugins/vnc.koplugin
+    PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
     python3 "$PLUGIN/tools/mock_vnc_server.py" --port 5900 --encoding zrle --pattern quadrants \
         --log /tmp/mock.log &
     koreader &                      # or: env KO_HOME=/tmp/ko_home ./reader.lua
     sleep 20
-    curl -s 'http://127.0.0.1:8989/koreader/ui/vnc/connect_profile/local/'
-    curl -s 'http://127.0.0.1:8989/koreader/ui/vnc/app/send_pointer/300/200/1'
-    curl -s 'http://127.0.0.1:8989/koreader/ui/vnc/app/send_key/65293/1'   # 0xFF0D down
+    curl -s 'http://127.0.0.1:8989/koreader/ui/vncoxide/connect_profile/local/'
+    curl -s 'http://127.0.0.1:8989/koreader/ui/vncoxide/app/send_pointer/300/200/1'
+    curl -s 'http://127.0.0.1:8989/koreader/ui/vncoxide/app/send_key/65293/1'   # 0xFF0D down
     grep -E 'INPUT (PointerEvent|KeyEvent)' /tmp/mock.log
     curl -s -o /tmp/screen.png 'http://127.0.0.1:8989/koreader/device/screen/bb'
 

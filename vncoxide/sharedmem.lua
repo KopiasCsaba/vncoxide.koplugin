@@ -2,7 +2,7 @@
 BlitBuffers over anonymous shared memory, so forked worker processes and the
 parent see the same pixels.
 
-@module vnc.sharedmem
+@module vncoxide.sharedmem
 ]]
 
 local bit = require("bit")

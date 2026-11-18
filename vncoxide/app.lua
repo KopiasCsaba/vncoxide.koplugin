@@ -3,7 +3,7 @@ The full-screen viewer widget.
 
 The remote framebuffer owns the whole screen; the on-screen keyboard is drawn *over* it
 (KOReader stacks it above us), so showing the keyboard never rescales the view — pan it if part
-of the remote desktop ends up behind the keyboard. A compact toolbar (`vnc.toolbar`) floats at the
+of the remote desktop ends up behind the keyboard. A compact toolbar (`vncoxide.toolbar`) floats at the
 top; a **swipe down** in KOReader's own top screen zone (the `DTAP_ZONE_MENU` area) shows or hides
 it, and a tap on the bar never reaches the remote. Everywhere else taps are *never* taken away from
 the remote desktop. What a tap, a long press and a one-finger drag do depends on the pointer mode:
@@ -17,7 +17,7 @@ It is a plain (non-modal) full-screen `InputContainer` flagged `is_always_active
 keeps receiving gestures even while one of its own popups is on top — hence the
 `_input_target()` / `_modal_above()` guards on every canvas gesture.
 
-@module vnc.app
+@module vncoxide.app
 ]]
 
 local bit = require("bit")
@@ -36,13 +36,13 @@ local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local time = require("ui/time")
 
-local Keyboard = require("vnc/keyboard")
-local Keysyms = require("vnc/keysyms")
-local PointerFollow = require("vnc/pointerfollow")
-local Reconnect = require("vnc/reconnect")
-local Settings = require("vnc/settings")
-local Toolbar = require("vnc/toolbar")
-local Util = require("vnc/util")
+local Keyboard = require("vncoxide/keyboard")
+local Keysyms = require("vncoxide/keysyms")
+local PointerFollow = require("vncoxide/pointerfollow")
+local Reconnect = require("vncoxide/reconnect")
+local Settings = require("vncoxide/settings")
+local Toolbar = require("vncoxide/toolbar")
+local Util = require("vncoxide/util")
 
 local Screen = Device.screen
 
@@ -587,7 +587,7 @@ end
 
 --[[--
 @{ViewerApp:on_framebuffer_dirty} for rects that are canvas rects already (relative to the canvas
-origin): what the scale worker reports while worker processes run (@{vnc.workers}).
+origin): what the scale worker reports while worker processes run (@{vncoxide.workers}).
 --- @tparam table rects list of `{x, y, w, h}`
 ]]
 function ViewerApp:on_framebuffer_dirty_canvas(rects)
@@ -904,7 +904,7 @@ end
 --[[--
 Hybrid mode's drag: it scrolls the remote (`_scroll_by_drag`, at the spot where the drag began) and
 never presses a button. One wheel notch scrolls the remote content by `hybrid_notch_px` remote pixels
-(a per-connection setting, see @{vnc.settings.hybrid_notch_px}), so the finger's movement is counted
+(a per-connection setting, see @{vncoxide.settings.hybrid_notch_px}), so the finger's movement is counted
 in remote pixels (screen pixels over the zoom): the content follows the finger at any zoom. `start`
 is where the contact came down; the pan's `relative` is its offset from there, so the movement since
 the previous event is the difference.
@@ -1445,7 +1445,7 @@ function ViewerApp:open_help()
     local viewer
     viewer = TextViewer:new{
         title = _("VNC viewer help"),
-        text = require("vnc/help").text(self:get_pointer_mode()),
+        text = require("vncoxide/help").text(self:get_pointer_mode()),
         justified = false,
         close_callback = function()
             if self.help == viewer then self.help = nil end
@@ -1658,7 +1658,7 @@ function ViewerApp:_release_watch_tick()
         return
     end
     if self:_watched_finger_down() == false then
-        logger.dbg("vnc: the finger lifted, its release never reached us")
+        logger.dbg("vncoxide: the finger lifted, its release never reached us")
         self._watched_finger = nil
         self:_end_pointer_action("finger up, release lost")
         return
@@ -2069,7 +2069,7 @@ end
 
 --- A key from the on-screen keyboard: with the modifiers armed on the key strip around it (and
 --- them disarmed), like a strip key; else just its down and up (`is_repeat`: a held key's repeat,
---- see @{vnc.session.Session:send_key}).
+--- see @{vncoxide.session.Session:send_key}).
 function ViewerApp:send_osk_key(keysym, is_repeat)
     local strip = self.key_strip
     if strip and strip:has_armed() then
@@ -2381,7 +2381,7 @@ function ViewerApp:open_menu()
     if self.menu then return self.menu end
     -- a drag ends: the menu may take its release (a swipe turns its pages)
     self:_end_stale_pointer_action("menu")
-    self.menu = require("vnc/menu").open(self)
+    self.menu = require("vncoxide/menu").open(self)
     -- The menu is on the window stack now: it owns the screen, so the keyboard gets out of the
     -- way (it is part of the framebuffer view, not of the menu).
     self:evaluate_keyboard()
@@ -2402,11 +2402,11 @@ function ViewerApp:close_menu()
     end
 end
 
---- Opens the display panel (see @{vnc.displaypanel}), or returns the one already open.
+--- Opens the display panel (see @{vncoxide.displaypanel}), or returns the one already open.
 function ViewerApp:open_display_panel()
     if self.display_panel then return self.display_panel end
     self:_end_stale_pointer_action("display panel") -- (it could take the drag's release)
-    self.display_panel = require("vnc/displaypanel").open(self)
+    self.display_panel = require("vncoxide/displaypanel").open(self)
     self:_sync_keyboard_later()
     return self.display_panel
 end
@@ -2427,7 +2427,7 @@ profile only once that connection succeeds. Until then the live session profile 
 preset and the stored one keeps its values; a stop without success puts the stored values back.
 ]]
 function ViewerApp:apply_quality_preset(id)
-    local Settings = require("vnc/settings")
+    local Settings = require("vncoxide/settings")
     local preset
     for _i, candidate in ipairs(Settings.QUALITY_PRESETS) do
         if candidate.id == id then preset = candidate end
@@ -2467,11 +2467,11 @@ function ViewerApp:open_frontlight_dialog()
     self:_watch_keyboard_state()
 end
 
---- Opens the contrast dialog (see @{vnc.contrastdialog}), or returns the one already open.
+--- Opens the contrast dialog (see @{vncoxide.contrastdialog}), or returns the one already open.
 function ViewerApp:open_contrast_dialog()
     if self.contrast_dialog then return self.contrast_dialog end
     self:_end_stale_pointer_action("contrast dialog")
-    self.contrast_dialog = require("vnc/contrastdialog").open(self)
+    self.contrast_dialog = require("vncoxide/contrastdialog").open(self)
     self:_sync_keyboard_later()
     return self.contrast_dialog
 end
@@ -2537,7 +2537,7 @@ function ViewerApp:_display_panel_dismissed(panel)
     self:_sync_keyboard_later()
 end
 
---- Opens the "Send keys" panel (see @{vnc.keypanel}), or returns the one already open. It takes
+--- Opens the "Send keys" panel (see @{vncoxide.keypanel}), or returns the one already open. It takes
 --- the keyboard's place, and the modifiers armed on the key strip stay armed on it.
 function ViewerApp:open_key_panel()
     if self.key_panel then return self.key_panel end
@@ -2546,7 +2546,7 @@ function ViewerApp:open_key_panel()
     if strip then
         for name, state in pairs(strip.mods) do mods[name] = state end
     end
-    self.key_panel = Util.keyboard_tap_interval(require("vnc/keypanel"):new{ app = self, mods = mods })
+    self.key_panel = Util.keyboard_tap_interval(require("vncoxide/keypanel"):new{ app = self, mods = mods })
     UIManager:show(self.key_panel, "ui")
     self:_bottom_cover_changed()
     return self.key_panel
@@ -2593,7 +2593,7 @@ end
 --- Shows the key strip on top of the keyboard (with it, in `evaluate_keyboard`).
 function ViewerApp:_show_key_strip()
     if self.key_strip then return end
-    self.key_strip = Util.keyboard_tap_interval(require("vnc/keypanel"):new{
+    self.key_strip = Util.keyboard_tap_interval(require("vncoxide/keypanel"):new{
         app = self,
         variant = "strip",
         bottom_offset = self.vk:getSize().h or 0,
@@ -2657,7 +2657,7 @@ function ViewerApp:on_back()
 end
 
 function ViewerApp:leave()
-    logger.dbg("vnc: leaving the app, keeping the session")
+    logger.dbg("vncoxide: leaving the app, keeping the session")
     self.plugin:leave_app()
 end
 

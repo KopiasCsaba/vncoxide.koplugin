@@ -1,14 +1,14 @@
 --[[--
 The contrast dialog: a small box under the toolbar (above it when the bar sits low) with KOReader's ButtonProgressWidget (the
-stepped bar of its own frontlight dialog), one step per @{vnc.settings.CONTRAST_LEVELS} level, the
+stepped bar of its own frontlight dialog), one step per @{vncoxide.settings.CONTRAST_LEVELS} level, the
 neutral one marked as the default.
 
 A step goes to `ViewerApp:set_contrast`, which stores it and redraws the picture with the new tone
 curve from the remote plane at once (no update from the server is needed, see
-@{vnc.framebuffer.Remote:set_contrast}); the dialog stays up so the effect can be judged. ✕, Back,
+@{vncoxide.framebuffer.Remote:set_contrast}); the dialog stays up so the effect can be judged. ✕, Back,
 a tap outside it or the toolbar button close it.
 
-@module vnc.contrastdialog
+@module vncoxide.contrastdialog
 ]]
 
 local _ = require("gettext")
@@ -28,13 +28,13 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 
-local Settings = require("vnc/settings")
+local Settings = require("vncoxide/settings")
 
 local Screen = Device.screen
 
 local ContrastDialog = InputContainer:extend{
     name = "VNCContrastDialog",
-    app = nil,       -- the @{vnc.app} that owns us (mandatory)
+    app = nil,       -- the @{vncoxide.app} that owns us (mandatory)
     modal = true,    -- taps never fall through to the viewer
 }
 
