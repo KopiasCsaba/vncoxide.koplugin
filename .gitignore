@@ -4,3 +4,4 @@ __pycache__/
 tmp/
 .idea/
 vnc.passwd
+docs/superpowers/
