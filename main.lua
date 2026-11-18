@@ -47,35 +47,8 @@ local VNC = WidgetContainer:extend{
 --- deferred autoconnect wants it.
 VNC.START_WITH = "vncoxide_autoconnect"
 
---- The settings file this plugin used while it was named vnc.koplugin.
-VNC.LEGACY_SETTINGS = "vnc.lua"
-VNC.LEGACY_START_WITH = "vnc_autoconnect"
-
---- One-time import from the vnc.koplugin era: copies `settings/vnc.lua` to the new file when the
---- new file does not exist yet (the old file is left alone), and carries KOReader's `start_with`
---- choice over to the new value.
-function VNC.migrate_legacy_settings(settings_dir, new_path)
-    local lfs = require("libs/libkoreader-lfs")
-    if lfs.attributes(new_path, "mode") then return false end
-    local old = io.open(settings_dir .. "/" .. VNC.LEGACY_SETTINGS, "rb")
-    if not old then return false end
-    local content = old:read("*a")
-    old:close()
-    local out = io.open(new_path, "wb")
-    if not out then return false end
-    out:write(content)
-    out:close()
-    if G_reader_settings:readSetting("start_with") == VNC.LEGACY_START_WITH then
-        G_reader_settings:saveSetting("start_with", VNC.START_WITH)
-    end
-    logger.info("vncoxide: imported settings from " .. VNC.LEGACY_SETTINGS)
-    return true
-end
-
 function VNC:init()
-    local settings_dir = DataStorage:getSettingsDir()
-    self.settings_file = settings_dir .. "/vncoxide.lua"
-    VNC.migrate_legacy_settings(settings_dir, self.settings_file)
+    self.settings_file = DataStorage:getSettingsDir() .. "/vncoxide.lua"
     self.settings = Settings.open(self.settings_file)
 
     -- File manager only (we have nothing to show inside a document).

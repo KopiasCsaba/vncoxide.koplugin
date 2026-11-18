@@ -7,6 +7,7 @@ scaling and screen refreshes tuned for e-ink.
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![Language: Lua](https://img.shields.io/badge/language-Lua%20%2B%20LuaJIT%20FFI-000080)
 ![Protocol: RFB 3.8](https://img.shields.io/badge/protocol-RFB%203.8-informational)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/KopiasCsaba)
 
 The plugin is plain Lua and LuaJIT FFI, using only what KOReader already ships. There is nothing
 to build and no native component to install. It works with standard VNC servers (x11vnc,
@@ -25,7 +26,8 @@ helper for sharing part of an X11 screen at the reader's resolution.
 6. [Security](#security)
 7. [Development and testing](#development-and-testing)
 8. [Origin and credits](#origin-and-credits)
-9. [License](#license)
+9. [Support](#support)
+10. [License](#license)
 
 Every gesture, menu, setting and tool is described in the
 **[User Guide](docs/USER_GUIDE.md)**. Code structure and internals are in `NOTES.txt`.
@@ -144,10 +146,6 @@ screen; it was dropped to focus entirely on the viewer.
 
 There is nothing to compile.
 
-**Coming from `vnc.koplugin`?** Remove the old `vnc.koplugin` folder. On its first start VNCoxide
-imports your connections and settings from `settings/vnc.lua` into `settings/vncoxide.lua`; the
-old file is left untouched.
-
 ---
 
 ## Quick start
@@ -224,6 +222,13 @@ four fifths of the current Lua code is new. The prototype laid the foundation:
 Its history is kept intact in git (71 commits by the original author), and every change since is
 recorded on top of it. Many thanks to Hans-Werner Hilse for the original work and for releasing
 it under the AGPL.
+
+---
+
+## Support
+
+If VNCoxide is useful to you, you can support its development through
+[GitHub Sponsors](https://github.com/sponsors/KopiasCsaba).
 
 ---
 

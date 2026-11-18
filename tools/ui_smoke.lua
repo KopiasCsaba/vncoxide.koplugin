@@ -512,32 +512,6 @@ check("boot_autoconnect_failure_is_reported_like_a_manual_one", function()
     UIManager._window_stack = {}
 end)
 
-check("legacy_vnc_settings_are_imported_once", function()
-    local dir = data_dir .. "/legacy_settings"
-    lfs.mkdir(dir)
-    local new_path = dir .. "/vncoxide.lua"
-    os.remove(new_path)
-    local function write(path, text) local f = assert(io.open(path, "wb")); f:write(text); f:close() end
-    local function read(path) local f = io.open(path, "rb"); if not f then return nil end
-        local t = f:read("*a"); f:close(); return t end
-    assert_true(plugin_module.migrate_legacy_settings(dir, new_path) == false,
-        "nothing to import without a vnc.lua")
-    assert_true(read(new_path) == nil, "and no new file is made")
-    write(dir .. "/vnc.lua", "return { marker = 1 }\n")
-    local saved_start = G_reader_settings:readSetting("start_with")
-    G_reader_settings:saveSetting("start_with", "vnc_autoconnect")
-    assert_true(plugin_module.migrate_legacy_settings(dir, new_path) == true, "vnc.lua is imported")
-    assert_true(read(new_path) == "return { marker = 1 }\n", "byte for byte")
-    assert_true(read(dir .. "/vnc.lua") ~= nil, "the old file is left alone")
-    assert_true(G_reader_settings:readSetting("start_with") == plugin_module.START_WITH,
-        "the old start_with value is carried over")
-    write(dir .. "/vnc.lua", "return { marker = 2 }\n")
-    assert_true(plugin_module.migrate_legacy_settings(dir, new_path) == false,
-        "never again once the new file exists")
-    assert_true(read(new_path) == "return { marker = 1 }\n", "so the new file is not overwritten")
-    G_reader_settings:saveSetting("start_with", saved_start)
-end)
-
 check("start_with_entry_lands_in_the_submenu_only_while_flagged", function()
     -- The extension point is `sorting_hint = "start_with"`: KOReader's own MenuSorter nests such an
     -- item into the "Start with" submenu (whose id comes from ui/elements/filemanager_menu_order).
