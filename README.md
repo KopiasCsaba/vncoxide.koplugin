@@ -1,3 +1,9 @@
+# UNDER CONSTRUCTION
+
+This code is in progress of publishing, documentation is under construction. Stay tuned.
+
+Thank you for your patience.
+
 # VNCoxide
 
 **VNCoxide (`vncoxide.koplugin`) is a full-screen VNC viewer for e-readers running [KOReader](https://koreader.rocks).**
