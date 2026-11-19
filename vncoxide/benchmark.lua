@@ -3,10 +3,12 @@ Picture-settings benchmark: times how fast key presses on a test page show up, p
 combination.
 
 The user opens the test page (tools/bench-page.html) full screen on the PC and gives it the
-keyboard focus. Each Page Down (`KEY_NEXT`) moves the page one step through `SCRIPT`, a fixed
-order of 15 steps, 3 of each category in `CATEGORIES`: `photo` (a new photo in a large area),
-`text` (new text everywhere), `scroll` (the page moves up), `small` (a small area changes) and
-`flip` (the colours invert, everything changes). Home (`KEY_RESET`) goes back to step 0.
+keyboard focus. The incremental requests cover the whole screen, so any other change on it (a
+clock, a blinking caret) counts as the page responding: the page must fill the screen. Each Page
+Down (`KEY_NEXT`) moves the page one step through `SCRIPT`, a fixed order of 15 steps, 3 of each
+category in `CATEGORIES`: `photo` (a new photo in a large area), `text` (new text everywhere),
+`scroll` (the page moves up), `small` (a small area changes) and `flip` (the colours invert,
+everything changes). Home (`KEY_RESET`) goes back to step 0.
 
 Each combination gets its own fresh @{vncoxide.session} (a copy of the profile with the combination's
 picture fields, `shared = true` like every session), so a live session of the same profile is never
@@ -42,7 +44,8 @@ are paid on every update. A DesktopSize fails the run ("screen size changed").
 
 Scores (@{Benchmark._score}) over the samples of both passes: per category the median step time in
 ms (`cat_ms`), so a single slow step (Wi-Fi jitter) does not decide; `round_s`, the sum of the 5
-category medians in seconds (one round of 5 steps); `bytes`, the mean bytes received per round.
+category medians in seconds (one round of 5 steps); `bytes`, the mean bytes received per round of
+5 steps.
 @{Benchmark._rank} turns them into `speed_pct` (100 = the fastest) and a rank, with ties.
 
 For the whole run, every attached session in `opts.sessions` (the plugin's live connections, the
@@ -569,7 +572,7 @@ A combination's scored row from its step samples over every pass (each `{ cat, e
 
 `cat_ms` holds, per category of `CATEGORIES`, the median step time in ms; `round_s` is the sum of
 the category medians in seconds (one round of 5 steps); `bytes` is the mean bytes received per
-round (per pass through `SCRIPT`).
+round of 5 steps.
 --- @treturn table `{ combination, ok = true, cat_ms, round_s, bytes }`
 ]]
 function Benchmark._score(combination, samples)
@@ -589,7 +592,7 @@ function Benchmark._score(combination, samples)
         cat_ms[c] = median(per[c] or {}) * 1000
         sum = sum + cat_ms[c]
     end
-    local rounds = #samples / #Benchmark.SCRIPT
+    local rounds = #samples / #Benchmark.CATEGORIES
     return {
         combination = combination,
         ok = true,

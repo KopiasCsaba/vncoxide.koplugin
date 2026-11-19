@@ -19,6 +19,7 @@ usage: mock_vnc_server.py [--port 5900] [--width 800] [--height 600]
                           [--pattern quadrants|gradient|checker] [--repaint SECONDS]
                           [--log FILE] [--resize-after N] [--resize-once] [--resize-same] [--once]
                           [--alt-pattern P] [--split N] [--input-during-send]
+                          [--bench-page [--bench-pieces N]]
 
 SIGUSR1 switches the served picture to ``--alt-pattern`` (logged as ``PATTERN <name>``).
 """
@@ -842,6 +843,7 @@ class MockServer:
         if args.bench_page:
             self.fb.bench = BenchPage(args.width, args.height)
         self.bench_dirty = None
+        self.bench_queue = []  # --bench-pieces: the pieces of a step still to send, in order
         self.encoders = None
         self.requests = 0
         self.resize_sent = False
@@ -1007,6 +1009,16 @@ class MockServer:
             log("BENCH step=%d region=none" % step)
             return
         log("BENCH step=%d region=%d,%d,%d,%d" % ((step,) + rect))
+        n = self.args.bench_pieces
+        if n > 1:
+            # horizontal bands, each its own FramebufferUpdate answering its own request
+            x, y, w, h = rect
+            n = min(n, h)
+            for i in range(n):
+                y0, y1 = y + h * i // n, y + h * (i + 1) // n
+                self.bench_queue.append((x, y0, w, y1 - y0))
+            self.bench_flush(conn)
+            return
         d = self.bench_dirty
         if d is not None:  # a change still waiting for a request: merge
             x0, y0 = min(d[0], rect[0]), min(d[1], rect[1])
@@ -1017,6 +1029,8 @@ class MockServer:
 
     def bench_flush(self, conn):
         """Sends the pending changed rect (clipped to the request) if a request is waiting."""
+        if self.bench_dirty is None and self.bench_queue:
+            self.bench_dirty = self.bench_queue.pop(0)
         if self.bench_dirty is None or not self.pending_incremental:
             return
         dx, dy, dw, dh = self.bench_dirty
@@ -1032,6 +1046,8 @@ class MockServer:
                "copyrect": RAW}[self.args.encoding]
         rect = self._rect(eid, x0, y0, x1 - x0, y1 - y0, self.encoders)
         conn.sock.sendall(bytes([0, 0]) + struct.pack(">H", 1) + rect)
+        if self.args.bench_pieces > 1:
+            log("BENCH piece region=%d,%d,%d,%d left=%d" % (x0, y0, x1 - x0, y1 - y0, len(self.bench_queue)))
 
     def input_during_send(self, conn):
         """Between two pieces of an update: logs the key and pointer events that arrived (so a
@@ -1217,6 +1233,10 @@ def main():
                     help="simulate tools/bench-page.html: Home resets to step 0, Page Down moves "
                          "one step on; the change is sent to the pending incremental request "
                          "(or the next one) and logged as BENCH step=<k> region=<x>,<y>,<w>,<h>")
+    ap.add_argument("--bench-pieces", type=int, default=0,
+                    help="with --bench-page: send each step's change as this many FramebufferUpdates "
+                         "(horizontal bands), each answering its own incremental request; logged "
+                         "as BENCH piece region=<x>,<y>,<w>,<h> left=<pieces still queued>")
     ap.add_argument("--input-during-send", action="store_true",
                     help="with --split: log key and pointer events that arrive while an update is "
                          "still being sent (and UPDATE_SENT once a full update is out)")

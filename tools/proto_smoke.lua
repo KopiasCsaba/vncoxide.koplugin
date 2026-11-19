@@ -2494,9 +2494,10 @@ local function main()
         local list, untrack = track_sessions()
         local pid, port, log = start_multi{ name = o.name, extra = o.extra, plain = o.plain, encoding = o.encoding }
         local Benchmark = env.Benchmark
-        local real_score, scored = Benchmark._score, {}
+        local real_score, scored, samples_of = Benchmark._score, {}, {}
         Benchmark._score = function(combo, samples)
             scored[combo.label] = #samples
+            samples_of[combo.label] = samples
             return real_score(combo, samples)
         end
         local results, stop, calls, progress = nil, nil, 0, {}
@@ -2522,7 +2523,7 @@ local function main()
         stop_mock(pid)
         for _, s2 in ipairs(list) do if s2:get_state() ~= "disconnected" then s2:disconnect() end end
         return { finished = finished, results = results, stop = stop, calls = calls, progress = progress,
-                 scored = scored, log = log, sessions = list, left = left, b = b }
+                 scored = scored, samples = samples_of, log = log, sessions = list, left = left, b = b }
     end
     local function bench_lines(log)
         local steps, homes = 0, 0
@@ -2600,15 +2601,27 @@ local function main()
         return true
     end)
 
-    -- A step's update that arrives in pieces (the mock writes it in 50000-byte chunks with a
-    -- pause between them: a full 24-bit frame takes 3) is still one step, timed to its end.
-    check("benchmark_key_split_update_is_one_step", function()
-        local r = bench_run{ name = "bench_split", extra = " --split 50000", labels = { "24-bit, Tight off" } }
+    -- A step's change that arrives as several FramebufferUpdates (the mock sends it as 3 bands,
+    -- each answering its own incremental request) is one step, timed to its last piece: after
+    -- the first piece the session holds its next request for INPUT_QUIET after the key, so the
+    -- later pieces, and therefore every step time, come at least that long after the key.
+    check("benchmark_key_multi_update_is_one_step", function()
+        local label = "24-bit, Tight off"
+        local r = bench_run{ name = "bench_pieces", extra = " --bench-pieces 3", labels = { label } }
         if not r.finished then return nil, "benchmark never finished" end
         local row = r.results[1]
         if not (row and row.ok) then return nil, "row failed: " .. tostring(row and row.error) end
-        if r.scored["24-bit, Tight off"] ~= 2 * 15 then
-            return nil, tostring(r.scored["24-bit, Tight off"]) .. " samples, want one per step (30)"
+        if r.scored[label] ~= 2 * 15 then
+            return nil, tostring(r.scored[label]) .. " samples, want one per step (30)"
+        end
+        if log_count(r.log, "BENCH piece") ~= 3 * 30 then
+            return nil, "the mock sent " .. log_count(r.log, "BENCH piece") .. " pieces, want 3 per step"
+        end
+        local hold = require("vncoxide/session").INPUT_QUIET
+        for i, smp in ipairs(r.samples[label]) do
+            if smp.elapsed < hold then
+                return nil, string.format("step sample %d (%s) timed %.3f s: not to its last piece", i, smp.cat, smp.elapsed)
+            end
         end
         return true
     end)
@@ -3195,8 +3208,8 @@ local function main()
             if not near(r.cat_ms[c], v) then return nil, c .. " " .. tostring(r.cat_ms[c]) .. ", want " .. v end
         end
         if not near(r.round_s, (11.5 + 25 + 50 + 4 + 200) / 1000) then return nil, "round_s " .. r.round_s end
-        -- 30 samples = 2 rounds of 15 steps, 100 bytes each
-        if not near(r.bytes, 1500) then return nil, "bytes per round " .. r.bytes end
+        -- 30 samples of 100 bytes = 6 rounds of 5 steps
+        if not near(r.bytes, 500) then return nil, "bytes per round " .. r.bytes end
         if r.tile_px_per_s ~= nil or r.full_px_per_s ~= nil then return nil, "the pixel rates are gone" end
         return true
     end)
