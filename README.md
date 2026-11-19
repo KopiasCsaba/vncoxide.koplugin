@@ -16,9 +16,8 @@ scaling and screen refreshes tuned for e-ink.
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/KopiasCsaba)
 
 The plugin is plain Lua and LuaJIT FFI, using only what KOReader already ships. There is nothing
-to build and no native component to install. It works with standard VNC servers (x11vnc,
-TigerVNC, TightVNC, RealVNC in compatibility mode, and others) and includes an optional PC-side
-helper for sharing part of an X11 screen at the reader's resolution.
+to build and no native component to install.
+It works with standard VNC servers.
 
 ## Origins
 
@@ -112,11 +111,6 @@ computer.
 5. **Stays awake** while the viewer is open: no sleep, no dimming.
 6. **Background sessions.** Leave the viewer to read a book and come back to where you were.
 
-### 5. Share just part of your screen
-
-The included `tools/vnc-server.py` shares a whole monitor or any rectangle of your desktop, so a
-single window or a side panel can live on your e-reader at a comfortable size.
-
 ---
 
 ## Feature overview
@@ -145,11 +139,7 @@ There is nothing to compile.
 
 ## Quick start
 
-1. On your computer, start a VNC server. For example, to share the primary monitor:
-
-   ```sh
-   tools/vnc-server.py            # needs x11vnc and xrandr; run with -h to see every option
-   ```
+1. On your computer, start a VNC server such as x11vnc, TigerVNC or TightVNC.
 
 2. On the reader, open the file browser menu and choose **More tools** ▸ **VNC viewer** ▸
    **New connection…**. Enter a name, the host, the port (default 5900) and the password.
@@ -169,7 +159,6 @@ settings and troubleshooting.
    2. Tight, including JPEG (opt-in per connection);
    3. DesktopSize and the quality and compression pseudo-encodings.
 3. **Not supported:** TLS, VeNCrypt and SASL. Servers that require them cannot be used.
-4. **PC helpers:** these need X11. Wayland sessions are refused.
 
 ---
 
@@ -184,12 +173,11 @@ a VNC server to the internet.
 
 ## Development and testing
 
-1. Behaviour is covered by three test suites:
+1. Behaviour is covered by two test suites:
    1. `tools/proto_smoke.lua` tests the client protocol stack against a deterministic mock RFB
       server.
    2. `tools/ui_smoke.lua` tests the dialogs and the viewer headless, using KOReader's own widget
       stack.
-   3. `tools/test_vnc_server.py` tests the PC-side launcher and zoom server, using Python 3 only.
 2. The commands to run each suite are in the
    [User Guide](docs/USER_GUIDE.md#for-developers).
 3. `NOTES.txt` covers the architecture, the internals, the live end-to-end recipe and what has
