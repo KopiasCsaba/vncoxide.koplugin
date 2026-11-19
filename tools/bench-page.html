@@ -8,27 +8,35 @@
   * { caret-color: transparent; user-select: none; }
   body { background: #fff; color: #222; font-family: Georgia, "Times New Roman", serif; }
   body.dark { background: #14181f; color: #e6e1d6; }
-  #bar { position: fixed; left: 0; top: 0; right: 0; height: 28px; line-height: 28px; padding: 0 16px;
+  #bar { position: fixed; left: 0; top: 0; right: 0; height: 28px; padding: 0 16px;
          font: 13px/28px Arial, Helvetica, sans-serif; background: #e8e8e8; color: #222; z-index: 2; }
   body.dark #bar { background: #2a3140; color: #e6e1d6; }
+  /* Everything is sized from the viewport, so every step changes the same share of the screen
+     on any display. */
   #article { position: absolute; left: 0; right: 0; top: 28px; }
-  #col { width: 740px; max-width: 92%; margin: 0 auto; padding-top: 18px; }
-  h1 { font-size: 40px; line-height: 46px; margin: 0 0 8px 0; height: 92px; overflow: hidden; }
-  .by { font: 14px/20px Arial, Helvetica, sans-serif; color: #666; margin: 0 0 18px 0; height: 20px; }
+  #col { padding: 1vh 6vw 0 6vw; }
+  h1 { font-size: 5.2vh; line-height: 6vh; margin: 0; height: 12vh; overflow: hidden; }
+  .by { font: 2vh/3vh Arial, Helvetica, sans-serif; color: #666; margin: 0; height: 3vh; }
   body.dark .by { color: #aab; }
-  p { font-size: 18px; line-height: 27px; height: 162px; overflow: hidden; margin: 0 0 18px 0; text-align: left; }
-  canvas { display: block; width: 720px; height: 320px; max-width: 100%; margin: 0 0 6px 0; }
-  .cap { font: italic 13px/18px Arial, Helvetica, sans-serif; color: #666; height: 18px; margin: 0 0 20px 0; }
-  body.dark .cap { color: #aab; }
-  #intro { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 5; background: #fff; color: #111;
-           display: flex; align-items: center; justify-content: center; text-align: center;
-           font: bold 34px/46px Arial, Helvetica, sans-serif; padding: 0 8%; }
+  p, .slot { font-size: 2.6vh; line-height: 3.9vh; overflow: hidden; margin: 0 0 2vh 0; text-align: left; }
+  p { height: 23.4vh; }
+  .slot { height: 70vh; width: 100%; }
+  canvas.slot { width: 80vw; margin-left: 4vw; }
+  #box { position: absolute; left: 66vw; top: 60vh; width: 22vw; height: 23vh; box-sizing: border-box; padding: 1.5vh 1.2vw;
+         overflow: hidden; border: 0.6vh solid #333; font: bold 3vh/4vh Arial, Helvetica, sans-serif; color: #111; }
+  .overlay { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center;
+             justify-content: center; text-align: center; font: bold 34px/46px Arial, Helvetica, sans-serif;
+             padding: 0 8%; }
+  #intro { z-index: 5; background: #fff; color: #111; }
+  [hidden] { display: none !important; }
+  #warn { z-index: 9; background: #b00020; color: #fff; }
 </style>
 </head>
 <body>
 <div id="bar"></div>
 <div id="article"><div id="col"></div></div>
-<div id="intro">Press F11 for full screen, click once into this page, then start the test on the e-reader.</div>
+<div id="intro" class="overlay">Press F11 for full screen, click once into this page, then start the test on the e-reader.</div>
+<div id="warn" class="overlay" hidden>Focus lost — click here</div>
 <script>
 (function () {
   "use strict";
@@ -57,9 +65,9 @@
     var s = out.join(" ");
     return s.charAt(0).toUpperCase() + s.slice(1) + ".";
   }
-  function paragraph(seed) {
+  function paragraph(seed, words) {
     var rnd = seeded(seed), parts = [], total = 0;
-    while (total < 110) { var n = 8 + Math.floor(rnd() * 9); parts.push(sentence(rnd, n)); total += n; }
+    while (total < words) { var n = 8 + Math.floor(rnd() * 9); parts.push(sentence(rnd, n)); total += n; }
     return parts.join(" ");
   }
   function headline(seed) {
@@ -69,28 +77,30 @@
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
-  // State of step k, replayed from the script.
+  // State of step k, replayed from the script (same rules as the mock server's bench page).
   function stateAt(k) {
-    var st = { dark: false, base: 0, text: 0, photo: 0, small: 0, off: 0 };
+    var st = { dark: false, base: 0, text: 0, photo: 0, small: 0, off: 0, hasPhoto: false };
     for (var i = 0; i < k; i++) {
       var c = SCRIPT[i];
-      if (c === "photo") st.photo++;
-      else if (c === "text") st.text++;
+      if (c === "photo") { st.photo++; st.hasPhoto = true; }
+      else if (c === "text") { st.text++; st.hasPhoto = false; }
       else if (c === "small") st.small++;
       else if (c === "scroll") st.off++;
-      else if (c === "flip") { st.dark = !st.dark; st.base++; st.text += 10; st.photo += 10; st.small += 10; st.off = 0; }
+      else if (c === "flip") { st.dark = !st.dark; st.base++; st.text += 10; st.photo += 10; st.small += 10; st.off = 0; st.hasPhoto = false; }
     }
     return st;
   }
 
-  // Layout: p0 p1 [photo0] p2 p3 [photo1] p4 p5 [photo2] p6 p7
-  var LAYOUT = ["p", "p", "c", "p", "p", "c", "p", "p", "c", "p", "p"];
-  var SMALL_P = 3; // paragraph index replaced by the "small" step
+  // Layout: [photo0] p0 p1 p2 [photo1] p3 p4 [photo2] p5. A photo slot shows a photo after a
+  // photo step and a block of text otherwise.
+  var LAYOUT = ["s", "p", "p", "p", "s", "p", "p", "s", "p"];
 
   var col = document.getElementById("col");
   var bar = document.getElementById("bar");
   var intro = document.getElementById("intro");
-  var els = [], pIdx = 0, cIdx = 0, h1, by;
+  var warn = document.getElementById("warn");
+  var box = document.createElement("div"); box.id = "box"; document.getElementById("article").appendChild(box);
+  var els = [], pIdx = 0, sIdx = 0, h1, by;
 
   h1 = document.createElement("h1"); col.appendChild(h1);
   by = document.createElement("div"); by.className = "by"; col.appendChild(by);
@@ -98,14 +108,16 @@
     if (kind === "p") {
       var p = document.createElement("p"); col.appendChild(p); els.push({ kind: "p", el: p, i: pIdx++ });
     } else {
-      var cv = document.createElement("canvas"); cv.width = 720; cv.height = 320; col.appendChild(cv);
-      var cap = document.createElement("div"); cap.className = "cap"; col.appendChild(cap);
-      els.push({ kind: "c", el: cv, cap: cap, i: cIdx++ });
+      var d = document.createElement("div"); d.className = "slot"; col.appendChild(d);
+      var cv = document.createElement("canvas"); cv.className = "slot"; cv.width = 640; cv.height = 360;
+      cv.style.display = "none"; col.appendChild(cv);
+      els.push({ kind: "s", text: d, cv: cv, i: sIdx++ });
     }
   });
 
   // A generated photo: sky gradient, sun, layered hills, deterministic grain.
-  function drawPhoto(cv, seed) {
+  function makePhoto(seed) {
+    var cv = document.createElement("canvas"); cv.width = 640; cv.height = 360;
     var ctx = cv.getContext("2d"), w = cv.width, h = cv.height, rnd = seeded(seed * 7919 + 13);
     var hue = Math.floor(rnd() * 360);
     var g = ctx.createLinearGradient(0, 0, 0, h);
@@ -130,9 +142,14 @@
       d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
     }
     ctx.putImageData(img, 0, 0);
+    return cv;
   }
+  // Rendered once up front (while the intro shows), so a step only copies them: the PC's render
+  // time stays out of the measured latency.
+  var photoCache = {};
+  function photo(seed) { return photoCache[seed] || (photoCache[seed] = makePhoto(seed)); }
 
-  var step = 0, started = false, last = null;
+  var step = 0, last = null;
 
   function render() {
     var st = stateAt(step), prev = last || {};
@@ -142,18 +159,33 @@
       h1.textContent = headline(1000 + st.text * 31 + st.base);
       by.textContent = "By Staff Reporter · " + (1 + st.text) + " min read";
     }
+    var boxKey = st.text + "/" + st.small;
+    if (box.__key !== boxKey) {
+      box.textContent = "\u201C" + sentence(seeded(st.text * 613 + st.small * 4093 + 9), 9) + "\u201D";
+      box.style.background = "hsl(" + ((st.small * 67 + st.text * 23) % 360) + ",60%," + (st.dark ? "30%" : "80%") + ")";
+      box.style.color = st.dark ? "#eee" : "#111";
+      box.style.borderColor = st.dark ? "#eee" : "#333";
+      box.__key = boxKey;
+    }
     els.forEach(function (e) {
       if (e.kind === "p") {
-        var small = e.i === SMALL_P ? st.small : 0;
-        var key = st.text + "/" + small;
+        var key = st.text;
         if (e.__key !== key) {
-          e.el.textContent = paragraph(st.text * 977 + e.i * 131 + small * 8191 + 5);
+          e.el.textContent = paragraph(st.text * 977 + e.i * 131 + 5, 200);
           e.__key = key;
         }
-      } else if (e.__photo !== st.photo) {
-        drawPhoto(e.el, st.photo * 17 + e.i + 1);
-        e.cap.textContent = "Photo " + (e.i + 1) + ", series " + st.photo;
-        e.__photo = st.photo;
+      } else {
+        var showPhoto = st.hasPhoto, pk = showPhoto ? "p" + st.photo : "t" + st.text;
+        if (e.__key !== pk) {
+          if (showPhoto) {
+            e.cv.getContext("2d").drawImage(photo(st.photo * 17 + e.i + 1), 0, 0);
+          } else {
+            e.text.textContent = paragraph(st.text * 977 + 500 + e.i * 131, 380);
+          }
+          e.cv.style.display = showPhoto ? "block" : "none";
+          e.text.style.display = showPhoto ? "none" : "block";
+          e.__key = pk;
+        }
       }
     });
     document.getElementById("article").style.transform =
@@ -161,20 +193,39 @@
     last = st;
   }
 
+  var ready = false; // the intro is gone
+  function dismissIntro() {
+    if (ready) return;
+    ready = true;
+    intro.textContent = "Ready — start the test on the e-reader. Keep this page focused.";
+    intro.style.background = "#0a6b2c"; intro.style.color = "#fff";
+  }
+  function hideIntro() { intro.hidden = true; }
+
   function onKey(ev) {
+    // Function keys (F11 full screen, F5, ...) and Escape stay with the browser.
+    if (/^F\d+$/.test(ev.key) || ev.key === "Escape") return;
     ev.preventDefault();
     if (ev.type !== "keydown") return;
     var changed = false;
     if (ev.key === "PageDown") { step = Math.min(N, step + 1); changed = true; }
     else if (ev.key === "Home") { step = 0; changed = true; }
-    if (!started) { started = true; intro.style.display = "none"; }
-    if (changed) render();
+    if (changed) { dismissIntro(); hideIntro(); render(); }
   }
+  intro.addEventListener("click", function () {
+    if (!ready) dismissIntro(); // click: focus is in, show the ready state until the first key
+  });
+  warn.addEventListener("click", function () { window.focus(); warn.hidden = true; });
+  window.addEventListener("blur", function () { warn.hidden = false; });
+  window.addEventListener("focus", function () { warn.hidden = true; });
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("keyup", onKey, true);
   document.addEventListener("keypress", onKey, true);
   document.addEventListener("contextmenu", function (e) { e.preventDefault(); });
-  window.addEventListener("resize", render);
+  window.addEventListener("resize", function () { last = null; els.forEach(function (e) { e.__key = null; }); render(); });
+
+  // pre-render every photo the script can show
+  for (var k = 0; k <= N; k++) { var ps = stateAt(k); if (ps.hasPhoto) for (var q = 0; q < 3; q++) photo(ps.photo * 17 + q + 1); }
   render();
 })();
 </script>
