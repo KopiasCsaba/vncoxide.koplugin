@@ -2,7 +2,7 @@
 --[[--
 Standalone test harness for the vnc protocol layer.
 
-Starts `tools/mock_vnc_server.py` (one instance per case, on an ephemeral port) and drives
+Starts `tests/mock_vnc_server.py` (one instance per case, on an ephemeral port) and drives
 @{vncoxide.protocol} against it over a real socket, plus a few in-memory byte-stream cases. The last
 two checks drive @{vncoxide.session}'s own transport (queue flush and read buffering) rather than the
 protocol directly.
@@ -13,7 +13,7 @@ Run with KOReader's own LuaJIT from the KOReader root:
   PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
   LUA_PATH="$PLUGIN/?.lua;./common/?.lua;./common/?/init.lua;;" \
   LUA_CPATH="./common/?.so;;" \
-  ./luajit "$PLUGIN/tools/proto_smoke.lua" --tmp /tmp/vncv_smoke
+  ./luajit "$PLUGIN/tests/proto_smoke.lua" --tmp /tmp/vncv_smoke
 ]]
 
 -- KOReader environment: package.path for common/ + frontend/, and ffi.loadlib. The harness is

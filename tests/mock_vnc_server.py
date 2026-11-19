@@ -48,7 +48,7 @@ TIGHT_NO_ZLIB = 0x0A
 TIGHT_MIN_TO_COMPRESS = 12
 
 JPEG_RECT = (8, 8, 32, 32)          # where the Tight cases put the JPEG sub-rect
-JPEG_AVG = (199, 40, 120)           # decoded average of tools/tight_jpeg.b64
+JPEG_AVG = (199, 40, 120)           # decoded average of tests/tight_jpeg.b64
 
 LOG_FH = None
 # The pattern SIGUSR1 switched to (--alt-pattern), for every connection from then on.

@@ -69,14 +69,6 @@ local PICTURE_ADVICE = {
         name = _("Which is fastest?"),
         body = _("it depends on the PC, the network and what is on the screen: on a PocketBook Era, 8-bit with compression has felt faster than 24-bit even on fast Wi-Fi. Measure it: in the connection's menu, tap Find fastest picture settings with your usual content on the PC screen."),
     },
-    {
-        name = _("Scale on the PC, not on the e-reader"),
-        body = _("letting the server send an already scaled image (the server script's -z option, e.g. -z 2; add --sharp for crisp pixel doubling) is better than any viewer zoom other than 100%: at 100% the e-reader only copies pixels, at any other zoom it has to compute every screen pixel. If you do zoom on the e-reader, turn Sharp scaling on (toolbar Display button). With -z the server script uses its own small server with ffmpeg instead of x11vnc (install ffmpeg on the PC), because x11vnc drew the mouse arrow in the wrong place when it scaled part of the screen."),
-    },
-    {
-        name = _("Example"),
-        body = _("to fill the Era's 1264×1680 screen with a 632×840 area of the PC, start the server with: vnc-server.py -s 632x840 -z 2, and keep the viewer at 100%. The PC doubles the image, the e-reader just copies it. Measured on an Era: a full redraw took 17 ms at 100%, against 306 ms when the e-reader itself scaled by 2 (before partial redraws were added). The image has four times as many pixels to send, which a fast network carries easily."),
-    },
 }
 
 --- Long-press help for each picture setting (plain text).

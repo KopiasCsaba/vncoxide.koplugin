@@ -1,467 +1,108 @@
 # VNCoxide — User Guide
 
-The complete manual: every gesture, menu, setting and tool. For an overview, credits and the
-license, see the [README](../README.md).
+VNCoxide shows your computer's screen on your e-reader, and lets you control it with your finger
+and the keyboard. It works with ordinary VNC servers (x11vnc, TigerVNC, TightVNC, RealVNC, …).
 
-**Control a remote desktop from KOReader**: the plugin adds *VNC viewer* to KOReader's file browser
-menu, and the remote screen fills the display, driven by touch, the on-screen keyboard and a
-physical keyboard.
+## 1. Install
 
-It speaks RFB 3.8, the protocol ordinary VNC servers (x11vnc, TigerVNC, TightVNC, RealVNC in
-compatibility mode, ...) all understand.
-
-## What you get
-
-- The remote framebuffer on the whole screen, scaled to fit, with zoom presets (fit screen, fit
-  with the on-screen keyboard, or a fixed 25 % … 400 %) and panning for the rest. Zoomed in, only
-  the visible part (plus a margin) is requested from the server, so less is sent and decoded.
-- Three ways to drive the pointer: **Touch** mode acts where your finger is, **Mouse** mode moves a
-  pointer like a laptop trackpad, **Hybrid** mode scrolls with a one-finger drag and clicks where you tap. Two-finger gestures pan and zoom the view.
-- A small toolbar over the picture for the things you reach for most (including one zoom button
-  that cycles fit, 1:1 and your own pinch/pan view, the frontlight and a contrast control for the
-  remote picture), with the rest one tap away behind **⋯**. Drag it anywhere, fold it into a small
-  round button, and pick which buttons it shows.
-- An on-screen keyboard that types into the remote session, plus a physical keyboard with
-  modifiers, arrows, function keys and auto-repeat.
-- A key strip above the on-screen keyboard (modifiers, Esc, Tab, arrows, Del) and a **Send keys**
-  panel for any key or hotkey the on-screen keyboard cannot type (Ctrl+Alt+T,
-  Super, F5, Print Screen, ...), with the last four combos one tap away.
-- Connection profiles (name, host, port, password) you can add, edit and delete from KOReader.
-- One connection can be flagged to connect by itself at KOReader's start (and to appear as
-  **VNC auto connect** in KOReader's **Start with** menu).
-- The picture is decoded and scaled in two background processes, so the viewer stays responsive
-  while a big update arrives (and a multi-core reader uses its cores). If they cannot start, the
-  connection does that work itself.
-- Wi-Fi is turned on when a connection needs it.
-- A dropped connection is retried by itself, with Wi-Fi kept on meanwhile.
-- **Leave** the viewer and the connection survives; only **Disconnect** closes the session (and
-  returns you to the connection list).
-
-## Install
-
-1. On GitHub, download this repository as a ZIP: green **Code** button ▸ **Download ZIP**.
+1. On GitHub, click the green **Code** button ▸ **Download ZIP**.
 2. Unpack the ZIP.
-3. Move the plugin folder into the `plugins` directory in your KOReader folder (create it if it is
-   not there yet). GitHub names the unpacked folder after the repository and the branch —
-   `vncoxide.koplugin-main` — so rename it to **`vncoxide.koplugin`**: KOReader only loads plugin directories
-   whose name ends in `.koplugin`.
-4. Restart KOReader.
+3. Rename the unpacked folder to **`vncoxide.koplugin`**.
+4. Copy it into the `plugins` folder inside your KOReader folder.
+5. Restart KOReader.
 
-There are no release artefacts to fetch: the plugin is plain Lua and uses only what KOReader
-already ships.
+## 2. Connect
 
-## Using it
+1. In KOReader's file browser, open the menu ▸ **More tools** ▸ **VNC viewer**.
+2. Tap **New connection…** and fill in a name, your computer's address, the port (usually 5900)
+   and the VNC password.
+3. Tap the connection to connect. Your computer's screen fills the display.
 
-Open the file browser menu in KOReader, then **More tools** ▸ **VNC viewer**. You get the
-connection list; start with **New connection…** and give it a name, the host, the port (5900 by
-default) and the password your VNC server uses; the **Picture: …** button sets that connection's
-colour depth and Tight options (see "Lower bandwidth" below). Tap a connection to connect.
+Want it to connect by itself every time KOReader starts? Open **Manage connections…** and turn on
+**Auto connect on start** for that connection.
 
-**Manage connections…** opens each saved connection's own actions (Connect, Edit, Delete), plus an
-**Auto connect on start** switch. Turning it on dials that connection by itself on KOReader's next
-start and shows it in the viewer; the connection list then marks it (**name (auto connect)**).
-Only one connection can carry it — turning it on for another clears the first. While a connection
-carries it, KOReader's own **Start with** menu also offers **VNC auto connect**.
+## 3. Touch gestures
 
-KOReader cannot be told about the viewer before it opens the file browser — it has no boot hook for
-plugins — so with **VNC auto connect** selected the file browser appears for a moment and the
-viewer opens over it. If the connection cannot be made, the failure is reported exactly as a manual
-connect's is, and you are left in the normal KOReader UI; there is no retry.
+You can pick one of three ways to control the pointer with the **Mode** button on the toolbar:
 
-**The toolbar** is a small bar over the remote picture, at the top centre until you move it; the
-picture stays visible and clickable beside and below it. It is shown when a connection opens. A
-**swipe down in the top strip of the screen** (KOReader's menu zone) hides it and shows it again
-(folded or not). A tap on the bar never reaches the remote. A **long press** on any button only
-shows its name in a one-line tooltip. **Drag** the bar by any of its buttons to move it: it follows
-the finger, stays fully on the screen, and keeps its place (as a share of the free space, so also
-after a rotation) for the next time. Its buttons, left to right:
-
-1. **Collapse** (a small bar icon) folds the toolbar into a round button with the same icon, which
-   returns to its anchored spot (where you last dragged the bar or the button; top centre at
-   first). A tap on the round button opens the toolbar again; it can be dragged like the bar,
-   and the bar opens where it is. The folded state is remembered.
-2. **Display** opens the Display panel (below).
-3. **Zoom** cycles the view: **fit** → **1:1** (one remote pixel per screen pixel, keeping the
-   middle of the view where it was) → **your view** → fit … "Your view" is the last one you made
-   by pinching or two-finger panning: as soon as you pinch or pan, that is the current state, and
-   it is remembered for the button to come back to. Until you have made one (or after the remote
-   screen size changes) the button just switches between fit and 1:1. The icon shows the current
-   state: a page (fit), **1:1**, or a magnifier (your view; also shown for another Display panel
-   zoom preset, from which the button goes to fit). Fit follows the keyboard like a two-finger tap.
-4. **Mode** (☝ Touch / 🖱 Mouse / ↕ Hybrid) cycles the pointer mode and shows a short tooltip (*Touch mode*,
-   *Mouse mode* or *Hybrid mode*). The **Help** page is under **⋯**. The mode is remembered per connection.
-5. **⌨ Keyboard** shows or hides the on-screen keyboard together with the key strip (and closes
-   the **Send keys** panel if it is open; the panel opens from the strip's keys icon).
-   The viewer opens with the keyboard as you last left it (shown or hidden; the strip's **✕** and the
-   panel's **✕** and keyboard icon count too; a menu or dialog hides it only while it is open).
-   **Drag the button out onto the remote** (also from the collapsed bar) to click a text field and
-   type: a small keyboard icon follows your finger, nothing is sent meanwhile, and where you let go
-   on the picture it left-clicks (Touch mode at that spot; Mouse mode moves the pointer there first)
-   and brings the keyboard up, saved like a tap on the button (already up: just the click; with the
-   **Send keys** panel open: the click, the panel stays). Let go on the toolbar, the keyboard, the key
-   strip, the panel or off the picture and nothing happens. Its long-press name: *Keyboard (drag onto
-   a field to click it and type)*.
-6. **Rotate** turns the screen 90° clockwise. (Rotating is only ever done with this button or the
-   Display panel: a pinch never turns the screen.) The viewer remembers the orientation you last
-   used and opens in it, unless **Match orientation to the remote screen** (see below) turns it.
-7. **Scroll up / down** send one wheel notch each. Hidden by default.
-8. **Brightness** (a sun) opens KOReader's own frontlight dialog. Only on devices with a frontlight.
-9. **Contrast** opens a small dialog under the toolbar (above it when the bar sits low) with a
-    stepped bar (50 % … 300 %, 100 % is the picture as the server sends it, marked as the default).
-    It changes the contrast of the remote picture as it is drawn on this screen (a stretch around
-    mid grey; the remote desktop is not touched), at once and without a new picture from the
-    server, and is remembered. ✕, Back, a tap outside or the button close it. Shown by default.
-10. **Invert** (a circle, left half black) draws the remote picture inverted, light for dark. It is a
-    toggle, drawn inverted while on, and is remembered. Only the picture is inverted (not the toolbar,
-    keyboard or dialogs), as a tone curve on this screen: the remote desktop is not touched. Shown by default.
-11. **✕ Close** disconnects, after a confirmation, and returns to the connection list.
-12. **⋯** opens the menu (below).
-
-**⋯ › Toolbar buttons… › On the toolbar…** switches each button but Close and **⋯** on or off (one
-row for the scroll pair); **⋯** always stays, as on a device without keys it is the only way to the
-menu. **⋯ › Toolbar buttons… › Also when collapsed…** picks buttons that stay next to the round button
-when the toolbar is collapsed (Keyboard by default): collapsing leaves a short bar of
-the expand button and those; with none ticked it is the round button alone. Only buttons the toolbar shows can stay (the others
-are greyed out there).
-
-| Gesture | Touch mode | Mouse mode | Hybrid mode |
+| Gesture | ☝ Touch | 🖱 Mouse | ↕ Hybrid |
 | --- | --- | --- | --- |
-| tap | left click at the finger (two quick taps: a double click) | left click at the pointer, sent at once (two quick taps: a double click) | left click at the finger (two quick taps: a double click) |
-| long press | lift without moving: right click at the finger (sent at the lift); moving: drag with the left button held | the same, at the pointer (the finger's movement moves it) | the same as Touch mode |
-| one-finger drag | drag with the left button held | move the pointer (relative to your finger's movement, by the pointer speed); zoomed in, the view follows it once it passes the middle of the screen, until the view reaches the remote screen's edge (as in RustDesk); a pointer off the screen first jumps to its middle | scroll the remote with mouse-wheel notches where the drag began (sideways scrolls horizontally); the content follows the finger at any zoom: one notch per **Hybrid scroll distance** remote pixels dragged (see below) |
-| two-finger drag | pan the view: the picture follows the fingers, also past its edges until a corner reaches the middle of the screen (does not move the remote pointer) | same | same |
-| pinch / spread | zoom the view, keeping the point between the fingers fixed | same | same |
-| two-finger tap | fit to screen (Fit, or Fit with keyboard while the keyboard is up) | same | same |
-| two-finger long press | on lifting: left click at the fingers' midpoint, then the on-screen keyboard (as the **⌨** drag does); moving the fingers first cancels it | left click at the pointer, then the keyboard | as Touch mode |
-| device page buttons | Page Up/Down or wheel (setting) | same | same |
+| Tap | Click where you tap | Click at the pointer | Click where you tap |
+| Long press | Right click | Right click | Right click |
+| Long press, then drag | Drag (e.g. select text) | Drag | Drag |
+| One-finger drag | Drag | Move the pointer, like a trackpad | Scroll the page |
 
-In Mouse mode the pointer starts in the middle of the remote screen and is drawn by the server (with
-x11vnc, `-cursor arrow`); the viewer draws none. A second finger joining a long press drag lets go of its button. Clicks are sent at once in all three modes. A long press acts
-about 0.12 s after KOReader reports it (at once if the finger moves first): some PocketBook
-firmware holds a touch back for half a second and then delivers it in a burst, which KOReader
-takes for a long press; one that lifts within that time is treated as the tap or drag it really
-was. Likewise a two-finger long press lifted within 0.12 s is a two-finger tap (fit). A two-finger
-long press only counts on the picture (not on the toolbar or the keyboard) and when no one-finger
-drag or long press is under way. Three-finger gestures are not used.
+In every mode:
 
-The end of a drag or long press is the viewer's wherever the finger lifts: over the toolbar, the
-**Send keys** panel or the on-screen keyboard (no key is typed then). Should that end still not
-arrive, the button is let go as soon as the finger that started it is off the screen, and opening
-the menu, the display panel or the help ends a drag first. Every button press and release sent is
-written to KOReader's debug log (`vnc-pointer: <buttons> <x> <y> <reason>`).
+1. **Two fingers drag** — move the view around.
+2. **Pinch / spread** — zoom out / in.
+3. **Two-finger tap** — fit the whole screen again.
+4. **Two-finger long press** — click there and open the keyboard.
+5. **Page buttons** — Page Up / Page Down (or scroll, if you change it in the **⋯** menu).
 
-A tap is *always* a click on the remote, everywhere outside the bar, so there is never a dead spot
-on the screen. With a physical keyboard, the **Menu** key (F1 on KOReader's own keymap) opens the
-menu and **Back** closes whatever is open on top.
+## 4. The toolbar
 
-**The Display panel** hangs under the toolbar (above it when there is no room below). A choice stays in the panel (the check marks follow
-the live state) except a rotation, which closes it. It tells:
+A small toolbar sits at the top of the screen. **Swipe down from the very top** to hide or show it.
+Drag it anywhere you like. Long-press any button to see its name.
 
-- **Zoom**: Fit screen, Fit (with keyboard), 25 %, 50 %, 75 %, 100 %, 150 %, 200 %, 400 %.
-- **Smooth / Sharp** scaling (see "Sharp scaling" below).
-- **Orientation**: four icon buttons, the same ones KOReader uses for screen rotation (90° counter-
-  clockwise, upright, 90° clockwise, 180°, relative to the screen as it is now); the current one is
-  highlighted. The viewer remembers the last orientation used and opens in it.
+1. **Collapse** — fold the toolbar into a small round button. Tap it to open it again.
+2. **Display** — zoom, sharp/smooth scaling, screen rotation, picture quality, pointer speed.
+3. **Zoom** — switch between *fit*, *1:1* and the last zoom you made with your fingers.
+4. **Mode** — Touch, Mouse or Hybrid (see above).
+5. **⌨ Keyboard** — show or hide the on-screen keyboard. Tip: drag this button onto a text field
+   to click it and start typing straight away.
+6. **Rotate** — turn the screen 90°.
+7. **Brightness** — the frontlight.
+8. **Contrast** — make the picture darker or lighter.
+9. **Invert** — swap black and white.
+10. **✕** — disconnect.
+11. **⋯** — more options (see below).
 
-**Matching the remote's orientation.** With **Match orientation to the remote screen** on (⋯ menu,
-default on), the screen turns to the remote desktop's orientation once its size is known: a
-landscape remote (wider than tall) on a portrait screen turns it to landscape, a portrait remote on
-a landscape screen to portrait; a square remote, or one already of the screen's orientation, turns
-nothing. The side it turns to is the landscape (or portrait) side you last picked with Rotate or
-the Display panel, else KOReader's default landscape (90° clockwise) or upright. It happens after
-connecting (in one rotation together with the remembered orientation), and after a reconnect or a
-remote desktop resize only when the remote's orientation changed since it was last matched for that
-connection: a rotation you picked by hand meanwhile survives a reconnect to the same remote. It does
-not change the remembered orientation, and leaving the viewer still restores the orientation from
-before it opened.
-- **Picture quality (reconnects)**: **Best**, **Balanced**, **Fast**. The preset is a set of the
-  connection's picture settings:
+You can choose which buttons appear under **⋯ ▸ Toolbar buttons…**.
 
-  | Preset | Colour depth | Tight | JPEG quality | Compression level |
-  | --- | --- | --- | --- | --- |
-  | Best | 24-bit | off | server default | server default |
-  | Balanced | 16-bit | on | 6 | 6 |
-  | Fast | 8-bit | on | 3 | 9 |
+## 5. Typing
 
-  Choosing another preset reconnects with it, and saves it into the connection only once that
-  connection has succeeded; closing or leaving first keeps the old values. A connection whose picture
-  settings match no preset is shown as **Custom**. The settings themselves are described under
-  "Lower bandwidth" below.
-- **Pointer speed (mouse mode)**: Slow (0.75), Normal (1.25), Fast (2.0): a multiplier on how far
-  the pointer moves for a given drag.
+1. Tap **⌨** to bring up the keyboard and type normally.
+2. Above the keyboard is a row of extra keys: **Ctrl**, **Shift**, **Alt**, **Super**, Esc, Tab,
+   arrows and Del. Tap a modifier (it turns black), then the next key or tap uses it — e.g.
+   **Ctrl** then **C** copies.
+3. For anything else, tap the **Send keys** icon (two keycaps) in that row. There you find
+   Home/End, Page Up/Down, F1–F12, and ready-made shortcuts like Ctrl+C, Ctrl+V, Ctrl+Z, Alt+Tab and
+   Ctrl+Alt+Del. Your last four shortcuts are kept at the bottom.
+4. Something feels stuck down on the computer? Tap **Release all**.
 
-**The ⋯ menu** holds the rest. Its title is the connection and its state (*name · 1920×1080* while
-connected, *name · connection lost* after a drop). Then **Reconnect to …** when the connection has
-just dropped (a long press tells why), the connection list (**Connections…**, to switch or add one),
-**Refresh** (asks for a full picture and flashes the screen), **Page
-buttons send** (Page Up/Down keys or Mouse wheel),
-**Hybrid scroll distance** (per connection, applies at once: how many remote pixels one wheel notch
-scrolls the remote, 40, 60, 100, 150 or 240 (default) px, or **Custom…** from 10 to 1000; a Hybrid
-drag sends one notch per that distance times the zoom, so the content keeps up with the finger at
-any zoom. The remote OS and application decide the real distance (240 was measured against a desktop
-browser; other remotes differ) - so tune it on the device: if the content moves further than
-your finger, pick a larger value; if less, a smaller one),
-**Keep screen on** (default on: the device does not auto-suspend, go to standby or dim the light while the viewer is open),
-**Match orientation to the remote screen** (default on, see above),
-**Toolbar buttons…** (above), **Help** and **Leave (keep connection)**. Rows that switch something
-on or off show ✓ or - and keep the menu open; anything else closes it.
+A physical keyboard works too.
 
-**The key strip** sits right above the on-screen keyboard: **✕** (closes the keyboard, like a tap on
-**⌨**), the **Send keys** icon (two keycaps), which opens the full **Send keys** panel (the keyboard
-and strip make way for it; it sends nothing and leaves armed modifiers armed), then **Ctrl**,
-**Shift**, **Alt**, **Super**, Esc, Tab, the four arrows and Del. A modifier armed there goes with exactly one action, like
-the panel's: the next key on the on-screen keyboard or the strip, or the next tap or drag on the
-screen.
+## 6. The ⋯ menu
 
-**Send keys** is a panel at the bottom of the screen; the remote stays visible (and clickable) above
-it. Its top row is the key strip's row with two other buttons at the left: **✕** closes the panel and
-the keyboard icon next to it switches back to the on-screen keyboard with its strip (armed modifiers
-stay armed there); then **Ctrl**, **Shift**, **Alt**, **Super**, Esc, Tab, the four arrows and Del.
-Tap a modifier to arm it (it turns black), tap again to cancel. Armed modifiers go with exactly one
-action and are then let go: the next key from the panel, or the next tap, long press or drag on the
-screen (Ctrl+click, Shift+click or Shift+drag to select, Alt+drag). The tabs hold the other special
-keys (**Keys**: Home above End, Page Up above Page Down, Insert above Menu, Backspace above Enter,
-then Print Screen, Pause and **Modifiers only**, which sends just the armed modifiers: Super on
-its own opens most desktops' launcher), **Hotkeys** (Ctrl+Z, Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+S,
-Ctrl+F, Ctrl+W, Alt+Tab, Alt+F4, Lock = Super+L, Ctrl+Alt+Del; each is sent exactly as named, armed
-modifiers are not added and are cleared) and F1-F12; letters and symbols are on the on-screen keyboard
-(armed modifiers go with its keys too). The bottom row repeats your last four combos exactly
-(armed modifiers are not added to them, and are cleared), and **Release all** disarms every modifier
-and lets go of whatever a drag or long press still holds on the remote (its button, then its
-modifiers), e.g. when its release never arrived; it is available whenever something is armed or
-held. Nothing stays pressed between actions. The panel stays open until its close button, Back or
-the Menu key; closing it, leaving the viewer or disconnecting in the middle of a drag lets go of the
-button and the modifiers that drag holds.
+1. **Connections…** — switch to or add another connection.
+2. **Refresh** — redraw the whole picture.
+3. **Page buttons send** — Page Up/Down keys, or mouse-wheel scrolling.
+4. **Hybrid scroll distance** — if scrolling in Hybrid mode moves too far, pick a bigger number;
+   too little, a smaller one.
+5. **Keep screen on** — stop the reader from sleeping while you use it.
+6. **Match orientation to the remote screen** — turn the reader sideways automatically for a wide
+   computer screen.
+7. **Toolbar buttons…** — choose which buttons show.
+8. **Help** — a quick reminder of the gestures.
+9. **Leave (keep connection)** — go back to KOReader but stay connected, so coming back is instant.
 
-**The keyboard** is drawn over the framebuffer, and showing it leaves the zoom alone — except in
-**Fit (with keyboard)**, the mode that deliberately fits the zoom into the space the keyboard
-leaves and follows it. Otherwise, a view that is too large for the space above the keyboard keeps
-the whole screen (pan with two fingers to reach what the keys cover), while a view that fits in
-that space is moved into it instead of hiding behind the keys. The keyboard gets out of the way
-whenever a menu or dialog is open, and comes back when it closes.
-Hold **Backspace** on it to repeat it like a PC key: one Backspace at once, then one every 0.1 s
-until you lift (each a full press and release, so nothing stays down on the remote; a modifier armed
-on the key strip goes with the first one only, as with a tap). A key's long press (Backspace's
-repeat, a letter's popup of accented characters) starts once the finger has stayed down a little
-past KOReader's long-press time: a quick tap that the reader delivers late is typed as a tap.
+## 7. Faster or sharper picture
 
-**Losing the connection.** When the connection drops while the viewer is open, the last picture
-stays and a box appears over it: *Connection lost — reconnecting…* with the attempt number and the
-seconds to the next one, and **Retry now** and **Close**. Attempts follow 2, 4, 8 and 15 seconds,
-then every 30 seconds, and go on until one succeeds or you choose **Close** (Back does the same).
-On success the box goes, a full picture is requested, and the toolbar, mode and zoom are as they
-were. Wi-Fi stays on while it retries; it is turned off again (if the plugin had turned it on) only
-when the retrying ends without a connection. A retry that is under way is also repeated at once when the device wakes up.
-There is no retrying in the background: if the connection drops while you have left the viewer, it
-stays down, and reopening the viewer shows *Connection lost* with **Retry** and **Close** and
-retries only after you tap **Retry**. Closing the viewer stops everything.
+If the picture is slow to update:
 
-**Leave (keep connection)** closes the viewer but keeps the session, the remote framebuffer and
-Wi-Fi up, so reopening it is instant and the picture is resynchronised. **Close** on the toolbar
-(Disconnect) closes the connection and restores Wi-Fi if the plugin turned it on.
+1. Open **Display** and choose **Picture quality ▸ Fast** (or **Balanced**).
+2. Turn on **Sharp** scaling in the same panel — faster redraws and crisper text.
+3. Or let the plugin find the best settings for you: **Manage connections…** ▸ your connection ▸
+   **Find fastest picture settings**, then **Apply best**. Keep the computer screen still while it
+   runs.
 
-## Power consumption
+## 8. If the connection drops
 
-The viewer costs nothing while it is not connected: with no session open there is no timer, no
-socket and no work of any kind. While a session is up, expect the usual power use of a network
-connection and — mostly — of screen updates, because every frame has to be received, decoded and
-drawn. A picture that does not change costs very little; a moving one costs what the update rate
-implies.
+The last picture stays on screen and the plugin keeps trying to reconnect by itself. Tap
+**Retry now** to try straight away, or **Close** to give up.
 
-## Settings
+## 9. Stay safe
 
-Connection profiles live in a plain Lua file inside KOReader's settings directory,
-`settings/vncoxide.lua`:
-
-```lua
-return {
-    ["profiles"] = {
-        [1] = { ["name"] = "desktop", ["host"] = "10.0.0.5", ["port"] = 5900, ["password"] = "",
-                ["autoconnect"] = true,    -- connect here at start
-                -- picture settings, per connection (see "Lower bandwidth" below)
-                ["color_depth"] = 24,      -- 24, 16 or 8: fewer bits = less bandwidth, fewer colours
-                ["enable_tight"] = false,  -- opt-in Tight encoding, see below
-                ["jpeg_quality"] = false,  -- Tight JPEG quality 0..9 (false = server default)
-                ["compress_level"] = false,   -- Tight compression level 0..9 (false = server default)
-                ["pointer_mode"] = "touch",   -- "touch", "mouse" or "hybrid" (the toolbar's Mode button)
-                ["hybrid_notch_px"] = 240 },  -- Hybrid mode: remote pixels one wheel notch scrolls (10..1000)
-    },
-    ["settings"] = {
-        ["orientation"] = 0,               -- default screen orientation (0 = upright)
-        ["match_orientation"] = true,      -- turn the screen to the remote's orientation after connecting
-        ["landscape_orientation"] = 1,     -- landscape side last picked by hand (1 = 90° clockwise)
-        ["portrait_orientation"] = 0,      -- portrait side last picked by hand (0 = upright)
-        ["keyboard_shown"] = false,        -- the keyboard's last state: the viewer opens with it shown or not
-        ["keep_screen_on"] = true,         -- no auto-suspend, standby or light dimming while the viewer is open
-        ["zoom_mode"] = "fit",             -- "fit", "fit_with_keyboard" or 0.25 .. 4
-        ["page_buttons"] = "keys",         -- device page buttons send "keys" (Page Up/Down) or the "wheel"
-        ["scaling"] = "smooth",            -- "smooth" or "sharp" (faster, crisper text; the Display panel's switch)
-        ["pointer_speed"] = "normal",      -- Mouse mode: "slow" (0.75), "normal" (1.25) or "fast" (2.0)
-        -- which toolbar buttons are shown, only those switched (Close and More always are); by default
-        -- all of them but Scroll up/down (Brightness only on devices with a frontlight)
-        ["toolbar_buttons"] = { ["scroll_up"] = true, ["scroll_down"] = true, ["rotate"] = false },
-        ["toolbar_collapsed"] = false,     -- the toolbar is folded into its round button
-        ["toolbar_pinned"] = { ["rotate"] = true }, -- buttons kept beside it while collapsed, only those switched (default: Keyboard)
-        ["toolbar_pos"] = { ["x"] = 0.5, ["y"] = 0 }, -- where it sits: fractions of the free space (0.5, 0 = top centre)
-        ["remote_contrast"] = 1,           -- contrast of the remote picture as drawn: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5 or 3
-        ["remote_invert"] = false,         -- the remote picture drawn inverted (the toolbar's Invert button)
-    },
-}
-```
-
-You never have to edit it by hand (the editor in the viewer writes it), but it is one way to set a
-password without typing it into a dialog. Unknown keys are dropped and missing ones defaulted when
-it is loaded, so a broken file does not keep the plugin from starting; if a hand-edited file flags
-more than one profile for `autoconnect`, the first keeps the flag and the rest are cleared. A
-global `["enable_tight"] = true` in `settings` (where older versions kept it) turns Tight on for
-every profile that has no `enable_tight` of its own, and is then dropped.
-
-> **Passwords are stored in clear text**, like KOReader itself does for OPDS and progress sync.
-> VNC Authentication is a weak, DES-based scheme anyway, and **nothing in a VNC session is
-> encrypted** — run it over SSH, WireGuard or a trusted network.
-
-## Troubleshooting lag
-
-If page-button presses lag while the screen redraws, KOReader's debug log can show where the time
-goes. Turn on Developer options -> Enable debug logging, reproduce the lag, then look in
-`crash.log` in KOReader's folder (`koreader/crash.log`) for lines starting with `vnc-timing:`
-(`grep vnc-timing crash.log`). They report decode time, paint time, key/wheel presses and gaps where
-the UI was blocked (such as an e-ink refresh). Nothing is logged with debug logging off.
-A `vnc-timing: paint` line also gives the toolbar's share (`toolbar_ms`), the CPU time of the
-paint (`cpu_ms`; well below `ms` means the time went elsewhere, e.g. waiting), the screen buffer
-as `bb=<type>/rot<rotation>/inv<0|1>` (a rotated or inverted one, such as night mode, makes
-KOReader's blit slower) and whether KOReader's C blitter is on (`cbb=true|false`); `blit_ms`
-(every paint while the background processes run, otherwise dithered paints) is the canvas blit itself.
-
-## Server compatibility
-
-- RFB 3.8 with security type *None* or *VNC Authentication* (password). No TLS/VeNCrypt/SASL, so
-  servers that require those cannot be used.
-- Encodings: ZRLE, TRLE, Hextile, RRE, CopyRect and Raw — all of RFC 6143 — plus DesktopSize
-  (servers that resize their desktop are followed automatically).
-- **Tight** compression is implemented but **off by default**: it is not part of RFC 6143 and
-  servers interpret its control byte differently, so it is opt-in per connection (**Tight
-  encoding** under the connection editor's **Picture** button, or the profile's
-  `["enable_tight"] = true`) until it has been tested against the server you use.
-- **Lower bandwidth**: each connection has its own picture settings, set with the **Picture: …**
-  button in the connection editor (its label sums them up, e.g. `Picture: 16-bit, Tight, JPEG 3`).
-  **Colour depth** (24/16/8-bit) asks the server for fewer bits per pixel; with Tight on, **JPEG
-  quality** and **Compression level** (Off or 0–9; Off leaves the server's default) trade picture
-  quality and CPU for bytes. Compression level only packs the lossless parts (text, menus, flat
-  areas); on x11vnc only a few values differ: 2 with JPEG, 0 or 1 without (see its help). Both
-  are listed under **Tight encoding** and are dimmed, but still show their value and can be
-  long-pressed, while it is off. JPEG is only used at 24-bit colour. The choice is stored when the
-  connection is saved and **takes effect on the next connection** — saving the connection that is live says to
-  reconnect when one of these (or the host, port or password) changed. New connections start with
-  Tight off. The **Help** button opens a scrollable explanation of every setting, with the setting names in bold;
-  long-press a row for that setting's explanation.
-- **Find fastest picture settings** (in a connection's **Manage connections…** dialog) measures
-  the picture settings instead of guessing: it tries 11 combinations of colour depth, Tight,
-  compression level and JPEG quality on that connection, twice each, in opposite order (the
-  second pass runs the list backwards, so no combination gains from running last), a few
-  seconds per try, each try on its own extra connection. Open connections stay connected but are paused for the run (they stop
-  receiving screen updates, so they do not slow the measurement) and catch up when it ends. If a
-  combination cannot connect at all (refused, timed out, wrong password, no Wi-Fi), the run stops
-  at once and shows "Could not connect: <reason>" instead of a table of failures; a combination
-  that connects but then fails (say, a format the server rejects) is listed as failed and the run
-  goes on. Put what you usually look at on the PC's shared area and leave it still: each
-  combination fetches that screen three times whole (the first is a warm-up and not counted) and
-  then in 16 pieces (a 4×4 grid), each forced to be sent again even though nothing changed, and
-  decodes and draws every piece at your current zoom and scaling. It is ranked by the pixels per
-  second of the small pieces, the closest to everyday updates; the results also show the time per
-  piece, the time for a full screen and the kilobytes a full screen took. Every figure but the
-  kilobytes is a median over both tries, so one slow Wi-Fi round trip does not decide the
-  ranking; a combination that fails in either try is listed as failed ("failed in pass N: ..."). **Apply best** saves
-  the winner's four picture settings to the connection (nothing else; it takes effect on the next
-  connection); **Cancel** or **Close** save nothing.
-- **Sharp scaling (faster)**: **Sharp** in the Display panel (toolbar ▸ **Display**). It scales
-  by repeating pixels instead of blending them: much faster redraws when the zoom is not 100% and
-  crisper text, but uneven at non-whole zoom levels. It is one global setting (not per connection)
-  and applies immediately to the live view.
-- **Page buttons**: **Page buttons send** under **⋯** chooses what a device's page-turn buttons do.
-  The default sends Page Up/Down keys to the remote's focused window; **Mouse wheel** instead
-  scrolls 3 notches at the last tapped position (the remote's centre before any tap), which also
-  works on a window that is not focused. It applies immediately, no reconnect needed.
-  While you press keys or page buttons, screen updates pause until 0.3 s after the last press,
-  so a fast run of presses is not slowed down by e-ink redraws.
-
-## Serving a PC screen
-
-`tools/vnc-server.py` shares a monitor (or just part of it) of a running X11 session with
-`x11vnc`, so this plugin's viewer can show it. It needs no venv: it uses only the Python 3
-standard library (plus `x11vnc` and `xrandr`: `sudo apt install x11vnc x11-xserver-utils`; with
-`-z`, `ffmpeg` instead of `x11vnc`: `sudo apt install ffmpeg x11-xserver-utils`).
-Run `tools/vnc-server.py -h` for every option.
-
-```
-tools/vnc-server.py --list                       # connected outputs and their geometry
-tools/vnc-server.py                              # primary monitor, port 5900, asks for a password once
-tools/vnc-server.py -o HDMI-1 -n                 # a named output, no password
-tools/vnc-server.py -s 632x840 -O 0,40 -f        # top-left 632x840 below a 40 px taskbar, with a red frame
-tools/vnc-server.py -s 632x840 -z 2 --sharp      # frames scaled 2x on the PC (1264x1680 for the reader)
-tools/vnc-server.py -a 192.168.1.50 -p 5901 -- -viewonly   # only that client; extra args go to x11vnc (not with -z)
-```
-
-- `-s WxH` / `-O X,Y` select the area, handy to match the reader's screen size.
-- `-z ZOOM` (`2`, `1.5`, `4/3`) scales the frames on the PC before sending; `--sharp` uses
-  nearest-neighbour scaling (no blending, crisper text), otherwise ffmpeg's `area` filter blends
-  neighbouring pixels (no over- or undershoot at edges, unlike bicubic). The start-up line shows the frame size the viewer will get, e.g.
-  `-s 632x840 -z 2` gives 1264x1680 for a 1264x1680 screen. Set the viewer zoom to 100% then: the
-  reader does no scaling and draws fastest, at the price of zoom² times the pixels to transfer and
-  decode. The Display panel's **Sharp** scaling is the client-side alternative that keeps the bandwidth
-  low.
-- With `-z` the script does not use x11vnc but its own small RFB server (`tools/vnc_zoom.py`), because
-  x11vnc's `-clip` + `-scale` clamps the arrow it draws to the unscaled size, so on the reader the
-  pointer looks stuck in the top-left part. `ffmpeg` grabs the area 10 times a second (`--fps N`
-  to change) with the real pointer drawn in, scales it and converts it to the viewer's pixel
-  format; the server sends the 64x64 tiles that changed, as ZRLE (or Raw), and injects pointer and
-  keys with XTest (keysyms on no key, such as `ő` on a US layout, are bound to a spare keycode). It
-  takes the same `-a`, `-n`, `-P`, `-p`, `-f` options; `--gentle` and arguments after `--` are
-  x11vnc-only and refused with `-z`. Measured in Xvfb with a 632x840 area at `-z 2` (3 runs of 20):
-  a pointer move reached the viewer in 77–92 ms on average (38–137 ms), and a still screen cost about
-  21% of one core for ffmpeg plus about 7% for the server (a lower `--fps` lowers both).
-- `-f` draws a thin red frame (50% opacity with a compositor) just outside the shared area, so
-  you can see what the reader shows. It is removed when the server stops; if it cannot be drawn
-  you get one warning and the server runs without it.
-- Latency (x11vnc, without `-z`): the defaults are `-wait 5 -defer 0` (x11vnc answers at once).
-  Measured against x11vnc 0.9.16 on a 632x840 area, the old `-wait 50 -defer 100` cost about 150 ms
-  per request against about 6 ms. `--gentle` goes back to `-wait 50 -defer 100` (less CPU on a slow
-  PC, about 145 ms more per update).
-- The password file is `./vnc.passwd` (change with `-P FILE`); it is created on first use, in
-  x11vnc's `-storepasswd` format (written by the script itself when `-z` runs without x11vnc).
-- X11 only; a Wayland session is refused.
-
-## For developers
-
-`NOTES.txt` has the architecture, the internals, the test setup and what has and has not been
-verified. The two Lua suites it describes live in `tools/` and are run from the KOReader root with
-KOReader's own LuaJIT:
-
-    PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
-    cd /usr/lib/koreader
-
-    # the client protocol stack, over a real socket, against tools/mock_vnc_server.py
-    LUA_PATH="$PLUGIN/?.lua;./common/?.lua;./common/?/init.lua;;" LUA_CPATH="./common/?.so;;" \
-      ./luajit "$PLUGIN/tools/proto_smoke.lua" --tmp "$HOME/vnc-smoke"   # --tmp=<dir> works as well
-
-    # the dialogs and the viewer widget against KOReader's widget stack, headless
-    KO_HOME="$HOME/vnc-smoke/ui" SDL_VIDEODRIVER=dummy \
-      LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
-      ./luajit "$PLUGIN/tools/ui_smoke.lua"
-
-`tools/mock_vnc_server.py` is the RFB fixture the client suite talks to — deterministic patterns in
-every encoding, both security types, and every client message logged — and
-`tools/tight_jpeg.b64` is the fixed 32×32 JPEG it serves for its Tight JPEG rectangle.
-
-A third suite covers the PC-side launcher `tools/vnc-server.py` (unit tests plus end-to-end runs
-against fake `x11vnc`/`xrandr` stubs) and its zoom server `tools/vnc_zoom.py` (DES, ZRLE checked by
-a reference decoder, the RFB protocol against a fake capture; `tools/test_vnc_zoom.py`). It needs only
-Python 3, no KOReader:
-
-    python3 tools/test_vnc_server.py
-
-Keep the scratch directories on the home filesystem: a quota-limited `/tmp` makes the suites fail
-(its default locations are under `/tmp`). The UI suite needs a **fresh** `KO_HOME` — it reuses fixed
-paths under it — and `SDL_VIDEODRIVER=dummy` keeps the SDL emulator from opening a window without
-changing what the checks see. `NOTES.txt` has the rest of the pitfalls, the live end-to-end recipe
-(mock server plus a real KOReader driven through its HTTP inspector) and the open ends.
+VNC is **not encrypted**, and your password is saved as plain text on the reader. Use it only on
+your own home network (or through a VPN), and never open your VNC server to the internet.

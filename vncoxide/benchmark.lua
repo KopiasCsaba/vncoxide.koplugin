@@ -47,7 +47,7 @@ Scores (@{Benchmark._score}) over the samples of both passes: per category the m
 ms (`cat_ms`), so a single slow step (Wi-Fi jitter) does not decide; `round_s`, the sum of the 5
 category medians in seconds (one round of 5 steps); `bytes`, the mean bytes received per round of
 5 steps.
-@{Benchmark._rank} turns them into `speed_pct` (100 = the fastest) and a rank, with ties.
+@{Benchmark._rank} turns them into `speed_pct` (100 = fastest in every category) and a rank, with ties.
 
 For the whole run, every attached session in `opts.sessions` (the plugin's live connections, the
 open viewer's included) is detached, so its polling, decoding and drawing does not compete with the
@@ -149,7 +149,7 @@ local MIN_MS = 0.001
 Sets `speed_pct` and `rank` on every row and returns them sorted.
 
 `speed_pct`: per category the fastest scored row's `cat_ms` over the row's own, the geometric mean
-of those over the categories, × 100 (100 = the fastest). Rows are grouped from the fastest down: a
+of those over the categories, × 100 (100 = fastest in every category, so the leader can score below 100). Rows are grouped from the fastest down: a
 row is tied with its group's leader when its `speed_pct` is at least `TIE` × the leader's; tied rows
 share the leader's rank (competition ranking: 1, 1, 3, ...). Within a group lossless rows come
 before JPEG ones, then 8-bit ones; then fewer `bytes` first; then the faster. Failed rows (`ok`

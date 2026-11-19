@@ -13,7 +13,7 @@ Run it from the KOReader root, with a writable data directory (KOReader wants a 
   PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
   KO_HOME=/tmp/vncv_ui_home \
     LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
-    ./luajit "$PLUGIN/tools/ui_smoke.lua"
+    ./luajit "$PLUGIN/tests/ui_smoke.lua"
 
 Prints one `ok - <name>` line per check and exits 0 on success, 1 on the first failure.
 ]]
@@ -2352,8 +2352,8 @@ check("editor_picture_settings_save_and_cancel", function()
     local settings_part = viewer.text:sub(1, (viewer.text:find("next connection", 1, true)))
     assert_true(not settings_part:find("Sharp", 1, true) and not settings_part:find("sharp", 1, true),
         "no setting paragraph mentions sharp scaling")
-    assert_true(viewer.text:find("-z 2", 1, true) and viewer.text:find("other than 100%", 1, true),
-        "the advice points to the server script's -z and to zoom 100%")
+    assert_true(not viewer.text:find("-z 2", 1, true) and not viewer.text:find("vnc-server.py", 1, true),
+        "no advice about the removed server script")
     assert_true(viewer.text:find("Measure it: in the connection's menu, tap Find fastest picture settings with your usual content on the PC screen.", 1, true),
         "the advice points to the benchmark")
     assert_true(not viewer.text:find("needs", 1, true), "no 'needs' in the explanation")
@@ -2366,9 +2366,8 @@ check("editor_picture_settings_save_and_cancel", function()
     local bold_n = 0
     for _ in pairs(tbw._ptf_char_is_bold) do bold_n = bold_n + 1 end
     assert_true(bold_n == #("Colour depth") + #("Tight") + #("JPEG quality") + #("Compression level")
-        + #("Which is fastest?") + #("Scale on the PC, not on the e-reader")
-        + #("Example"),
-        "exactly the four names and the three advice headings are bold, got " .. bold_n)
+        + #("Which is fastest?"),
+        "exactly the four names and the advice heading are bold, got " .. bold_n)
     assert_true(tbw.text:find("Colour depth: how many bits", 1, true) and not tbw.text:find("\u{FFF2}", 1, true),
         "markers are stripped from the rendered text")
     viewer:onClose()
@@ -3203,6 +3202,21 @@ check("benchcards_shared_rank_and_order", function()
     assert_true(table.concat(ranks, ",") == "1,1,3,–", "ranks: " .. table.concat(ranks, ","))
     assert_true(labels[3] == "8-bit, Tight off", "labels in the given order")
     w:free()
+end)
+
+check("benchcards_tap_with_a_failed_card_does_not_crash", function()
+    local BenchResults = require("vncoxide/benchresults")
+    local Event = require("ui/event")
+    local Geom = require("ui/geometry")
+    local w = BenchResults:new{ rows = { card_row(1, 100, 1.06, "16-bit, Tight, compr. 1", { 300, 280, 90, 45, 330 }),
+        failed_card_row("24-bit, Tight, compr. 2", "screen did not settle within 5 s after step 14") },
+        on_pick = function() end, on_close = function() end }
+    w:paintTo(Screen.bb, 0, 0)
+    for _i, c in ipairs(w.cards) do
+        assert_true(type(c.ges_events) == "table", "every card keeps a gesture table")
+        local d = c.dimen
+        w:handleEvent(Event:new("Gesture", { ges = "tap", pos = Geom:new{ x = d.x + 10, y = d.y + 5, w = 0, h = 0 } }))
+    end
 end)
 
 check("benchcards_hidden_card_not_tappable", function()
@@ -8869,7 +8883,7 @@ end)
 -- ---------------------------------------------------------------- worker processes
 
 --[[--
-The real viewer over a real session (connect_profile, as the user connects), against tools/mock_vnc_server.py:
+The real viewer over a real session (connect_profile, as the user connects), against tests/mock_vnc_server.py:
 the session forks the decode and scale workers after the handshake, the viewer only blits their
 canvas. `fn(env)` gets `env.app`, `env.session`, `env.log` (the mock's log), `env.pump(cond,
 timeout)` (runs UIManager's tasks and paints until `cond()`), `env.shows(pattern)` (nil when the

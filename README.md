@@ -31,18 +31,21 @@ share no code, but credit is due for the design ideas.
 ---
 
 ## Contents
-
-1. [Demo](#demo)
-2. [Highlights](#highlights)
-3. [Feature overview](#feature-overview)
-4. [Installation](#installation)
-5. [Quick start](#quick-start)
-6. [Compatibility](#compatibility)
-7. [Security](#security)
-8. [Development and testing](#development-and-testing)
-9. [Origin and credits](#origin-and-credits)
-10. [Support](#support)
-11. [License](#license)
+<!-- TOC -->
+* [UNDER CONSTRUCTION](#under-construction)
+* [VNCoxide](#vncoxide)
+   * [Origins](#origins)
+   * [Contents](#contents)
+   * [Demo](#demo)
+   * [Highlights](#highlights)
+   * [Installation](#installation)
+   * [Quick start](#quick-start)
+   * [Compatibility](#compatibility)
+   * [Security](#security)
+   * [Development and testing](#development-and-testing)
+   * [Support](#support)
+   * [License](#license)
+<!-- TOC -->
 
 Every gesture, menu, setting and tool is described in the
 **[User Guide](docs/USER_GUIDE.md)**.
@@ -163,12 +166,11 @@ a VNC server to the internet.
 ## Development and testing
 
 1. Behaviour is covered by two test suites:
-   1. `tools/proto_smoke.lua` tests the client protocol stack against a deterministic mock RFB
+   1. `tests/proto_smoke.lua` tests the client protocol stack against a deterministic mock RFB
       server.
-   2. `tools/ui_smoke.lua` tests the dialogs and the viewer headless, using KOReader's own widget
+   2. `tests/ui_smoke.lua` tests the dialogs and the viewer headless, using KOReader's own widget
       stack.
-2. The commands to run each suite are in the
-   [User Guide](docs/USER_GUIDE.md#for-developers).
+2. The commands to run each suite are in `NOTES.txt`.
 3. `NOTES.txt` covers the architecture, the internals, the live end-to-end recipe and what has
    and has not been verified.
 

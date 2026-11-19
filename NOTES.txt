@@ -71,18 +71,12 @@ vncoxide/keyboard.lua    KOReader's VirtualKeyboard wired to RFB key events via 
                           alone types the key (VirtualKey:onHoldReleaseKey).
 vncoxide/settings.lua    LuaSettings wrapper: profiles + global settings.
 
-tools/mock_vnc_server.py  Test fixture: an RFB 3.8 server in Python (all encodings, both security
+tests/mock_vnc_server.py  Test fixture: an RFB 3.8 server in Python (all encodings, both security
                           types, deterministic patterns, logs every client message).
-tools/proto_smoke.lua     Headless protocol tests (drives the real protocol stack over TCP).
-tools/ui_smoke.lua        Headless UI tests (real plugin, dialogs and viewer widget, no KOReader
+tests/proto_smoke.lua     Headless protocol tests (drives the real protocol stack over TCP).
+tests/ui_smoke.lua        Headless UI tests (real plugin, dialogs and viewer widget, no KOReader
                           process, no server).
-tools/vnc-server.py       PC-side launcher: shares an X11 monitor/area via x11vnc, optional red
-                          on-screen frame (ctypes libX11). Standard library only.
-tools/vnc_zoom.py         Its -z server: ffmpeg x11grab capture/scale/convert, RFB 3.8 (None/VNC
-                          auth with pure-Python DES), ZRLE/Raw 64x64 tiles, XTest input.
-tools/test_vnc_server.py  Unit + end-to-end tests for it (fake x11vnc/xrandr stubs); run with
-                          `python3 tools/test_vnc_server.py` (also runs tools/test_vnc_zoom.py).
-tools/tight_jpeg.b64      The fixed 32x32 JPEG the mock serves for its Tight JPEG rectangle.
+tests/tight_jpeg.b64      The fixed 32x32 JPEG the mock serves for its Tight JPEG rectangle.
 
 
 DESIGN NOTES WORTH KNOWING
@@ -247,7 +241,7 @@ its key, so the e-ink refresh of the progress title is not measured, and the dra
 dither flag (canvas.dither, BB8 screen plus Screen.sw_dithering).
 Scores: per category the median step time over both passes (cat_ms); round_s is the sum of the 5
 medians in seconds; speed_pct is the geometric mean over the categories of best_ms / own_ms, x100
-(100 = fastest). Benchmark._rank: a row within 0.95 of its group leader's speed_pct shares the
+(100 = a setting that is fastest in every category; the leader can be below 100). Benchmark._rank: a row within 0.95 of its group leader's speed_pct shares the
 leader's rank (1, 1, 3 ...); within a group lossless (no JPEG, depth >= 16) before JPEG before
 8-bit, then fewer bytes; failed rows last, rank nil.
 The UI is Dialogs.picture_benchmark(plugin, profile, on_back, opts), behind "Find fastest picture
@@ -626,7 +620,7 @@ mock's DES, and KOReader's own LuaJIT):
     cd /usr/lib/koreader && \
       LUA_PATH="$PLUGIN/?.lua;./common/?.lua;./common/?/init.lua;;" \
       LUA_CPATH="./common/?.so;;" \
-      ./luajit "$PLUGIN/tools/proto_smoke.lua" --tmp /tmp/vncv_smoke
+      ./luajit "$PLUGIN/tests/proto_smoke.lua" --tmp /tmp/vncv_smoke
 
 It starts one mock_vnc_server.py per case on an ephemeral port and drives the real protocol stack
 over a real socket: DES against FIPS vectors, the VNC-auth bit reversal, the pixel format and
@@ -642,7 +636,7 @@ UI plumbing (headless, no KOReader process, no server):
     cd /usr/lib/koreader && \
       rm -rf /tmp/vncv_ui_home && KO_HOME=/tmp/vncv_ui_home \
       LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
-      ./luajit "$PLUGIN/tools/ui_smoke.lua"
+      ./luajit "$PLUGIN/tests/ui_smoke.lua"
 
 The ui suite is not idempotent: a reused KO_HOME keeps the "fresh profile" settings of an earlier run
 and fails two checks, so it needs a fresh (wiped) KO_HOME every time.
@@ -679,7 +673,7 @@ Live end-to-end (GUI): run the mock, run KOReader, drive the plugin through KORe
 inspector (port 8989, httpinspector.autostart = true):
 
     PLUGIN=~/.config/koreader/plugins/vncoxide.koplugin
-    python3 "$PLUGIN/tools/mock_vnc_server.py" --port 5900 --encoding zrle --pattern quadrants \
+    python3 "$PLUGIN/tests/mock_vnc_server.py" --port 5900 --encoding zrle --pattern quadrants \
         --log /tmp/mock.log &
     koreader &                      # or: env KO_HOME=/tmp/ko_home ./reader.lua
     sleep 20
@@ -701,7 +695,7 @@ device/screen/bb can assert placement and rendering exactly.
 WHAT HAS BEEN VERIFIED, AND WHAT HAS NOT
 ----------------------------------------
 
-Verified on a desktop with the SDL Emulator device, against tools/mock_vnc_server.py:
+Verified on a desktop with the SDL Emulator device, against tests/mock_vnc_server.py:
 all seven encodings rendering in the live GUI; pointer, key and text input reaching the server;
 the on-screen keyboard overlapping without rescaling, following rotations, yielding to menus and
 dialogs, and a view that fits being placed above it; the zoom modes (fit screen / fit with
@@ -720,11 +714,9 @@ Not verified, and where to look first if something is wrong:
   the implementation follows libvncclient, cross-checked against noVNC. Flip the profile
   ["enable_tight"] default only after a real server has been verified.
 - 16/8-bit decoding and the Tight quality/compression pseudo-encodings: checked only against
-  tools/mock_vnc_server.py, whose 16/8-bit Tight gradient encoder was written together with the
+  tests/mock_vnc_server.py, whose 16/8-bit Tight gradient encoder was written together with the
   decoder. Test against a real x11vnc at 16-bit with Tight on first.
 - Page-button wheel mode: covered by the headless UI tests only.
-- tools/vnc-server.py frame drawing: checked under Xvfb only (border position, removal on close).
-  Opacity is untested because it needs a compositor.
 - Real e-ink hardware: the BB8/rotation/NetworkMgr paths exist and are exercised in their emulated
   forms only. The emulator cannot show the *effect of a refresh kind* at all - every mode falls
   through to the same refresh implementation there - so "the panel receives a full-screen, flashing

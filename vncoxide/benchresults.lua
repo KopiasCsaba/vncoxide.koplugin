@@ -1,6 +1,6 @@
 --[[--
 The picture benchmark's results as ranked cards on a full-screen page: one card per combination
-in the given (ranked) order, each with its rank, label, speed against the fastest and time for one
+in the given (ranked) order, each with its rank, label, speed against the best time of each step type and time for one
 round of the five steps, a bar as long as that speed, and the five step times below in smaller
 grey type. Tapping a scored card hands its row to `on_pick` (the caller confirms and applies); a
 failed card shows its reason and takes no tap. ✕, Close and Back close the page and call `on_close`.
@@ -165,7 +165,7 @@ local function build_card(row, width, on_pick)
             TapCard = { GestureRange:new{ ges = "tap", range = function() return card:visible_dimen() end } },
         }
     else
-        card.ges_events = nil
+        card.ges_events = {}
     end
     return card
 end
@@ -202,7 +202,7 @@ function BenchResults:init()
         if as_row then grid[#grid + 1] = { top = content_h, bottom = content_h + h - 1 } end
         content_h = content_h + h
     end
-    local header = { _("Speed vs. the fastest (longer bar = faster) · time for one round of 5 steps") }
+    local header = { _("Speed vs. the best time of each step type (longer bar = faster) · time for one round of 5 steps") }
     local any_scored = false
     for _i, row in ipairs(self.rows) do
         if row.ok then any_scored = true break end
