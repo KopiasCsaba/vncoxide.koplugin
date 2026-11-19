@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>vncoxide speed test</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; cursor: none; }
+  * { caret-color: transparent; user-select: none; }
+  body { background: #fff; color: #222; font-family: Georgia, "Times New Roman", serif; }
+  body.dark { background: #14181f; color: #e6e1d6; }
+  #bar { position: fixed; left: 0; top: 0; right: 0; height: 28px; line-height: 28px; padding: 0 16px;
+         font: 13px/28px Arial, Helvetica, sans-serif; background: #e8e8e8; color: #222; z-index: 2; }
+  body.dark #bar { background: #2a3140; color: #e6e1d6; }
+  #article { position: absolute; left: 0; right: 0; top: 28px; }
+  #col { width: 740px; max-width: 92%; margin: 0 auto; padding-top: 18px; }
+  h1 { font-size: 40px; line-height: 46px; margin: 0 0 8px 0; height: 92px; overflow: hidden; }
+  .by { font: 14px/20px Arial, Helvetica, sans-serif; color: #666; margin: 0 0 18px 0; height: 20px; }
+  body.dark .by { color: #aab; }
+  p { font-size: 18px; line-height: 27px; height: 162px; overflow: hidden; margin: 0 0 18px 0; text-align: left; }
+  canvas { display: block; width: 720px; height: 320px; max-width: 100%; margin: 0 0 6px 0; }
+  .cap { font: italic 13px/18px Arial, Helvetica, sans-serif; color: #666; height: 18px; margin: 0 0 20px 0; }
+  body.dark .cap { color: #aab; }
+  #intro { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 5; background: #fff; color: #111;
+           display: flex; align-items: center; justify-content: center; text-align: center;
+           font: bold 34px/46px Arial, Helvetica, sans-serif; padding: 0 8%; }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="article"><div id="col"></div></div>
+<div id="intro">Press F11 for full screen, click once into this page, then start the test on the e-reader.</div>
+<script>
+(function () {
+  "use strict";
+  // Step script; step 0 is the reset state (before the first Page Down).
+  var SCRIPT = ["photo", "text", "scroll", "small", "flip", "text", "small", "photo",
+                "flip", "scroll", "small", "flip", "scroll", "photo", "text"];
+  var N = SCRIPT.length;
+
+  // Seeded generator (mulberry32): the page content only depends on the step.
+  function seeded(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  var WORDS = ("the of and a to in is you that it he was for on are as with his they at be this from have or by one had not but what all were when we there can an your which their said if do will each about how up out them then she many some so these would other into has more her two like him see time could no make than first been its who now people my made over did down only way find use may water long little very after words called just where most know get through back much before go good new write our used me man too any day same right look think also around another came come work three word must because does part even place well such here take why things help put years different away again off went old number great tell men say small every found still between name should home big give air line set own under read last never us left end along while might next sound below saw something thought both few those always looked show large often together asked house don't world going want school important until form food keep children feet land side without boy once animals life enough took sometimes four head above kind began almost live page got earth need far hand high year mother light country father let night picture being study second soon story since white ever paper hard near sentence better best across during today however sure knew try told young sun thing whole hear example heard several change answer room sea against top turned learn point city play toward five using himself usually").split(" ");
+
+  function sentence(rnd, n) {
+    var out = [];
+    for (var i = 0; i < n; i++) out.push(WORDS[Math.floor(rnd() * WORDS.length)]);
+    var s = out.join(" ");
+    return s.charAt(0).toUpperCase() + s.slice(1) + ".";
+  }
+  function paragraph(seed) {
+    var rnd = seeded(seed), parts = [], total = 0;
+    while (total < 110) { var n = 8 + Math.floor(rnd() * 9); parts.push(sentence(rnd, n)); total += n; }
+    return parts.join(" ");
+  }
+  function headline(seed) {
+    var rnd = seeded(seed), w = [];
+    for (var i = 0; i < 9; i++) w.push(WORDS[Math.floor(rnd() * WORDS.length)]);
+    var s = w.join(" ");
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  // State of step k, replayed from the script.
+  function stateAt(k) {
+    var st = { dark: false, base: 0, text: 0, photo: 0, small: 0, off: 0 };
+    for (var i = 0; i < k; i++) {
+      var c = SCRIPT[i];
+      if (c === "photo") st.photo++;
+      else if (c === "text") st.text++;
+      else if (c === "small") st.small++;
+      else if (c === "scroll") st.off++;
+      else if (c === "flip") { st.dark = !st.dark; st.base++; st.text += 10; st.photo += 10; st.small += 10; st.off = 0; }
+    }
+    return st;
+  }
+
+  // Layout: p0 p1 [photo0] p2 p3 [photo1] p4 p5 [photo2] p6 p7
+  var LAYOUT = ["p", "p", "c", "p", "p", "c", "p", "p", "c", "p", "p"];
+  var SMALL_P = 3; // paragraph index replaced by the "small" step
+
+  var col = document.getElementById("col");
+  var bar = document.getElementById("bar");
+  var intro = document.getElementById("intro");
+  var els = [], pIdx = 0, cIdx = 0, h1, by;
+
+  h1 = document.createElement("h1"); col.appendChild(h1);
+  by = document.createElement("div"); by.className = "by"; col.appendChild(by);
+  LAYOUT.forEach(function (kind) {
+    if (kind === "p") {
+      var p = document.createElement("p"); col.appendChild(p); els.push({ kind: "p", el: p, i: pIdx++ });
+    } else {
+      var cv = document.createElement("canvas"); cv.width = 720; cv.height = 320; col.appendChild(cv);
+      var cap = document.createElement("div"); cap.className = "cap"; col.appendChild(cap);
+      els.push({ kind: "c", el: cv, cap: cap, i: cIdx++ });
+    }
+  });
+
+  // A generated photo: sky gradient, sun, layered hills, deterministic grain.
+  function drawPhoto(cv, seed) {
+    var ctx = cv.getContext("2d"), w = cv.width, h = cv.height, rnd = seeded(seed * 7919 + 13);
+    var hue = Math.floor(rnd() * 360);
+    var g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, "hsl(" + hue + ",70%,35%)");
+    g.addColorStop(0.6, "hsl(" + ((hue + 40) % 360) + ",80%,70%)");
+    g.addColorStop(1, "hsl(" + ((hue + 80) % 360) + ",60%,85%)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "hsl(" + ((hue + 50) % 360) + ",95%,88%)";
+    ctx.beginPath(); ctx.arc(80 + rnd() * (w - 160), 50 + rnd() * 90, 28 + rnd() * 26, 0, 6.2832); ctx.fill();
+    for (var layer = 0; layer < 4; layer++) {
+      var base = h * (0.5 + layer * 0.14), amp = 30 + rnd() * 40, f = 0.004 + rnd() * 0.01, ph = rnd() * 6.28;
+      ctx.fillStyle = "hsl(" + ((hue + 120 + layer * 25) % 360) + ",45%," + (45 - layer * 9) + "%)";
+      ctx.beginPath(); ctx.moveTo(0, h);
+      for (var x = 0; x <= w; x += 8) ctx.lineTo(x, base + Math.sin(x * f + ph) * amp + Math.sin(x * f * 2.7 + ph) * amp * 0.3);
+      ctx.lineTo(w, h); ctx.closePath(); ctx.fill();
+    }
+    var img = ctx.getImageData(0, 0, w, h), d = img.data, nr = seeded(seed * 104729 + 7);
+    for (var i = 0; i < d.length; i += 4) {
+      var n = Math.floor((nr() - 0.5) * 36);
+      d[i] = Math.max(0, Math.min(255, d[i] + n));
+      d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+      d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  var step = 0, started = false, last = null;
+
+  function render() {
+    var st = stateAt(step), prev = last || {};
+    document.body.className = st.dark ? "dark" : "";
+    bar.textContent = "vncoxide speed test — keep this page full screen and focused. Step " + step + "/" + N;
+    if (prev.text !== st.text || prev.base !== st.base) {
+      h1.textContent = headline(1000 + st.text * 31 + st.base);
+      by.textContent = "By Staff Reporter · " + (1 + st.text) + " min read";
+    }
+    els.forEach(function (e) {
+      if (e.kind === "p") {
+        var small = e.i === SMALL_P ? st.small : 0;
+        var key = st.text + "/" + small;
+        if (e.__key !== key) {
+          e.el.textContent = paragraph(st.text * 977 + e.i * 131 + small * 8191 + 5);
+          e.__key = key;
+        }
+      } else if (e.__photo !== st.photo) {
+        drawPhoto(e.el, st.photo * 17 + e.i + 1);
+        e.cap.textContent = "Photo " + (e.i + 1) + ", series " + st.photo;
+        e.__photo = st.photo;
+      }
+    });
+    document.getElementById("article").style.transform =
+      "translateY(" + (-Math.round(window.innerHeight / 8) * st.off) + "px)";
+    last = st;
+  }
+
+  function onKey(ev) {
+    ev.preventDefault();
+    if (ev.type !== "keydown") return;
+    var changed = false;
+    if (ev.key === "PageDown") { step = Math.min(N, step + 1); changed = true; }
+    else if (ev.key === "Home") { step = 0; changed = true; }
+    if (!started) { started = true; intro.style.display = "none"; }
+    if (changed) render();
+  }
+  document.addEventListener("keydown", onKey, true);
+  document.addEventListener("keyup", onKey, true);
+  document.addEventListener("keypress", onKey, true);
+  document.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  window.addEventListener("resize", render);
+  render();
+})();
+</script>
+</body>
+</html>

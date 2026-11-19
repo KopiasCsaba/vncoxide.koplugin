@@ -235,12 +235,103 @@ def colour_map_message():
 
 # ---------------------------------------------------------------- synthetic framebuffer
 
+KEY_PAGE_DOWN = 0xff56
+KEY_HOME = 0xff50
+
+BENCH_SCRIPT = ["photo", "text", "scroll", "small", "flip", "text", "small", "photo",
+                "flip", "scroll", "small", "flip", "scroll", "photo", "text"]
+
+
+def _h(*vals):
+    """Small deterministic integer hash."""
+    x = 0x9E3779B1
+    for v in vals:
+        x = ((x ^ (v & 0xFFFFFFFF)) * 0x85EBCA6B) & 0xFFFFFFFF
+        x ^= x >> 15
+    return x
+
+
+class BenchPage:
+    """The bench-page simulation: the screen content is a function of the step. Layers live in
+    page coordinates (screen y + offset), so a scroll step shifts all of them up."""
+
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+        self.step = 0
+        self.reset_state()
+
+    def reset_state(self):
+        self.base = self.text = self.photo = self.small = self.off = 0
+        self.has_photo = self.has_small = False
+
+    def photo_rect(self):
+        return (0, 0, self.w * 4 // 5, self.h * 7 // 10)  # 56% of the screen
+
+    def small_rect(self):
+        sw, sh = max(1, self.w // 5), max(1, self.h // 4)  # 5% of the screen
+        return (self.w * 3 // 5, self.h * 3 // 4 - sh // 2, sw, sh)
+
+    def apply(self, step):
+        """Moves to the step; returns the changed screen rect (x, y, w, h) or None."""
+        if step == self.step:
+            return None
+        self.reset_state()
+        for cat in BENCH_SCRIPT[:step]:
+            if cat == "photo":
+                self.photo += 1
+                self.has_photo = True
+            elif cat == "text":
+                self.text += 1
+                self.has_photo = self.has_small = False
+            elif cat == "scroll":
+                self.off += self.h // 8
+            elif cat == "small":
+                self.small += 1
+                self.has_small = True
+            elif cat == "flip":
+                self.base += 1
+                self.text = self.photo = self.small = 100 * self.base
+                self.off = 0
+                self.has_photo = self.has_small = False
+        self.step = step
+        cat = BENCH_SCRIPT[step - 1] if step > 0 else "flip"
+        if cat == "photo":
+            return self.photo_rect()
+        if cat == "small":
+            return self.small_rect()
+        return (0, 0, self.w, self.h)
+
+    def pix(self, x, y):
+        vy = y + self.off
+        if self.has_small:
+            sx, sy, sw, sh = self.small_rect()
+            if sx <= x < sx + sw and sy <= vy < sy + sh:
+                v = 40 + (_h(self.small, x // 3, vy // 3) & 0x7F)
+                return (v, 255 - v, 90)
+        if self.has_photo:
+            px, py, pw, ph = self.photo_rect()
+            if px <= x < px + pw and py <= vy < py + ph:
+                n = _h(self.photo, x, vy) & 31
+                return (((x * 255 // pw) + self.photo * 53 + n) & 255,
+                        ((vy * 255 // ph) + self.photo * 29 + n) & 255,
+                        (128 + self.photo * 71 + n + (x ^ vy) // 8) & 255)
+        # text-like: 14px lines, 9px of "glyphs" in 6px cells, word gaps from the hash
+        line, ly = divmod(vy, 14)
+        paper = 255 if (self.base % 2 == 0) else 20
+        ink = 20 if (self.base % 2 == 0) else 230
+        if ly < 9 and (_h(self.text, line, x // 54) & 7) != 0:
+            if _h(self.text, line, x // 6, ly // 3) & 3:
+                return (ink, ink, ink)
+        return (paper, paper, paper)
+
+
 class Framebuffer:
     def __init__(self, pattern, w, h):
         self.pattern = pattern
         self.w = w
         self.h = h
         self.codec = PixelCodec.canonical()
+        self.bench = None
 
     def pixel(self, rgb):
         return self.codec.pixel(rgb)
@@ -249,6 +340,8 @@ class Framebuffer:
         return self.codec.cpixel(rgb)
 
     def pix(self, x, y):
+        if self.bench is not None:
+            return self.bench.pix(x, y)
         p = PATTERN_OVERRIDE or self.pattern
         if p == "gradient":
             return (x % 256, y % 256, (x ^ y) % 256)
@@ -746,6 +839,10 @@ class MockServer:
     def __init__(self, args):
         self.args = args
         self.fb = Framebuffer(args.pattern, args.width, args.height)
+        if args.bench_page:
+            self.fb.bench = BenchPage(args.width, args.height)
+        self.bench_dirty = None
+        self.encoders = None
         self.requests = 0
         self.resize_sent = False
         self.repaint_pos = 0
@@ -815,6 +912,7 @@ class MockServer:
         zrle = TileEncoder(self.fb, 64, allow_reuse=False)
         tight = TightEncoder(self.fb, self.jpeg_blob)
         encoders = {"hextile": hextile, "trle": trle, "zrle": zrle, "tight": tight}
+        self.encoders = encoders
         advertised = set()
         encoding_checked = False
 
@@ -874,7 +972,9 @@ class MockServer:
                     else:
                         self.requested = (x, y, w, h)
                     self.pending_incremental = True
-                    if not self.args.repaint:
+                    if self.args.bench_page:
+                        self.bench_flush(conn)
+                    elif not self.args.repaint:
                         self.pending_incremental = False
                 else:
                     self.pending_incremental = False
@@ -883,6 +983,8 @@ class MockServer:
                 down = data[1]
                 keysym = struct.unpack(">I", data[4:8])[0]
                 log("INPUT KeyEvent down=%d keysym=0x%x" % (down, keysym))
+                if self.args.bench_page and down:
+                    self.bench_key(conn, keysym)
             elif t == 5:
                 mask = data[1]
                 x, y = struct.unpack(">HH", data[2:6])
@@ -890,6 +992,46 @@ class MockServer:
             elif t == 6:
                 length = struct.unpack(">I", data[4:8])[0]
                 log("INPUT ClientCutText len=%d" % length)
+
+    def bench_key(self, conn, keysym):
+        """Home resets the bench page to step 0, Page Down moves one step on (at most 15)."""
+        bench = self.fb.bench
+        if keysym == KEY_HOME:
+            step = 0
+        elif keysym == KEY_PAGE_DOWN:
+            step = min(len(BENCH_SCRIPT), bench.step + 1)
+        else:
+            return
+        rect = bench.apply(step)
+        if rect is None:
+            log("BENCH step=%d region=none" % step)
+            return
+        log("BENCH step=%d region=%d,%d,%d,%d" % ((step,) + rect))
+        d = self.bench_dirty
+        if d is not None:  # a change still waiting for a request: merge
+            x0, y0 = min(d[0], rect[0]), min(d[1], rect[1])
+            rect = (x0, y0, max(d[0] + d[2], rect[0] + rect[2]) - x0,
+                    max(d[1] + d[3], rect[1] + rect[3]) - y0)
+        self.bench_dirty = rect
+        self.bench_flush(conn)
+
+    def bench_flush(self, conn):
+        """Sends the pending changed rect (clipped to the request) if a request is waiting."""
+        if self.bench_dirty is None or not self.pending_incremental:
+            return
+        dx, dy, dw, dh = self.bench_dirty
+        rx, ry, rw, rh = self.requested
+        x0, y0 = max(dx, rx), max(dy, ry)
+        x1, y1 = min(dx + dw, rx + rw, self.fb.w), min(dy + dh, ry + rh, self.fb.h)
+        if x1 <= x0 or y1 <= y0:
+            return
+        self.bench_dirty = None
+        self.pending_incremental = False
+        eid = {"raw": RAW, "rre": RRE, "hextile": HEXTILE, "trle": TRLE,
+               "zrle": ZRLE, "tight": TIGHT, "mixed": RAW,
+               "copyrect": RAW}[self.args.encoding]
+        rect = self._rect(eid, x0, y0, x1 - x0, y1 - y0, self.encoders)
+        conn.sock.sendall(bytes([0, 0]) + struct.pack(">H", 1) + rect)
 
     def input_during_send(self, conn):
         """Between two pieces of an update: logs the key and pointer events that arrived (so a
@@ -1071,6 +1213,10 @@ def main():
                     help="with --resize-after: resize only once; later connections get the new size")
     ap.add_argument("--alt-pattern", default=None, choices=["quadrants", "gradient", "checker"],
                     help="the pattern SIGUSR1 switches to")
+    ap.add_argument("--bench-page", action="store_true",
+                    help="simulate tools/bench-page.html: Home resets to step 0, Page Down moves "
+                         "one step on; the change is sent to the pending incremental request "
+                         "(or the next one) and logged as BENCH step=<k> region=<x>,<y>,<w>,<h>")
     ap.add_argument("--input-during-send", action="store_true",
                     help="with --split: log key and pointer events that arrive while an update is "
                          "still being sent (and UPDATE_SENT once a full update is out)")
