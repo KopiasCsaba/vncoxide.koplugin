@@ -40,6 +40,7 @@ share no code, but credit is due for the design ideas.
    * [Highlights](#highlights)
    * [Installation](#installation)
    * [Quick start](#quick-start)
+   * [Recommended setup: a dedicated virtual screen](#recommended-setup-a-dedicated-virtual-screen)
    * [Compatibility](#compatibility)
    * [Security](#security)
    * [Development and testing](#development-and-testing)
@@ -142,18 +143,46 @@ See the [User Guide](docs/USER_GUIDE.md) for gestures, the toolbar, keyboard pan
 settings and troubleshooting.
 
 ---
+## Recommended setup: a dedicated virtual screen
 
-## Compatibility
+Sharing your whole desktop with an e-reader is rarely practical: the reader's resolution and
+aspect ratio differ from your monitor's, so you end up panning around a large, tiny-text image.
+A better approach is to give the reader **its own screen**.
 
-1. **Protocol:** RFB 3.8, with security type *None* or *VNC Authentication*.
-2. **Encodings:**
-   1. ZRLE, TRLE, Hextile, RRE, CopyRect and Raw (all of RFC 6143);
-   2. Tight, including JPEG (opt-in per connection);
-   3. DesktopSize and the quality and compression pseudo-encodings.
-3. **Not supported:** TLS, VeNCrypt and SASL. Servers that require them cannot be used.
+[tools/screen-tools](tools/screen-tools) contains scripts for Debian-based Xorg systems that add a
+virtual monitor sized for your reader and serve only that monitor over VNC. When you stop the
+scripts, the virtual monitor is removed again.
+
+Why this works well:
+
+1. **The reader becomes an extra display.** Drag any window onto the virtual screen and it
+   appears on the reader; drag it back and it disappears. Your main monitors stay private.
+2. **Fullscreen just works.** An application maximised or made fullscreen on the virtual screen
+   fills the reader's display exactly.
+3. **No panning or zooming.** The virtual screen matches the reader's aspect ratio, so the whole
+   area is visible at once and the viewer is smoother to use.
+4. **Readable sizes with the `_halfsize` presets.** A 1:1 resolution usually makes text and
+   buttons too small on a 6–10" e-ink panel. The `_halfsize` profiles create a screen at half the
+   reader's resolution, which the reader scales up, so applications appear twice as large and
+   remain comfortable to read and tap.
+
+Ready-made profiles for common devices are in
+[tools/screen-tools/profiles](tools/screen-tools/profiles) (e.g. `pb700_portrait_halfsize`).
+
+**Requirements:** `xrandr`, `cvt` and TigerVNC's `x0vncserver` (>= 1.16); `sudo` may be needed
+once to load the `vkms` kernel module.
+
+**Setup:**
+
+```sh
+cd tools/screen-tools
+cp .env.example .env    # pick a PROFILE and adjust settings
+./start.sh              # or: ./start.sh <profile>; run ./start.sh -h to list profiles
+```
+
+Then connect to the computer from the reader as described in [Quick start](#quick-start).
 
 ---
-
 ## Security
 
 VNC is not encrypted, and VNC Authentication is a weak scheme based on DES. Passwords are stored
