@@ -236,47 +236,54 @@ decoder code itself, which the decode worker runs after the fork; the picture be
 (vncoxide/benchmark.lua creates its own sessions without the flag, so it measures one process's
 decode and draw; a test asserts it).
 
-Picture benchmark. vncoxide/benchmark.lua measures combinations (see its header); the UI is
-Dialogs.picture_benchmark, behind "Find fastest picture settings" in the per-connection dialog:
-intro ConfirmBox (Start/Cancel) -> a non-dismissable ButtonDialog whose title shows
-"<run>/<total> (pass <p>/2): <label> — <phase>" (setTitle on every on_progress) with Cancel (bench:cancel()) ->
-Dialogs.benchmark_results, a monospace TextViewer (Dialogs.benchmark_table: label line, figures
-indented below so narrow screens do not wrap columns). Apply best copies the stored profile,
-replaces only the four picture fields with the top scored row's and calls VNC:save_profile (a full
-copy because save_profile does not keep an omitted password). Every way out returns to the
-per-connection dialog. The draw canvas is VNC:benchmark_canvas: the open viewer's canvas, else the
+Picture benchmark. vncoxide/benchmark.lua measures combinations (see its header); the user opens
+tools/bench-page.html full screen on the PC and gives it the keyboard focus, and the engine sends
+Page Down (0xff56) to move the page through Benchmark.SCRIPT, 15 steps, 3 of each category (photo,
+text, scroll, small, flip), and Home (0xff50) to reset it to step 0 before each run. A step is timed
+from the key-down until its last update is drawn (no further update for Benchmark.QUIET), so a
+change sent in several FramebufferUpdates is one step; the page already at step 0 when Home is sent
+still completes the reset after RESET_SETTLE. The progress for a step is reported one tick before
+its key, so the e-ink refresh of the progress title is not measured, and the draw uses the viewer's
+dither flag (canvas.dither, BB8 screen plus Screen.sw_dithering).
+Scores: per category the median step time over both passes (cat_ms); round_s is the sum of the 5
+medians in seconds; speed_pct is the geometric mean over the categories of best_ms / own_ms, x100
+(100 = fastest). Benchmark._rank: a row within 0.95 of its group leader's speed_pct shares the
+leader's rank (1, 1, 3 ...); within a group lossless (no JPEG, depth >= 16) before JPEG before
+8-bit, then fewer bytes; failed rows last, rank nil.
+The UI is Dialogs.picture_benchmark(plugin, profile, on_back, opts), behind "Find fastest picture
+settings" in the per-connection dialog and "Test speed with these settings…" in the editor: an
+intro ConfirmBox (Start/Cancel) with the steps on the PC (open the page, F11, click into it, don't
+touch the PC for about 4 minutes) -> a non-dismissable ButtonDialog whose title shows
+"<run>/<total> (pass <p>/2): <label> — <phase>" (phase: connecting, resetting the page, step k/15;
+setTitle on every on_progress) with the fixed reminder "Keep the test page focused. Don't touch the
+PC." under it (an added TextBoxWidget with parent = the dialog, so ButtonDialog:reinit keeps it)
+and Cancel (bench:cancel()) -> vncoxide/benchresults.lua cards. Tapping a scored card asks "Use
+<label>?" at once (the cards give no tap feedback of their own); Use closes the cards and applies
+the row: by default it copies the stored profile, replaces only the four picture fields and calls
+VNC:save_profile (a full copy because save_profile does not keep an omitted password), then says
+"Saved: ..."; Cancel returns to the cards. on_done(results, stop): stop.reason "connect" (a
+combination failed before its handshake: refused, timeout, auth/security, Wi-Fi) shows "Could not
+connect: <reason>"; "no_response" (the first step of a run got no update within STEP_TIMEOUT: page
+not focused, wrong window) says what to check and offers Try again, a new run without the intro.
+Failures after connecting (rejected format, "screen did not settle", a later step without update)
+fail only that run and show on its card. Every way out returns to where the benchmark was opened.
+The editor's button validates host and port with Save's helper (same messages), benchmarks the
+typed fields (opts.unsaved; an empty name runs as "New connection") and passes opts.on_pick, which
+copies the four fields into the editor's picture choice and relabels the Picture button; nothing is
+stored until Save. The draw canvas is VNC:benchmark_canvas: the open viewer's canvas, else the
 screen in the viewer's remembered orientation without the keyboard; both fitted zoom modes are
-measured as "fit". Tests inject a fake engine through Dialogs.Benchmark. The engine reports the
-"tiles" phase from its next tick rather than from the session's callbacks, so a cancel() from
-on_progress never disconnects a session from inside its own callback; an unexpected Lua error in a
-tick, start(), the connect callback or the draw ends that combination as failed
-(Benchmark:_guarded, and a pcall around the draw sink).
+measured as "fit". Tests inject a fake engine through Dialogs.Benchmark.
 For the whole run the engine detaches every attached session it gets as opts.sessions (the UI
 passes plugin.sessions, so the open viewer's too), so their polling, decoding and drawing do not
 skew the scores, and re-attaches exactly those, with their app, when the run finishes, is
-cancelled or errors (attach requests the full update that resyncs them). A combination that fails
-before its handshake completes (refused, timeout, auth/security, Wi-Fi) ends the whole run:
-on_done(results, connect_error), and the UI shows "Could not connect: <reason>" instead of the
-table. Failures after connecting (rejected format, mid-phase error) fail only that run.
+cancelled or errors (attach requests the full update that resyncs them). An unexpected Lua error in
+a tick, start(), the connect callback or the draw fails that run (Benchmark:_guarded).
 Two passes (Benchmark.PASSES): the list in order, then reversed, each run reconnecting; on the
 Era (1264x1680) per-request overhead varied 0-90 ms between combinations with no pattern and the
-last ones scored best, so one pass let order and Wi-Fi jitter decide the ranking. Each
-combination's samples from both passes are pooled and scored by medians (Benchmark._score, pure,
-unit-tested); a failure in either pass makes the row failed, "failed in pass N: <reason>" from the
-first failure (shown as is, not prefixed "failed: " again). Result rows ("%.1f Mpx/s · %d ms ·
-%d ms · %d KB": tile median, full-frame median, KB per full frame; the intro line names the
-columns) must fit one line of the monospace TextViewer on the Era: the photo's old row, which
-wrapped there, measures about 0.97 of the emulated 1264x1680 text width, so ui_smoke holds the
-worst case to 0.85 of it (and checks the old row exceeds that).
-The benchmark session polls every 5 ms while a request is in flight (see the vncoxide/benchmark.lua
-header). It needs no changing content: every request is non-incremental (3 whole-screen ones, the first a
-warm-up, then the 16 tiles of a 4x4 grid, one at a time, the held incremental request settled by
-each), so the server re-encodes and re-sends identical pixels every time and every combination
-gets the same pixel counts on a still screen. Each request is timed from sending (flushed at once)
-until its update is decoded and drawn; the main score is the tiles' pixels per second, the closest
-to everyday small updates. The "tiles" progress is reported one tick before the first tile is
-requested, so the e-ink refresh of the progress title is not measured, and the draw uses the
-viewer's dither flag (canvas.dither, BB8 screen plus Screen.sw_dithering).
+last ones scored best, so one pass let order and Wi-Fi jitter decide the ranking. A failure in
+either pass makes the row failed, "failed in pass N: <reason>" from the first failure (shown as
+is, not prefixed "failed: " again). The benchmark session polls every 5 ms while a step is in
+flight (see the vncoxide/benchmark.lua header).
 
 Taps always click the remote (outside the toolbar). The plugin ignores KOReader's "activate menu on
 tap" preference and shows/hides the toolbar on a swipe down in KOReader's menu zone instead; under

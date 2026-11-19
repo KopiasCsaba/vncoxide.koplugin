@@ -2770,7 +2770,10 @@ end)
 -- ---------------------------------------------------------------- find fastest picture settings
 
 local BENCH_BUTTON = "Find fastest picture settings"
-local BENCH_INTRO = "Tries 11 picture-setting combinations on this connection, twice each, in opposite order, a few seconds per try.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end."
+local BENCH_INTRO = "This test presses keys on your PC and times how fast each change reaches this screen.\n\nOn the PC:\n1. Open the test page bench-page.html from the plugin's tools folder in a browser.\n2. Make it full screen (F11) on the shared screen.\n3. Click once into the page so it has the keyboard focus.\n\nDuring the test (about 4 minutes) don't touch the PC: Page Down and Home are sent to the page.\n\nNothing is saved unless you pick a result at the end."
+local BENCH_REMINDER = "Keep the test page focused. Don't touch the PC."
+local BENCH_NO_RESPONSE = "The PC screen did not change after a key press.\n\nCheck that the test page is open full screen on the shared screen and click once into it, then try again."
+local EDITOR_BENCH_BUTTON = "Test speed with these settings…"
 
 --- A stand-in for vncoxide/benchmark: records what the UI asks of it; the test drives the callbacks.
 local FakeBench = { instances = {} }
@@ -2786,16 +2789,30 @@ function FakeBench:cancel() self.cancelled = true end
 local function bench_combo(depth, tight, compr, jpeg, label)
     return { color_depth = depth, enable_tight = tight, compress_level = compr, jpeg_quality = jpeg, label = label }
 end
+local function bench_cat_ms(base)
+    return { photo = base * 3, text = base * 2, scroll = base, small = base / 2, flip = base * 3 }
+end
 local BENCH_RESULTS = {
-    { combination = bench_combo(8, true, 2, false, "8-bit, Tight, compr. 2"), ok = true,
-      tile_px_per_s = 3456789, full_px_per_s = 900000, tile_ms = 12.4, full_ms = 812.6, full_bytes = 204800 },
-    { combination = bench_combo(24, false, false, false, "24-bit, Tight off"), ok = true,
-      tile_px_per_s = 1000000, full_px_per_s = 5000000, tile_ms = 40, full_ms = 95, full_bytes = 1048576 },
+    { combination = bench_combo(8, true, 2, false, "8-bit, Tight, compr. 2"), ok = true, rank = 1,
+      speed_pct = 100, round_s = 0.95, bytes = 20000, cat_ms = bench_cat_ms(100) },
+    { combination = bench_combo(24, false, false, false, "24-bit, Tight off"), ok = true, rank = 1,
+      speed_pct = 97, round_s = 0.98, bytes = 90000, cat_ms = bench_cat_ms(103) },
     { combination = bench_combo(16, false, false, false, "16-bit, Tight off"), ok = false,
-      error = "no update within 15 s" },
+      error = "no update within 5 s after step 3" },
     { combination = bench_combo(24, true, 2, 4, "24-bit, Tight, compr. 2, JPEG 4"), ok = false,
       error = "failed in pass 2: server refused the format" },
 }
+local PICTURE_KEYS = { "color_depth", "enable_tight", "jpeg_quality", "compress_level" }
+
+local function is_cards(w) return w ~= nil and w.name == "VNCBenchResults" end
+--- The editor on top, under its own keyboard when that is shown.
+local function expect_editor_on_top(editor, what)
+    local s = stack()
+    local t = s[#s]
+    if t and t.name == "VirtualKeyboard" then t = s[#s - 1] end
+    assert_true(t == editor, string.format("expected %s on top, stack: %s", what, stack_desc()))
+end
+local function is_progress(w) return w ~= nil and w.title and w.title:find("(pass ", 1, true) ~= nil end
 
 --- Opens the Connect/Edit/Delete dialog for `good` with the fake benchmark injected.
 local function open_bench_actions()
@@ -2807,21 +2824,32 @@ local function open_bench_actions()
     UIManager:show(actions)
     return actions
 end
-local function viewer_buttons(viewer)
-    local out = {}
-    for _, row in ipairs(viewer.buttons_table or {}) do
-        for _, btn in ipairs(row) do out[btn.text] = btn end
-    end
-    return out
-end
 --- Taps the button, Start in the intro, and returns the fake benchmark and the progress dialog.
 local function start_bench()
     find_button(top(), BENCH_BUTTON).callback()
     answer_confirm(top(), true)
     return FakeBench.instances[#FakeBench.instances], top()
 end
+local function reset_good()
+    store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, password = "pw", color_depth = 16,
+        enable_tight = false, jpeg_quality = false, compress_level = false }, "good")
+end
+local function copy_of(t)
+    local out = {}
+    for k, v in pairs(t) do out[k] = v end
+    return out
+end
+--- The texts of the widgets added under a ButtonDialog's title, as laid out now.
+local function added_texts(dialog)
+    local out = {}
+    local group = dialog.title_group and dialog.title_group[1]
+    for _, w in ipairs(group or {}) do
+        if w.parent == dialog and w.text then out[#out + 1] = w.text end
+    end
+    return out
+end
 
-check("bench_button_and_intro_text", function()
+check("bench_intro_text", function()
     open_bench_actions()
     find_button(top(), BENCH_BUTTON).callback()
     local intro = top()
@@ -2832,6 +2860,7 @@ check("bench_button_and_intro_text", function()
     answer_confirm(intro, false)
     expect_top(is_actions, "the actions dialog after Cancel in the intro")
     assert_true(#FakeBench.instances == 0, "Cancel in the intro starts nothing")
+    UIManager:close(top())
     require("vncoxide/dialogs").Benchmark = nil
 end)
 
@@ -2842,6 +2871,7 @@ check("bench_start_shows_progress_and_cancel_returns", function()
     assert_true(bench and bench.started, "Start starts the benchmark")
     local o = bench.opts
     assert_true(o.profile.name == "good" and o.profile.host == before.host, "the stored profile is benchmarked")
+    assert_true(o.profile ~= before, "on a copy")
     assert_true(o.combinations == nil, "the default combinations are used")
     assert_true(o.canvas.w > 0 and o.canvas.h > 0 and o.canvas.bb_type == Screen.bb:getType(),
         "canvas from the screen")
@@ -2849,22 +2879,219 @@ check("bench_start_shows_progress_and_cancel_returns", function()
     assert_true(o.sessions == plugin.sessions, "the plugin's sessions are handed over, to be detached for the run")
     assert_true(find_button(progress, "Cancel"), "progress has Cancel")
     assert_true(progress.dismissable == false, "the progress dialog is not dismissed by a stray tap")
-    o.on_progress(3, 22, "16-bit, Tight off", "full", 1, 2)
-    assert_true(top() == progress, "progress stays on top")
-    assert_true(progress.title == "3/22 (pass 1/2): 16-bit, Tight off — full screen", "progress text: " .. tostring(progress.title))
     o.on_progress(4, 22, "16-bit, Tight, compr. 1", "connect", 1, 2)
+    assert_true(top() == progress, "progress stays on top")
     assert_true(progress.title == "4/22 (pass 1/2): 16-bit, Tight, compr. 1 — connecting", "progress text: " .. tostring(progress.title))
-    o.on_progress(15, 22, "16-bit, Tight, compr. 1", "tiles", 2, 2)
-    assert_true(progress.title == "15/22 (pass 2/2): 16-bit, Tight, compr. 1 — small pieces", "progress text: " .. tostring(progress.title))
+    o.on_progress(15, 22, "16-bit, Tight, compr. 1", "reset", 2, 2)
+    assert_true(progress.title == "15/22 (pass 2/2): 16-bit, Tight, compr. 1 — resetting the page", "progress text: " .. tostring(progress.title))
     find_button(progress, "Cancel").callback()
     assert_true(bench.cancelled, "Cancel cancels the benchmark")
     expect_top(is_actions, "the actions dialog after Cancel")
     for _, w in ipairs(stack()) do assert_true(w ~= progress, "progress still on the stack") end
     local after = store:get_profile("good")
-    for _, k in ipairs{ "color_depth", "enable_tight", "jpeg_quality", "compress_level" } do
+    for _, k in ipairs(PICTURE_KEYS) do
         assert_true(after[k] == before[k], "cancel must not change " .. k)
     end
+    UIManager:close(top())
     require("vncoxide/dialogs").Benchmark = nil
+end)
+
+check("bench_progress_title_and_reminder", function()
+    open_bench_actions()
+    local bench, progress = start_bench()
+    assert_true(is_progress(progress) or progress.title == "Starting…", "the progress dialog: " .. stack_desc())
+    local texts = added_texts(progress)
+    assert_true(#texts == 1 and texts[1] == BENCH_REMINDER, "the reminder before any progress: " .. table.concat(texts, "|"))
+    bench.opts.on_progress(3, 22, "16-bit, Tight off", "steps", 1, 2, 7, 15)
+    assert_true(progress.title == "3/22 (pass 1/2): 16-bit, Tight off — step 7/15", "progress text: " .. tostring(progress.title))
+    texts = added_texts(progress)
+    assert_true(#texts == 1 and texts[1] == BENCH_REMINDER, "the reminder stays under the new title: " .. table.concat(texts, "|"))
+    find_button(progress, "Cancel").callback()
+    UIManager:close(top())
+    require("vncoxide/dialogs").Benchmark = nil
+end)
+
+check("bench_cards_shown_and_pick_saves", function()
+    reset_good()
+    local before = copy_of(store:get_profile("good"))
+    open_bench_actions()
+    local bench, progress = start_bench()
+    bench.opts.on_done(BENCH_RESULTS)
+    local cards = top()
+    assert_true(is_cards(cards), "the result cards: " .. stack_desc())
+    assert_true(cards.rows == BENCH_RESULTS, "the ranked rows as given")
+    for _, w in ipairs(stack()) do assert_true(w ~= progress, "progress closed") end
+
+    -- Cancel in the confirmation: back to the cards, nothing saved
+    cards.cards[2]:onTapCard()
+    local confirm = top()
+    assert_true(confirm.ok_callback and confirm.text == "Use 24-bit, Tight off?", "the confirmation: " .. tostring(confirm.text))
+    assert_true(confirm.ok_text == "Use" and confirm.cancel_text == "Cancel", "Use/Cancel buttons")
+    answer_confirm(confirm, false)
+    assert_true(top() == cards, "Cancel returns to the cards: " .. stack_desc())
+    assert_true(store:get_profile("good").color_depth == before.color_depth, "Cancel saves nothing")
+
+    -- Use: the row's four picture fields, nothing else
+    cards.cards[2]:onTapCard()
+    answer_confirm(top(), true)
+    local after = store:get_profile("good")
+    for _, k in ipairs(PICTURE_KEYS) do
+        assert_true(after[k] == BENCH_RESULTS[2].combination[k], "row 2's " .. k .. " is saved: " .. tostring(after[k]))
+    end
+    for k, v in pairs(before) do
+        local picture = false
+        for _, pk in ipairs(PICTURE_KEYS) do if k == pk then picture = true end end
+        if not picture then assert_true(after[k] == v, "Use changed " .. k) end
+    end
+    for k in pairs(after) do assert_true(before[k] ~= nil or after[k] == nil, "Use added " .. k) end
+    local info = top()
+    assert_true(info.text == "Saved: 24-bit, Tight off. Takes effect on the next connection.",
+        "saved message: " .. tostring(info.text))
+    UIManager:close(info)
+    expect_top(is_actions, "the actions dialog under the message")
+    assert_true(count(is_cards) == 0, "the cards are closed")
+    UIManager:close(top())
+    reset_good()
+    require("vncoxide/dialogs").Benchmark = nil
+end)
+
+check("bench_cards_close_returns_without_saving", function()
+    reset_good()
+    open_bench_actions()
+    start_bench().opts.on_done(BENCH_RESULTS)
+    local cards = top()
+    assert_true(is_cards(cards), "the result cards: " .. stack_desc())
+    find_button(cards, "Close").callback()
+    expect_top(is_actions, "the actions dialog after Close")
+    assert_true(store:get_profile("good").color_depth == 16, "Close saves nothing")
+    UIManager:close(top())
+    require("vncoxide/dialogs").Benchmark = nil
+end)
+
+check("bench_no_response_offers_retry", function()
+    open_bench_actions()
+    local bench, progress = start_bench()
+    bench.opts.on_done({}, { reason = "no_response", error = "no update within 5 s" })
+    local box = top()
+    assert_true(box.ok_callback and box.text == BENCH_NO_RESPONSE, "the no-response box: " .. tostring(box.text))
+    assert_true(box.ok_text == "Try again" and box.cancel_text == "Cancel", "Try again/Cancel buttons")
+    for _, w in ipairs(stack()) do assert_true(w ~= progress, "progress closed") end
+    answer_confirm(box, true)
+    assert_true(#FakeBench.instances == 2 and FakeBench.instances[2].started, "Try again starts a new run")
+    local progress2 = top()
+    assert_true(progress2 ~= progress and find_button(progress2, "Cancel"), "a new progress dialog, no intro: " .. stack_desc())
+    assert_true(progress2.text ~= BENCH_INTRO, "no intro again")
+    FakeBench.instances[2].opts.on_done({}, { reason = "no_response", error = "no update within 5 s" })
+    answer_confirm(top(), false)
+    expect_top(is_actions, "the actions dialog after Cancel")
+    assert_true(#FakeBench.instances == 2, "Cancel starts nothing")
+    UIManager:close(top())
+    require("vncoxide/dialogs").Benchmark = nil
+end)
+
+check("bench_connect_failure_shows_reason", function()
+    open_bench_actions()
+    local bench, progress = start_bench()
+    bench.opts.on_done({ { combination = BENCH_RESULTS[2].combination, ok = false, error = "refused" } },
+        { reason = "connect", error = "refused" })
+    local info = top()
+    assert_true(info.text == "Could not connect: refused", "connect failure message: " .. stack_desc())
+    for _, w in ipairs(stack()) do
+        assert_true(w ~= progress, "progress closed")
+        assert_true(not is_cards(w), "no result cards on a connect failure")
+    end
+    UIManager:close(info)
+    expect_top(is_actions, "the actions dialog under the message")
+    UIManager:close(top())
+    require("vncoxide/dialogs").Benchmark = nil
+end)
+
+check("editor_bench_button_fills_picture", function()
+    local Dialogs = require("vncoxide/dialogs")
+    reset_good()
+    local before = copy_of(store:get_profile("good"))
+    Dialogs.Benchmark = FakeBench
+    FakeBench.instances = {}
+    plugin.sessions = {}
+    local backs = 0
+    local editor = Dialogs.edit_profile(plugin, store:get_profile("good"), { on_back = function() backs = backs + 1 end })
+    local row
+    for _, r in ipairs(editor.buttons) do
+        if #r == 1 and r[1].id == "bench" then row = r end
+    end
+    assert_true(row and row[1].text == EDITOR_BENCH_BUTTON, "a full-width bench row")
+    assert_true(editor.buttons[2] == row, "right under the Picture button")
+    editor.input_fields[4]:setText("typed-pw")   -- typed, not saved
+    find_button(editor, EDITOR_BENCH_BUTTON).callback()
+    assert_true(not editor:isKeyboardVisible(), "the keyboard makes way")
+    local intro = top()
+    assert_true(intro.text == BENCH_INTRO, "the same intro: " .. stack_desc())
+    answer_confirm(intro, true)
+    local bench = FakeBench.instances[1]
+    assert_true(bench and bench.started, "the run starts")
+    local p = bench.opts.profile
+    assert_true(p.name == "good" and p.host == "127.0.0.1" and p.port == 5900 and p.password == "typed-pw",
+        "the typed fields are benchmarked")
+    assert_true(p.color_depth == 16 and p.enable_tight == false, "with the editor's picture choice")
+
+    bench.opts.on_done(BENCH_RESULTS)
+    local cards = top()
+    assert_true(is_cards(cards), "the result cards: " .. stack_desc())
+    cards.cards[1]:onTapCard()
+    assert_true(top().text == "Use 8-bit, Tight, compr. 2?", "the confirmation: " .. tostring(top().text))
+    answer_confirm(top(), true)
+    expect_editor_on_top(editor, "the editor after Use")
+    assert_true(editor:isKeyboardVisible(), "the keyboard is back")
+    for _, w in ipairs(stack()) do
+        assert_true(not (w.text and w.text:find("^Saved:")), "no Saved message from the editor")
+    end
+    local want = Dialogs.picture_summary(BENCH_RESULTS[1].combination)
+    assert_true(want == "Picture: 8-bit, Tight, compr. 2", "the summary: " .. want)
+    assert_true(picture_button(editor).text == want, "the Picture button shows the pick: " .. picture_button(editor).text)
+    assert_true(editor.button_table:getButtonById("picture").text == want, "on the drawn button too")
+    local stored = store:get_profile("good")
+    for k, v in pairs(before) do assert_true(stored[k] == v, "nothing stored before Save: " .. k) end
+
+    find_button(editor, "Save").callback()
+    stored = store:get_profile("good")
+    for _, k in ipairs(PICTURE_KEYS) do
+        assert_true(stored[k] == BENCH_RESULTS[1].combination[k], "Save stores " .. k)
+    end
+    assert_true(backs == 1, "Save returns once")
+    reset_good()
+    Dialogs.Benchmark = nil
+end)
+
+check("editor_bench_validates_fields", function()
+    local Dialogs = require("vncoxide/dialogs")
+    Dialogs.Benchmark = FakeBench
+    FakeBench.instances = {}
+    plugin.sessions = {}
+    local editor = Dialogs.edit_profile(plugin, nil, {})
+    editor.input_fields[1]:setText("x")
+    find_button(editor, EDITOR_BENCH_BUTTON).callback()
+    assert_true(top().text == "Please enter a host name or IP address.", "empty host: " .. tostring(top().text))
+    UIManager:close(top())
+    editor.input_fields[2]:setText("10.0.0.9")
+    editor.input_fields[3]:setText("70000")
+    find_button(editor, EDITOR_BENCH_BUTTON).callback()
+    assert_true(top().text == "The port must be a number between 1 and 65535.", "bad port: " .. tostring(top().text))
+    UIManager:close(top())
+    expect_editor_on_top(editor, "the editor after the messages")
+    assert_true(#FakeBench.instances == 0, "nothing started on invalid fields")
+    -- an empty name is fine for a test
+    editor.input_fields[1]:setText("")
+    editor.input_fields[3]:setText("")
+    find_button(editor, EDITOR_BENCH_BUTTON).callback()
+    answer_confirm(top(), true)
+    local p = FakeBench.instances[1] and FakeBench.instances[1].opts.profile
+    assert_true(p and p.name == "New connection" and p.host == "10.0.0.9" and p.port == 5900,
+        "an unnamed connection runs with the default port")
+    assert_true(store:get_profile("New connection") == nil, "nothing stored")
+    find_button(top(), "Cancel").callback()
+    expect_editor_on_top(editor, "the editor after Cancel")
+    find_button(editor, "Cancel").callback()
+    Dialogs.Benchmark = nil
 end)
 
 check("bench_canvas_follows_zoom_scaling_and_orientation", function()
@@ -2902,126 +3129,6 @@ check("bench_canvas_follows_zoom_scaling_and_orientation", function()
     plugin.app = real_app
     for k, v in pairs(saved) do store:set_setting(k, v) end
 end)
-
-check("bench_results_table_and_apply_best", function()
-    store:save_profile({ name = "good", host = "127.0.0.1", port = 5900, password = "pw", color_depth = 16,
-        enable_tight = false, jpeg_quality = false, compress_level = false }, "good")
-    local before = {}
-    for k, v in pairs(store:get_profile("good")) do before[k] = v end
-    open_bench_actions()
-    local bench = start_bench()
-    bench.opts.on_done(BENCH_RESULTS)
-    local viewer = top()
-    assert_true(viewer.title == "Picture benchmark", "results viewer: " .. stack_desc())
-    assert_true(viewer.monospace_font == true, "monospace table")
-    for _, w in ipairs(stack()) do assert_true(not (w.title and w.title:find("(pass ", 1, true)), "progress closed") end
-    local text = viewer.text
-    local p1 = text:find("1. 8-bit, Tight, compr. 2", 1, true)
-    local p2 = text:find("2. 24-bit, Tight off", 1, true)
-    local p3 = text:find("16-bit, Tight off", 1, true)
-    local p4 = text:find("24-bit, Tight, compr. 2, JPEG 4", 1, true)
-    assert_true(p1 and p2 and p3 and p4 and p1 < p2 and p2 < p3 and p3 < p4, "rows in order:\n" .. text)
-    for _, want in ipairs{ "\n   3.5 Mpx/s · 12 ms · 813 ms · 200 KB\n",
-                           "\n   1.0 Mpx/s · 40 ms · 95 ms · 1024 KB\n",
-                           "\n   failed: no update within 15 s\n", "\n   failed in pass 2: server refused the format" } do
-        assert_true(text:find(want, 1, true), "missing " .. want .. " in:\n" .. text)
-    end
-    assert_true(not text:find("failed: failed", 1, true), "the engine's \"failed in pass N\" is not prefixed again:\n" .. text)
-    assert_true(text:sub(1, text:find("\n", 1, true) - 1) == "Fastest first. Each row: screen pixels per second in small pieces · time per piece · time per full screen · size of a full screen; decoding and drawing included. Medians over two runs.",
-        "results intro:\n" .. text)
-    local buttons = viewer_buttons(viewer)
-    assert_true(buttons["Apply best"] and buttons["Close"], "Apply best and Close")
-    buttons["Apply best"].callback()
-    local after = store:get_profile("good")
-    assert_true(after.color_depth == 8 and after.enable_tight == true and after.compress_level == 2
-        and after.jpeg_quality == false, "the best row's picture fields are saved")
-    for k, v in pairs(before) do
-        if k ~= "color_depth" and k ~= "enable_tight" and k ~= "compress_level" and k ~= "jpeg_quality" then
-            assert_true(after[k] == v, "Apply best changed " .. k)
-        end
-    end
-    for k in pairs(after) do assert_true(before[k] ~= nil or after[k] == nil, "Apply best added " .. k) end
-    local info = top()
-    assert_true(info.text == "Saved: 8-bit, Tight, compr. 2. Takes effect on the next connection.",
-        "saved message: " .. tostring(info.text))
-    UIManager:close(info)
-    expect_top(is_actions, "the actions dialog under the message")
-    for _, w in ipairs(stack()) do assert_true(w ~= viewer, "results viewer closed") end
-    require("vncoxide/dialogs").Benchmark = nil
-end)
-
-check("bench_results_rows_fit_one_line_on_era_portrait", function()
-    -- the PocketBook Era's 1264x1680 portrait frame (KOReader scales fonts by the screen size)
-    local saved_bb = Screen.bb
-    local era = require("ffi/blitbuffer").new(1264, 1680, saved_bb:getType())
-    Screen.bb = era
-    local ok, err = pcall(function()
-        local Dialogs = require("vncoxide/dialogs")
-        local worst = { combination = bench_combo(24, true, 2, 4, "24-bit, Tight, compr. 2, JPEG 4"), ok = true,
-            tile_px_per_s = 10e6, full_px_per_s = 1e6, tile_ms = 999, full_ms = 9999, full_bytes = 9999 * 1024 }
-        local results = { worst, BENCH_RESULTS[1], BENCH_RESULTS[2] }
-        local text = Dialogs.benchmark_table(results)
-        local worst_line = "   10.0 Mpx/s · 999 ms · 9999 ms · 9999 KB"
-        assert_true(text:find("\n" .. worst_line .. "\n", 1, true), "worst case row:\n" .. text)
-        local viewer = Dialogs.benchmark_results(plugin, "good", results, function() end)
-        local box = viewer.box_widget
-        assert_true(box and box.face and box.width > 0, "the viewer's text box")
-        local RenderText = require("ui/rendertext")
-        local function share(line) return RenderText:sizeUtf8Text(0, box.width, box.face, line).x / box.width end
-        -- calibrated on the device: this row (about 0.97 of the emulated width) wrapped in the photo,
-        -- so the device has less room than the emulation; 0.85 keeps a margin below that
-        local LIMIT = 0.85
-        local photo = share("   2.1 Mpx/s small  63 ms/tile  full 998 ms  648 KB/full")
-        assert_true(photo > LIMIT, string.format("the photo's wrapped row measures %.3f, the limit would not catch it", photo))
-        local w = share(worst_line)
-        assert_true(w <= LIMIT, string.format("%q takes %.3f of the text area (limit %.2f)", worst_line, w, LIMIT))
-        viewer:free()
-    end)
-    Screen.bb = saved_bb
-    era:free()
-    assert_true(ok, err)
-end)
-
-check("bench_results_close_returns_without_saving", function()
-    local before = store:get_profile("good").color_depth
-    open_bench_actions()
-    start_bench().opts.on_done(BENCH_RESULTS)
-    viewer_buttons(top())["Close"].callback()
-    expect_top(is_actions, "the actions dialog after Close")
-    assert_true(store:get_profile("good").color_depth == before, "Close saves nothing")
-    require("vncoxide/dialogs").Benchmark = nil
-end)
-
-check("bench_nothing_scored_has_no_apply", function()
-    open_bench_actions()
-    start_bench().opts.on_done({ BENCH_RESULTS[3], BENCH_RESULTS[4] })
-    local viewer = top()
-    assert_true(viewer.title == "Picture benchmark", "results viewer: " .. stack_desc())
-    local buttons = viewer_buttons(viewer)
-    assert_true(not buttons["Apply best"] and buttons["Close"], "no Apply best when nothing was scored")
-    assert_true(viewer.text:find("No combination could be scored", 1, true) and not viewer.text:find("changing", 1, true),
-        "says nothing was scored:\n" .. viewer.text)
-    assert_true(viewer.text:find("failed: no update within 15 s", 1, true), "rows still listed")
-    viewer_buttons(viewer)["Close"].callback()
-    require("vncoxide/dialogs").Benchmark = nil
-end)
-
-check("bench_connect_failure_shows_reason", function()
-    open_bench_actions()
-    local bench, progress = start_bench()
-    bench.opts.on_done({ { combination = BENCH_RESULTS[2].combination, ok = false, error = "connection refused" } },
-        "connection refused")
-    local info = top()
-    assert_true(info.text == "Could not connect: connection refused", "connect failure message: " .. stack_desc())
-    for _, w in ipairs(stack()) do
-        assert_true(w ~= progress, "progress closed")
-        assert_true(w.title ~= "Picture benchmark", "no results table on a connect failure")
-    end
-    UIManager:close(info)
-    expect_top(is_actions, "the actions dialog under the message")
-    require("vncoxide/dialogs").Benchmark = nil
-end)
-
 
 -- ---------------------------------------------------------------- benchmark result cards
 
@@ -3113,8 +3220,8 @@ check("benchcards_fit_era_portrait", function()
         local function width(text, face) return RenderText:sizeUtf8Text(0, 10000, face, text, true, true).x end
         local t = BenchResults.card_text(worst)
         local need = c.rank_width + width(t.title, c.label_face) + c.gap + width(t.figure, c.figure_face)
-        -- same margin as bench_results_rows_fit_one_line_on_era_portrait: the device has less room
-        -- than the emulation (a row at 0.97 of the emulated width wrapped there)
+        -- the device has less room than the emulation (a row at 0.97 of the emulated width wrapped
+        -- there in the former results table), so keep a margin
         local LIMIT = 0.85
         assert_true(need / c.line_width <= LIMIT, string.format("label + figure take %.3f of the line (limit %.2f)",
             need / c.line_width, LIMIT))

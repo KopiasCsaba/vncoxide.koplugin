@@ -14,11 +14,14 @@ the user out of the plugin. `Menu`, `ButtonDialog` and the editor's own `id = "c
 local _ = require("gettext")
 local T = require("ffi/util").template
 
+local BenchResults = require("vncoxide/benchresults")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
+local Font = require("ui/font")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
+local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 
@@ -331,127 +334,88 @@ end
 --- The benchmark engine; tests replace it with a stand-in (nil means @{vncoxide.benchmark}).
 Dialogs.Benchmark = nil
 
-local BENCH_INTRO = _("Tries 11 picture-setting combinations on this connection, twice each, in opposite order, a few seconds per try.\n\nBefore starting, put what you usually look at on the shared area of the PC — the page, document or app you use — and leave it still. Each combination fetches that screen several times, whole and in small pieces, and is scored by how fast it reaches this screen, including decoding and drawing at your current zoom.\n\nNothing is saved unless you tap Apply at the end.")
-local BENCH_PHASES = {
-    connect = _("connecting"),
-    full = _("full screen"),
-    tiles = _("small pieces"),
-}
+local BENCH_INTRO = _("This test presses keys on your PC and times how fast each change reaches this screen.\n\nOn the PC:\n1. Open the test page bench-page.html from the plugin's tools folder in a browser.\n2. Make it full screen (F11) on the shared screen.\n3. Click once into the page so it has the keyboard focus.\n\nDuring the test (about 4 minutes) don't touch the PC: Page Down and Home are sent to the page.\n\nNothing is saved unless you pick a result at the end.")
+local BENCH_REMINDER = _("Keep the test page focused. Don't touch the PC.")
+local BENCH_NO_RESPONSE = _("The PC screen did not change after a key press.\n\nCheck that the test page is open full screen on the shared screen and click once into it, then try again.")
 
-local function is_scored(r) return r.ok end
+local function bench_phase_text(phase, step, steps)
+    if phase == "connect" then return _("connecting") end
+    if phase == "reset" then return _("resetting the page") end
+    if phase == "steps" then return T(_("step %1/%2"), step, steps) end
+    return tostring(phase)
+end
 
---[[--
-The benchmark results as text: a header, then one entry per result in the given (ranked) order,
-the label on its own line and the figures indented below it, so that a narrow screen does not
-wrap the columns. Scored rows are numbered; failed rows are marked "-".
-
---- @tparam table results sorted rows from @{vncoxide.benchmark}
---- @treturn string
-]]
-function Dialogs.benchmark_table(results)
-    local lines = {}
-    local scored = false
-    for _i, r in ipairs(results) do
-        if is_scored(r) then scored = true break end
-    end
-    if scored then
-        lines[1] = _("Fastest first. Each row: screen pixels per second in small pieces · time per piece · time per full screen · size of a full screen; decoding and drawing included. Medians over two runs.")
-    else
-        lines[1] = _("No combination could be scored: every one failed, for the reasons below.")
-    end
-    lines[2] = ""
-    local rank = 0
-    for _i, r in ipairs(results) do
-        local mark = "-."
-        if is_scored(r) then
-            rank = rank + 1
-            mark = rank .. "."
-        end
-        lines[#lines + 1] = mark .. " " .. r.combination.label
-        local figures
-        if not r.ok then
-            local err = tostring(r.error)
-            -- the engine's per-pass failures already say "failed in pass N: ..."
-            figures = err:find("^failed") and err or T(_("failed: %1"), err)
-        else
-            figures = string.format("%.1f Mpx/s · %d ms · %d ms · %d KB",
-                r.tile_px_per_s / 1e6, math.floor(r.tile_ms + 0.5), math.floor(r.full_ms + 0.5),
-                math.floor(r.full_bytes / 1024 + 0.5))
-        end
-        lines[#lines + 1] = "   " .. figures
-    end
-    return table.concat(lines, "\n")
+--- Saves `combination`'s four picture fields to the stored profile `name`, nothing else.
+local function save_picture_fields(plugin, name, combination)
+    local stored = plugin.settings:get_profile(name)
+    if not stored then return false, "no such profile" end
+    local p = {}
+    for k, v in pairs(stored) do p[k] = v end
+    for _i, k in ipairs(PICTURE_ORDER) do p[k] = combination[k] end
+    return plugin:save_profile(p, name)
 end
 
 --[[--
-The results viewer: the table, "Apply best" (only when a row was scored: saves exactly that
-row's four picture fields to the profile) and "Close". Both, and the viewer's own close, end in
-`on_back`.
+"Find fastest picture settings": the intro with what to do on the PC (Start / Cancel), then a
+progress dialog with Cancel while @{vncoxide.benchmark} runs (the plugin's attached sessions are
+detached meanwhile), then the ranked @{vncoxide.benchresults} cards. Tapping a scored card asks
+"Use <label>?": Use applies it (by default: saves its four picture fields to the stored profile)
+and closes the cards, Cancel returns to them.
 
---- @tparam table plugin
---- @tparam string profile_name
---- @tparam table results sorted rows from @{vncoxide.benchmark}
---- @tparam function on_back
---- @treturn table the TextViewer (the caller shows it)
-]]
-function Dialogs.benchmark_results(plugin, profile_name, results, on_back)
-    local best
-    for _i, r in ipairs(results) do
-        if is_scored(r) then best = r break end
-    end
-    local viewer
-    local row = {}
-    if best then
-        row[#row + 1] = {
-            text = _("Apply best"),
-            callback = function()
-                local stored = plugin.settings:get_profile(profile_name)
-                local ok, err = false, "no such profile"
-                if stored then
-                    local p = {}
-                    for k, v in pairs(stored) do p[k] = v end
-                    for _i, k in ipairs(PICTURE_ORDER) do p[k] = best.combination[k] end
-                    ok, err = plugin:save_profile(p, profile_name)
-                end
-                viewer:onClose()
-                UIManager:show(InfoMessage:new{
-                    text = ok and T(_("Saved: %1. Takes effect on the next connection."), best.combination.label)
-                        or T(_("Could not save: %1"), tostring(err)),
-                })
-            end,
-        }
-    end
-    row[#row + 1] = {
-        text = _("Close"),
-        callback = function() viewer:onClose() end,
-    }
-    viewer = TextViewer:new{
-        title = _("Picture benchmark"),
-        text = Dialogs.benchmark_table(results),
-        text_type = "code",
-        buttons_table = { row },
-        close_callback = on_back,
-    }
-    return viewer
-end
-
---[[--
-"Find fastest picture settings": the intro (Start / Cancel), then a progress dialog with Cancel
-while @{vncoxide.benchmark} runs on the stored profile (the plugin's attached sessions are detached
-meanwhile), then @{Dialogs.benchmark_results}, or "Could not connect: <reason>" when the run
-stopped on a connect failure. Every way out (Cancel in the intro or the progress, Close, Apply
-best, the connect failure) ends in `on_back`.
+A run that stopped on a connect failure says "Could not connect: <reason>"; one whose first key
+press changed nothing on the PC says what to check and offers Try again (a new run, no intro).
+Every way out (Cancel anywhere, closing the cards, Use, the connect failure) ends in `on_back`.
 
 --- @tparam table plugin
 --- @tparam table profile
 --- @tparam function on_back
+--- @tparam[opt] table opts `{ unsaved = true }`: benchmark `profile` as given instead of the stored
+---   one; `{ on_pick = function(combination) }`: called on Use instead of saving
 ]]
-function Dialogs.picture_benchmark(plugin, profile, on_back)
-    local function run()
+function Dialogs.picture_benchmark(plugin, profile, on_back, opts)
+    opts = opts or {}
+    local run
+
+    --- Use in the confirmation: closes the cards (back to where the benchmark was opened) and
+    --- applies `combination`; a saved result is confirmed on top.
+    local function use(cards, combination)
+        if opts.on_pick then
+            opts.on_pick(combination)
+            cards:onClose()
+            return
+        end
+        local ok, err = save_picture_fields(plugin, profile.name, combination)
+        cards:onClose()
+        UIManager:show(InfoMessage:new{
+            text = ok and T(_("Saved: %1. Takes effect on the next connection."), combination.label)
+                or T(_("Could not save: %1"), tostring(err)),
+        })
+    end
+
+    local function show_results(results)
+        local cards
+        cards = BenchResults:new{
+            rows = results,
+            on_pick = function(row)
+                UIManager:show(ConfirmBox:new{
+                    text = T(_("Use %1?"), row.combination.label),
+                    ok_text = _("Use"),
+                    cancel_text = _("Cancel"),
+                    dismissable = false,
+                    ok_callback = function() use(cards, row.combination) end,
+                    cancel_callback = function() end,
+                })
+            end,
+            on_close = on_back,
+        }
+        UIManager:show(cards)
+    end
+
+    run = function()
         local Benchmark = Dialogs.Benchmark or require("vncoxide/benchmark")
-        local stored = plugin.settings:get_profile(profile.name) or profile
+        local source = opts.unsaved and profile or plugin.settings:get_profile(profile.name) or profile
         local copy = {}
-        for k, v in pairs(stored) do copy[k] = v end
+        for k, v in pairs(source) do copy[k] = v end
         local progress, bench
         progress = ButtonDialog:new{
             title = _("Starting…"),
@@ -465,27 +429,45 @@ function Dialogs.picture_benchmark(plugin, profile, on_back)
                 end,
             } } },
         }
+        progress:addWidget(TextBoxWidget:new{
+            text = BENCH_REMINDER,
+            face = Font:getFace("x_smallinfofont"),
+            bold = true,
+            width = progress:getAddedWidgetAvailableWidth(),
+            parent = progress,  -- kept across `setTitle` re-inits (see ButtonDialog:reinit)
+            not_focusable = true,
+        })
         bench = Benchmark.new{
             profile = copy,
             canvas = plugin:benchmark_canvas(),
             sessions = plugin.sessions,
-            on_progress = function(i, n, label, phase, pass, passes)
+            on_progress = function(i, n, label, phase, pass, passes, step, steps)
                 progress:setTitle(T("%1/%2 (pass %3/%4): %5 — %6", i, n, pass, passes, label,
-                    BENCH_PHASES[phase] or phase))
+                    bench_phase_text(phase, step, steps)))
             end,
-            on_done = function(results, connect_error)
+            on_done = function(results, stop)
                 UIManager:close(progress)
-                if connect_error then
-                    UIManager:show(InfoMessage:new{ text = T(_("Could not connect: %1"), tostring(connect_error)) })
+                if stop and stop.reason == "connect" then
+                    UIManager:show(InfoMessage:new{ text = T(_("Could not connect: %1"), tostring(stop.error)) })
                     on_back()
-                    return
+                elseif stop and stop.reason == "no_response" then
+                    UIManager:show(ConfirmBox:new{
+                        text = BENCH_NO_RESPONSE,
+                        ok_text = _("Try again"),
+                        cancel_text = _("Cancel"),
+                        dismissable = false,
+                        ok_callback = run,
+                        cancel_callback = on_back,
+                    })
+                else
+                    show_results(results)
                 end
-                UIManager:show(Dialogs.benchmark_results(plugin, copy.name, results, on_back))
             end,
         }
         UIManager:show(progress)
         bench:start()
     end
+
     UIManager:show(ConfirmBox:new{
         text = BENCH_INTRO,
         ok_text = _("Start"),
@@ -592,7 +574,8 @@ The connection editor. Cancel (or the Back key, which `InputDialog:onCloseDialog
 `id = "close"` button) and a successful save both call `opts.on_back`.
 
 The Picture button opens @{Dialogs.picture_settings} over the editor; the choice is held here and
-only stored by Save. Saving the connection that is live says that a reconnect applies the changes, when any
+only stored by Save. "Test speed with these settings…" runs @{Dialogs.picture_benchmark} on the typed
+fields (validated like Save); a picked result becomes the picture choice, again only stored by Save. Saving the connection that is live says that a reconnect applies the changes, when any
 per-connection field changed.
 
 --- @tparam table plugin
@@ -619,6 +602,14 @@ function Dialogs.edit_profile(plugin, profile, opts)
         compress_level = profile and profile.compress_level or false,
     }
     local picture_button
+    --- Shows the current `picture` on the Picture button.
+    local function update_picture_label()
+        local label = Dialogs.picture_summary(picture)
+        picture_button.text = label  -- for a re-init from `buttons` (keyboard toggles)
+        local button = dialog.button_table:getButtonById("picture")
+        button:setText(label, button.width)
+        dialog:refreshButtons()
+    end
     picture_button = {
         text = Dialogs.picture_summary(picture),
         id = "picture",
@@ -627,13 +618,53 @@ function Dialogs.edit_profile(plugin, profile, opts)
             -- makes way for the picture dialog.
             dialog:onCloseKeyboard()
             UIManager:show(Dialogs.picture_settings(picture, function()
-                local label = Dialogs.picture_summary(picture)
-                picture_button.text = label  -- for a re-init from `buttons` (keyboard toggles)
-                local button = dialog.button_table:getButtonById("picture")
-                button:setText(label, button.width)
-                dialog:refreshButtons()
+                update_picture_label()
                 dialog:onShowKeyboard()
             end))
+        end,
+    }
+
+    --- The typed host and port (default port when empty), or nil after saying what is wrong.
+    local function typed_address(fields)
+        local host = trim(fields[2])
+        local port_text = trim(fields[3])
+        if host == "" then
+            report(_("Please enter a host name or IP address."))
+            return nil
+        end
+        local port = port_text == "" and DEFAULT_PORT or tonumber(port_text)
+        if not port or port < 1 or port > 65535 then
+            report(T(_("The port must be a number between 1 and %1."), 65535))
+            return nil
+        end
+        return host, math.floor(port)
+    end
+
+    -- Runs the picture benchmark on the typed fields (nothing is stored); a picked result goes into
+    -- `picture` like a choice in the picture dialog, and Save stores it.
+    local bench_button = {
+        text = _("Test speed with these settings…"),
+        id = "bench",
+        callback = function()
+            local fields = dialog:getFields()
+            local host, port = typed_address(fields)
+            if not host then return end
+            local name = trim(fields[1])
+            local typed = {
+                name = name ~= "" and name or _("New connection"),
+                host = host,
+                port = port,
+                password = fields[4] or "",
+            }
+            for _i, key in ipairs(PICTURE_ORDER) do typed[key] = picture[key] end
+            dialog:onCloseKeyboard()
+            Dialogs.picture_benchmark(plugin, typed, function() dialog:onShowKeyboard() end, {
+                unsaved = true,
+                on_pick = function(combination)
+                    for _i, key in ipairs(PICTURE_ORDER) do picture[key] = combination[key] end
+                    update_picture_label()
+                end,
+            })
         end,
     }
 
@@ -659,7 +690,7 @@ function Dialogs.edit_profile(plugin, profile, opts)
                 text_type = "password",
             },
         },
-        buttons = { { picture_button }, {
+        buttons = { { picture_button }, { bench_button }, {
             {
                 -- `id = "close"` makes this the dialog's cancel action: the Back key and the
                 -- title bar's close button both end up here (see InputDialog:onCloseDialog).
@@ -673,8 +704,6 @@ function Dialogs.edit_profile(plugin, profile, opts)
                 callback = function()
                     local fields = dialog:getFields()
                     local name = trim(fields[1])
-                    local host = trim(fields[2])
-                    local port_text = trim(fields[3])
                     local password = fields[4] or ""
 
                     if name == "" then
@@ -684,18 +713,13 @@ function Dialogs.edit_profile(plugin, profile, opts)
                     if existing and (not profile or profile.name ~= name) then
                         return report(T(_("A connection named %1 already exists."), name))
                     end
-                    if host == "" then
-                        return report(_("Please enter a host name or IP address."))
-                    end
-                    local port = port_text == "" and DEFAULT_PORT or tonumber(port_text)
-                    if not port or port < 1 or port > 65535 then
-                        return report(T(_("The port must be a number between 1 and %1."), 65535))
-                    end
+                    local host, port = typed_address(fields)
+                    if not host then return end
 
                     local saved = {
                         name = name,
                         host = host,
-                        port = math.floor(port),
+                        port = port,
                         password = password,
                         color_depth = picture.color_depth,
                         enable_tight = picture.enable_tight,
