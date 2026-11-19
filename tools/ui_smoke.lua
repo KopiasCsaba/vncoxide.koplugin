@@ -3022,6 +3022,108 @@ check("bench_connect_failure_shows_reason", function()
     require("vncoxide/dialogs").Benchmark = nil
 end)
 
+
+-- ---------------------------------------------------------------- benchmark result cards
+
+local function card_row(rank, pct, round_s, label, ms)
+    return { combination = bench_combo(16, true, 1, false, label), ok = true, rank = rank,
+        speed_pct = pct, round_s = round_s, bytes = 1000,
+        cat_ms = { photo = ms[1], text = ms[2], scroll = ms[3], small = ms[4], flip = ms[5] } }
+end
+local function failed_card_row(label, err)
+    return { combination = bench_combo(16, true, 2, false, label), ok = false, error = err, rank = nil }
+end
+
+check("benchcards_text", function()
+    local BenchResults = require("vncoxide/benchresults")
+    local t = BenchResults.card_text(card_row(1, 100, 1.06, "16-bit, Tight, compr. 1",
+        { 309.5, 280.2, 89.6, 45, 329.5 }))
+    assert_true(t.title == "16-bit, Tight, compr. 1", "title: " .. tostring(t.title))
+    assert_true(t.figure == "100%   1.06 s", "figure: " .. tostring(t.figure))
+    assert_true(t.steps == "photo 310 · text 280 · scroll 90 · small 45 · flip 330 ms", "steps: " .. tostring(t.steps))
+    t = BenchResults.card_text(card_row(2, 97.6, 1.074, "24-bit, Tight off", { 1, 2, 3, 4, 5 }))
+    assert_true(t.figure == "98%   1.07 s", "percent rounded: " .. tostring(t.figure))
+    t = BenchResults.card_text(failed_card_row("16-bit, Tight, compr. 2", "failed in pass 2: x"))
+    assert_true(t.title == "16-bit, Tight, compr. 2" and t.figure == "failed in pass 2: x" and t.steps == nil,
+        "failed in pass N is not prefixed again: " .. tostring(t.figure))
+    t = BenchResults.card_text(failed_card_row("16-bit, Tight, compr. 2", "no answer in 15 s"))
+    assert_true(t.figure == "failed: no answer in 15 s", "failure reason: " .. tostring(t.figure))
+end)
+
+check("benchcards_tap_picks_row", function()
+    local BenchResults = require("vncoxide/benchresults")
+    local rows = {
+        card_row(1, 100, 1.06, "16-bit, Tight, compr. 1", { 310, 280, 90, 45, 330 }),
+        card_row(2, 80, 1.3, "24-bit, Tight off", { 400, 300, 120, 50, 400 }),
+        failed_card_row("16-bit, Tight, compr. 2", "no answer in 15 s"),
+    }
+    local picked, closed = {}, 0
+    local w = BenchResults:new{ rows = rows, on_pick = function(r) picked[#picked + 1] = r end,
+        on_close = function() closed = closed + 1 end }
+    UIManager:show(w)
+    assert_true(w.title == "Picture benchmark", "title: " .. tostring(w.title))
+    assert_true(#w.cards == 3, "one card per row: " .. #w.cards)
+    w.cards[2]:onTapCard()
+    assert_true(#picked == 1 and picked[1] == rows[2], "tapping the second card picks row 2")
+    assert_true(top() == w, "a pick leaves the cards up (the caller confirms)")
+    w.cards[3]:onTapCard()
+    assert_true(#picked == 1, "a failed card is not tappable")
+    assert_true(w.cards[3].ges_events == nil or next(w.cards[3].ges_events) == nil, "no tap range on a failed card")
+    assert_true(w.cards[3].bar == nil and w.cards[2].bar ~= nil, "no bar on a failed card")
+    assert_true(w.cards[1].bar.percentage == 1 and w.cards[2].bar.percentage == 0.8, "bar follows speed_pct")
+    find_button(w, "Close").callback()
+    assert_true(closed == 1 and top() ~= w, "Close closes and calls on_close")
+    UIManager:show(w)
+    w:onClose()
+    assert_true(closed == 2 and top() ~= w, "Back closes and calls on_close")
+    assert_true(w.key_events == nil or w.key_events.Close ~= nil, "Back is bound to close on key devices")
+end)
+
+check("benchcards_shared_rank_and_order", function()
+    local BenchResults = require("vncoxide/benchresults")
+    local rows = {
+        card_row(1, 100, 1.06, "16-bit, Tight, compr. 1", { 310, 280, 90, 45, 330 }),
+        card_row(1, 97, 1.07, "24-bit, Tight, compr. 2", { 320, 280, 90, 45, 330 }),
+        card_row(3, 38, 2.73, "8-bit, Tight off", { 900, 700, 300, 100, 700 }),
+        failed_card_row("16-bit, Tight, compr. 2", "no answer in 15 s"),
+    }
+    local w = BenchResults:new{ rows = rows, on_pick = function() end, on_close = function() end }
+    local ranks, labels = {}, {}
+    for i, c in ipairs(w.cards) do
+        assert_true(c.row == rows[i], "card " .. i .. " shows row " .. i)
+        ranks[i], labels[i] = c.rank_text, c.label_text
+    end
+    assert_true(table.concat(ranks, ",") == "1,1,3,–", "ranks: " .. table.concat(ranks, ","))
+    assert_true(labels[3] == "8-bit, Tight off", "labels in the given order")
+    w:free()
+end)
+
+check("benchcards_fit_era_portrait", function()
+    -- the PocketBook Era's 1264x1680 portrait frame (KOReader scales fonts by the screen size)
+    local saved_bb = Screen.bb
+    local era = require("ffi/blitbuffer").new(1264, 1680, saved_bb:getType())
+    Screen.bb = era
+    local ok, err = pcall(function()
+        local BenchResults = require("vncoxide/benchresults")
+        local worst = card_row(1, 100, 99.99, "24-bit, Tight, compr. 2, JPEG 4", { 9999, 9999, 9999, 9999, 9999 })
+        local w = BenchResults:new{ rows = { worst }, on_pick = function() end, on_close = function() end }
+        local c = w.cards[1]
+        assert_true(c.line_width > 0 and c.line_width < 1264, "the card's line width: " .. tostring(c.line_width))
+        local RenderText = require("ui/rendertext")
+        local function width(text, face) return RenderText:sizeUtf8Text(0, 10000, face, text, true, true).x end
+        local t = BenchResults.card_text(worst)
+        local need = c.rank_width + width(t.title, c.label_face) + c.gap + width(t.figure, c.figure_face)
+        -- same margin as bench_results_rows_fit_one_line_on_era_portrait: the device has less room
+        -- than the emulation (a row at 0.97 of the emulated width wrapped there)
+        local LIMIT = 0.85
+        assert_true(need / c.line_width <= LIMIT, string.format("label + figure take %.3f of the line (limit %.2f)",
+            need / c.line_width, LIMIT))
+        w:free()
+    end)
+    Screen.bb = saved_bb
+    era:free()
+    assert_true(ok, err)
+end)
 -- ---------------------------------------------------------------- persistent canvas buffer
 
 -- A remote plane with a deterministic pattern, a fresh reference render and a canvas compare.
