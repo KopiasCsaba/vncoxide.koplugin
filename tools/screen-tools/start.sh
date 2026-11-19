@@ -4,7 +4,7 @@
 # Usage: ./start.sh [PROFILE] [-- extra x0vnc-server.sh args]
 # Settings: built-in defaults < profiles/PROFILE.env < .env
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$(readlink -f "$0")")"
 
 die() { echo "error: $*" >&2; exit 1; }
 profiles() { local f; for f in profiles/*.env; do [[ -e $f ]] && f=${f#profiles/} && echo "  ${f%.env}"; done; }
