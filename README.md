@@ -111,17 +111,6 @@ computer.
 5. **Stays awake** while the viewer is open: no sleep, no dimming.
 6. **Background sessions.** Leave the viewer to read a book and come back to where you were.
 
----
-
-## Feature overview
-
-| Area | Capabilities |
-| --- | --- |
-| Display | Full-screen remote desktop, fit and 25–400 % zoom, pan, pinch zoom, sharp or smooth scaling, contrast and inversion, orientation matching |
-| Input | Touch, Mouse and Hybrid pointer modes; on-screen keyboard with key strip; Send keys panel; physical keyboard; page buttons as Page Up/Down or mouse wheel |
-| Connections | Saved profiles, per-connection picture settings, auto connect at start-up, automatic reconnect, Wi-Fi management |
-| Sessions | *Leave* keeps a session running in the background; *Disconnect* closes it |
-| Servers | Works with standard VNC servers: x11vnc, TigerVNC, TightVNC, RealVNC (compatibility mode) and others |
 
 ---
 
@@ -184,27 +173,6 @@ a VNC server to the internet.
    and has not been verified.
 
 Bug reports and patches are welcome.
-
----
-
-## Origin and credits
-
-VNCoxide is written and maintained by **Kopiás Csaba**.
-
-It started on 2026-11-06 as a fork of **[hwhw/vnc.koplugin](https://github.com/hwhw/vnc.koplugin)**
-by **Hans-Werner Hilse**, an experimental prototype, and has since been largely rewritten: about
-four fifths of the current Lua code is new. The prototype laid the foundation:
-
-1. The RFB 3.8 client, with every encoding in RFC 6143 (ZRLE, TRLE, Hextile, RRE, CopyRect and
-   Raw), DesktopSize, VNC authentication and opt-in Tight.
-2. The full-screen viewer with zoom presets, panning and touch control.
-3. Forwarding from the on-screen and physical keyboards.
-4. Connection profiles, auto connect at start-up and Wi-Fi handling.
-5. The headless protocol and UI test suites that pin the behaviour down.
-
-Its history is kept intact in git (71 commits by the original author), and every change since is
-recorded on top of it. Many thanks to Hans-Werner Hilse for the original work and for releasing
-it under the AGPL.
 
 ---
 
