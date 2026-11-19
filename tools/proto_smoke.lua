@@ -2436,7 +2436,7 @@ local function main()
         end
         if next(count) then return nil, "unknown category " .. next(count) end
         if S[1] ~= "photo" or S[15] ~= "text" then return nil, "first/last step " .. S[1] .. "/" .. S[15] end
-        local want = { PASSES = 2, STEP_TIMEOUT = 5, QUIET = 0.15, RESET_SETTLE = 0.5, TIE = 0.95,
+        local want = { PASSES = 2, STEP_TIMEOUT = 5, RESET_TIMEOUT = 15, QUIET = 0.15, RESET_SETTLE = 0.5, TIE = 0.95,
                        KEY_NEXT = 0xff56, KEY_RESET = 0xff50 }
         for k, v in pairs(want) do
             if Benchmark[k] ~= v then return nil, k .. " = " .. tostring(Benchmark[k]) end
@@ -2498,6 +2498,8 @@ local function main()
         local list, untrack = track_sessions()
         local pid, port, log = start_multi{ name = o.name, extra = o.extra, plain = o.plain, encoding = o.encoding }
         local Benchmark = env.Benchmark
+        local real_settled = Benchmark._settled
+        if o.before then o.before(Benchmark, env) end
         local real_score, scored, samples_of = Benchmark._score, {}, {}
         Benchmark._score = function(combo, samples)
             scored[combo.label] = #samples
@@ -2521,6 +2523,7 @@ local function main()
         local finished = env.run(function() return results ~= nil end, 40000)
         env.run(nil, 200)
         Benchmark._score = real_score
+        Benchmark._settled = real_settled
         local left = #env.tasks
         untrack()
         env.restore()
@@ -2647,6 +2650,43 @@ local function main()
         local d = t_step - t_reset
         if d < r.b.RESET_SETTLE or d >= r.b.STEP_TIMEOUT then return nil, string.format("reset took %.2f s", d) end
         if not (r.results[1] and r.results[1].ok) then return nil, "row failed: " .. tostring(r.results[1].error) end
+        return true
+    end)
+
+    -- The screen still changing during the reset for longer than a step may (a browser's
+    -- "exit full screen" toast fading): between STEP_TIMEOUT and RESET_TIMEOUT the run goes on;
+    -- past RESET_TIMEOUT it fails. The page's changes are simulated by holding the reset's
+    -- settle back until the fake clock is `busy` seconds past the key.
+    local function busy_reset(busy)
+        return function(Benchmark)
+            local real = Benchmark._settled
+            Benchmark._settled = function(self, run, quiet, now)
+                if run.phase == "reset" and run.wait and now - run.wait.t0 < busy then return false end
+                return real(self, run, quiet, now)
+            end
+        end
+    end
+    check("benchmark_key_reset_may_take_longer_than_a_step", function()
+        local r = bench_run{ name = "bench_reset_slow", labels = { "24-bit, Tight off" }, before = busy_reset(8) }
+        if not r.finished then return nil, "benchmark never finished" end
+        if not (r.results[1] and r.results[1].ok) then return nil, "row failed: " .. tostring(r.results[1] and r.results[1].error) end
+        local t_reset, t_step
+        for _, e in ipairs(r.progress) do
+            if e.i == 1 and e.phase == "reset" then t_reset = e.t end
+            if e.i == 1 and e.phase == "steps" and e.step == 1 then t_step = e.t end
+        end
+        if not (t_reset and t_step) then return nil, "the first run never reached its steps" end
+        local d = t_step - t_reset
+        if d < 8 or d > r.b.RESET_TIMEOUT then return nil, string.format("reset took %.2f s", d) end
+        return true
+    end)
+    check("benchmark_key_reset_that_never_settles_fails", function()
+        local r = bench_run{ name = "bench_reset_never", labels = { "24-bit, Tight off" }, before = busy_reset(1e9) }
+        if not r.finished then return nil, "benchmark never finished" end
+        local row = r.results[1]
+        if not (row and row.ok == false and tostring(row.error):find("did not settle within 15 s after the reset", 1, true)) then
+            return nil, "row: " .. tostring(row and row.error)
+        end
         return true
     end)
 

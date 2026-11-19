@@ -81,6 +81,18 @@ local Card = InputContainer:extend{
     on_pick = nil,
 }
 
+--- The part of the card inside the scroll container's visible area (an empty range when none), so
+--- the scrolled-out or truncated (hidden) part of a card is not tappable.
+function Card:visible_dimen()
+    local view = self.view and self.view()
+    if not view then return self.dimen end
+    local d = self.dimen
+    local x0, y0 = math.max(d.x, view.x), math.max(d.y, view.y)
+    local x1, y1 = math.min(d.x + d.w, view.x + view.w), math.min(d.y + d.h, view.y + view.h)
+    if x1 <= x0 or y1 <= y0 then return Geom:new{ x = -1, y = -1, w = 0, h = 0 } end
+    return Geom:new{ x = x0, y = y0, w = x1 - x0, h = y1 - y0 }
+end
+
 function Card:onTapCard()
     if self.row.ok and self.on_pick then self.on_pick(self.row) end
     return true
@@ -150,7 +162,7 @@ local function build_card(row, width, on_pick)
     card.dimen = Geom:new{ x = 0, y = 0, w = width, h = card[1]:getSize().h }
     if row.ok and Device:isTouchDevice() then
         card.ges_events = {
-            TapCard = { GestureRange:new{ ges = "tap", range = function() return card.dimen end } },
+            TapCard = { GestureRange:new{ ges = "tap", range = function() return card:visible_dimen() end } },
         }
     else
         card.ges_events = nil
@@ -211,6 +223,7 @@ function BenchResults:init()
                 background = Blitbuffer.COLOR_GRAY })
         end
         local card = build_card(row, width, on_pick)
+        card.view = function() return self:visible_area() end
         self.cards[i] = card
         add(card, true)
     end
@@ -242,6 +255,14 @@ function BenchResults:init()
     if Device:hasKeys() then
         self.key_events = { Close = { { Device.input.group.Back } } }
     end
+end
+
+--- The screen rectangle of the cards' scroll container that is actually drawn (a bottom card cut
+--- off by the container is hidden, see `hide_truncated_grid_items`).
+function BenchResults:visible_area()
+    local c = self.cropping_widget
+    if not (c and c.dimen) then return nil end
+    return Geom:new{ x = c.dimen.x, y = c.dimen.y, w = c.dimen.w, h = c._crop_h_limited or c._crop_h or c.dimen.h }
 end
 
 function BenchResults:onShow()

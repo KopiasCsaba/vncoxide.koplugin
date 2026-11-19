@@ -34,8 +34,9 @@ reconnects. One run at a time:
 No update within `STEP_TIMEOUT` of `t0`: on the first step of a run the page is not reacting (not
 focused, wrong window, the test page not open), so the whole run stops (`on_done` gets the stop
 `{ reason = "no_response", error }`); on a later step that run fails ("no update within 5 s after
-step k"). A step (or the reset) still receiving updates `STEP_TIMEOUT` after its key fails the run
-too ("screen did not settle ...").
+step k"). A step still receiving updates `STEP_TIMEOUT` after its key fails the run too ("screen
+did not settle ..."); the reset has its own, longer limit, `RESET_TIMEOUT` (15 s), as a browser's
+full-screen toast may still be fading when the test starts.
 
 Every received rect is marked dirty by the session and drawn with @{Remote:draw_to} into one
 off-screen BlitBuffer of the viewer's canvas size and type (allocated once per benchmark), with the
@@ -92,6 +93,9 @@ Benchmark.CATEGORIES = { "photo", "text", "scroll", "small", "flip" }
 Benchmark.PASSES = 2
 -- Seconds to wait for the first update after a step's key before the step counts as failed.
 Benchmark.STEP_TIMEOUT = 5
+-- Seconds the reset (Home + settle) may keep receiving updates before the run fails: longer than a
+-- step's, as a browser's "press F11 to exit full screen" toast can still be fading at the start.
+Benchmark.RESET_TIMEOUT = 15
 -- Seconds without a further update after which a step is complete.
 Benchmark.QUIET = 0.15
 -- Seconds of quiet after the reset (Home) before the first step.
@@ -530,8 +534,8 @@ function Benchmark:_advance()
         if self:_settled(run, Benchmark.RESET_SETTLE, now) then
             run.phase = "steps"
             self:_announce_step(run, 1)
-        elseif now - run.wait.t0 > Benchmark.STEP_TIMEOUT then
-            self:_end_run(string.format("screen did not settle within %g s after the reset", Benchmark.STEP_TIMEOUT))
+        elseif now - run.wait.t0 > Benchmark.RESET_TIMEOUT then
+            self:_end_run(string.format("screen did not settle within %g s after the reset", Benchmark.RESET_TIMEOUT))
         end
     elseif run.phase == "steps" then
         local k, w = run.step, run.wait

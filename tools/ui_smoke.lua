@@ -3205,6 +3205,48 @@ check("benchcards_shared_rank_and_order", function()
     w:free()
 end)
 
+check("benchcards_hidden_card_not_tappable", function()
+    local saved_bb = Screen.bb
+    local era = require("ffi/blitbuffer").new(1264, 1680, saved_bb:getType())
+    Screen.bb = era
+    local ok, err = pcall(function()
+        local BenchResults = require("vncoxide/benchresults")
+        local Event = require("ui/event")
+        local rows = {}
+        for i = 1, 14 do rows[i] = card_row(i, 100 - i, 1 + i / 10, "16-bit, Tight, compr. " .. i, { 300, 280, 90, 45, 330 }) end
+        local picked = {}
+        local w = BenchResults:new{ rows = rows, on_pick = function(r) picked[#picked + 1] = r end, on_close = function() end }
+        w:paintTo(era, 0, 0)
+        local cw = w.cropping_widget
+        assert_true(cw._max_scroll_offset_y > 0, "the cards overflow the Era screen")
+        assert_true(cw._crop_h_limited ~= nil, "a card is cut off at the bottom of the visible area")
+        local view = w:visible_area()
+        local function tap(x, y)
+            w:handleEvent(Event:new("Gesture", { ges = "tap", pos = require("ui/geometry"):new{ x = x, y = y, w = 0, h = 0 } }))
+        end
+        -- a hidden card: its position is below the visible area but still inside the container
+        local hidden
+        for _i, c in ipairs(w.cards) do
+            if c.dimen.y < view.y + cw.dimen.h and c.dimen.y + c.dimen.h > view.y + view.h and c.dimen.y + c.dimen.h > view.y + view.h + 2 then
+                hidden = c break
+            end
+        end
+        assert_true(hidden ~= nil, "a card reaches below the visible area")
+        local ty = view.y + view.h + 1
+        assert_true(ty < cw.dimen.y + cw.dimen.h and ty >= hidden.dimen.y, "the strip below the visible area is over that card")
+        tap(view.x + 100, ty)
+        assert_true(#picked == 0, "a tap on the blank strip picks nothing: " .. #picked)
+        -- a card cut by the bottom edge: its visible part taps, its hidden part does not
+        local c1 = w.cards[1]
+        tap(c1.dimen.x + 50, c1.dimen.y + math.floor(c1.dimen.h / 2))
+        assert_true(#picked == 1 and picked[1] == rows[1], "a tap on a visible card picks it")
+        w:free()
+    end)
+    Screen.bb = saved_bb
+    era:free()
+    assert_true(ok, err)
+end)
+
 check("benchcards_fit_era_portrait", function()
     -- the PocketBook Era's 1264x1680 portrait frame (KOReader scales fonts by the screen size)
     local saved_bb = Screen.bb
