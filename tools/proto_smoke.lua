@@ -2334,6 +2334,9 @@ local function main()
                     if tasks[i].t < tasks[best].t then best = i end
                 end
                 local task = table.remove(tasks, best)
+                -- paced: the fake clock moves no faster than real time, so the mock's real
+                -- answer times keep their size against the engine's quiet gaps
+                if env.pace and task.t > clock then socket.sleep(task.t - clock) end
                 clock = math.max(clock, task.t)
                 task.fn(unpack(task.args, 1, task.n))
                 socket.sleep(0.002)
@@ -2491,6 +2494,7 @@ local function main()
     -- stop, the progress lines, the samples handed to _score per combination and the mock log.
     local function bench_run(o)
         local env = bench_env()
+        env.pace = o.pace
         local list, untrack = track_sessions()
         local pid, port, log = start_multi{ name = o.name, extra = o.extra, plain = o.plain, encoding = o.encoding }
         local Benchmark = env.Benchmark
@@ -2604,10 +2608,12 @@ local function main()
     -- A step's change that arrives as several FramebufferUpdates (the mock sends it as 3 bands,
     -- each answering its own incremental request) is one step, timed to its last piece: after
     -- the first piece the session holds its next request for INPUT_QUIET after the key, so the
-    -- later pieces, and therefore every step time, come at least that long after the key.
+    -- later pieces, and therefore every step time, come at least that long after the key. Run on
+    -- a paced clock: unpaced, fake time runs several times faster than real time, and a busy
+    -- machine delaying a piece by some 60 ms real let the step's 0.15 s quiet gap pass first.
     check("benchmark_key_multi_update_is_one_step", function()
         local label = "24-bit, Tight off"
-        local r = bench_run{ name = "bench_pieces", extra = " --bench-pieces 3", labels = { label } }
+        local r = bench_run{ name = "bench_pieces", extra = " --bench-pieces 3", labels = { label }, pace = true }
         if not r.finished then return nil, "benchmark never finished" end
         local row = r.results[1]
         if not (row and row.ok) then return nil, "row failed: " .. tostring(row and row.error) end

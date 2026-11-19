@@ -476,16 +476,20 @@ end
 
 --[[--
 Whether the current wait is over: no update request is held by the session (its input priority
-holds the request after a key; while held the server cannot send more), and `quiet` seconds have
-passed since the last drawn update, since the request was released, and since the key.
+holds the request after a key; while held the server cannot send more), no update is being
+received, and `quiet` seconds have passed since the last drawn update, since the request was
+released, and since the key.
 ]]
 function Benchmark:_settled(run, quiet, now)
     local w = run.wait
-    local proto = self.session and self.session.proto
+    local s = self.session
+    local proto = s and s.proto
     if proto and proto.update_pending then
         w.unheld = nil
         return false
     end
+    -- (a large update still arriving: its end is the step's last piece)
+    if s and s.in_update then return false end
     w.unheld = w.unheld or now
     return now - math.max(w.t0, w.t_last or w.t0, w.unheld) >= quiet
 end
