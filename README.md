@@ -15,7 +15,6 @@ desktop by touch, on-screen keyboard or physical keyboard.
 Pure Lua and LuaJIT FFI, built only on what KOReader already ships: nothing to compile, no native
 component. Works with standard VNC servers (x11vnc, TigerVNC, TightVNC, …).
 
-<!-- TODO: demo video / screenshots (toolbar, Send keys panel, zoomed view). -->
 
 ## Highlights
 
@@ -56,6 +55,8 @@ component. Works with standard VNC servers (x11vnc, TigerVNC, TightVNC, …).
 | **⋯ ▸ Help** in the viewer | A complete reference of gestures, buttons and menus, on the device. |
 
 ## Recommended: give the reader its own screen
+
+![extra_screen.gif](docs/assets/extra_screen.gif)
 
 Mirroring a large desktop on a small, differently shaped panel means panning around tiny text. The
 [screen tools](tools/screen-tools/README.md) (Linux/Xorg) instead add a **virtual monitor sized for
