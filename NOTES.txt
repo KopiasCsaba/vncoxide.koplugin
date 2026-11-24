@@ -42,7 +42,7 @@ vncoxide/app.lua         The full-screen viewer widget: canvas, gestures (Touch,
 vncoxide/pointerfollow.lua  Mouse mode, zoomed in: one axis of the view following the pointer
                           (RustDesk's CursorModel.updatePan rule), a pure function.
 vncoxide/toolbar.lua     The floating, draggable toolbar (Collapse, Display, Zoom cycle, Mode,
-                          Keyboard, Rotate, Scroll up/down, Brightness, Contrast, Invert,
+                          Keyboard, Scroll up/down, Brightness, Contrast, Invert,
                           Close, More; all but the last two can be hidden), or while collapsed its
                           round button; a child of the viewer, not a window.
 vncoxide/icons.lua       Absolute paths of the plugin's own icons (the icons/ folder: keyboard.svg,

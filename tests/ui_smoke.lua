@@ -3806,6 +3806,7 @@ check("help_opens_from_the_menu_and_is_local", function()
     assert_true(text:find("Two-finger long press", 1, true) and not text:find("croll lock", 1, true), "content")
     assert_true(text:find("KEY STRIP", 1, true) and text:find("RECONNECT", 1, true), "strip and reconnect")
     assert_true(not text:find("Keys\u{2026}", 1, true), "no Keys\u{2026} button any more")
+    assert_true(not text:find("Rotate:", 1, true), "no Rotate button any more (orientation is in the Display panel)")
     for _, needle in ipairs({ "Zoom: cycle", "1:1", "Brightness:", "Contrast:", "Toolbar buttons\u{2026}",
                               "keyboard icon", "Collapse", "drag" }) do
         assert_true(text:find(needle, 1, true), "the help tells about " .. needle)
@@ -3814,7 +3815,7 @@ check("help_opens_from_the_menu_and_is_local", function()
     assert_true(text:find("Touch mode", 1, true) < text:find("Mouse mode", 1, true), "current mode first")
     assert_true(not app:_input_target(), "the viewer is under a popup")
     sent.pointer = {}
-    tap_toolbar(app, "rotate")
+    tap_toolbar(app, "zoom")
     dispatch_gesture{ ges = "tap", pos = Geom:new{ x = 10, y = Screen:getHeight() - 10 } }
     assert_true(#sent.pointer == 0, "nothing reaches the remote")
     help:onClose()
@@ -3912,12 +3913,11 @@ check("menu_toolbar_buttons_submenu", function()
         local rows = parent.sub_item_table
         local texts = {}
         for _, r in ipairs(rows) do texts[#texts + 1] = r.text end
-        assert_true(table.concat(texts, "|") == "Collapse button|Display|Zoom|Mode|Keyboard|Rotate|"
+        assert_true(table.concat(texts, "|") == "Collapse button|Display|Zoom|Mode|Keyboard|"
             .. "Scroll up/down|Brightness|Contrast|Invert", table.concat(texts, "|"))
         local cases = {
             { "Collapse button", { "toggle" }, true }, { "Display", { "display" }, true },
             { "Zoom", { "zoom" }, true }, { "Mode", { "mode" }, true }, { "Keyboard", { "keyboard" }, true },
-            { "Rotate", { "rotate" }, true },
             { "Scroll up/down", { "scroll_up", "scroll_down" }, false }, { "Brightness", { "brightness" }, true },
             { "Contrast", { "contrast" }, true }, { "Invert", { "invert" }, true },
         }
@@ -3993,8 +3993,12 @@ check("toolbar_settings_migrate_and_clean", function()
         and s.toolbar_buttons.zoom == nil and Toolbar.is_enabled(s, "zoom"), "junk is cleaned")
     assert_true(s.toolbar_pos.x == 0.5 and s.toolbar_pos.y == 0.25, "a fraction out of range is reset")
     s = load("{ toolbar_pinned = { keyboard = false, rotate = true, toggle = true, close = true } }")
-    assert_true(s.toolbar_pinned.keyboard == false and s.toolbar_pinned.rotate == true
+    assert_true(s.toolbar_pinned.keyboard == false and s.toolbar_pinned.rotate == nil
         and s.toolbar_pinned.toggle == nil and s.toolbar_pinned.close == nil, "pinned choices kept, junk cleaned")
+    -- the removed Rotate button: a stored choice for it loads and is dropped
+    s = load("{ toolbar_buttons = { rotate = false, zoom = false }, toolbar_pinned = { rotate = true } }")
+    assert_true(s.toolbar_buttons.rotate == nil and s.toolbar_buttons.zoom == false
+        and s.toolbar_pinned.rotate == nil, "a stale rotate entry is dropped")
     os.remove(path)
 end)
 
@@ -6395,12 +6399,9 @@ check("toolbar_buttons_act_and_taps_never_reach_the_canvas", function()
     local app, remote, sent = new_app(400, 300, { toolbar = true })
     assert_true(app.toolbar_visible, "shown on open")
     local Toolbar = require("vncoxide/toolbar")
-    assert_true(table.concat(Toolbar.IDS, ",") == "toggle,display,zoom,mode,keyboard,rotate,scroll_up,scroll_down,brightness,contrast,invert,close,more",
+    assert_true(table.concat(Toolbar.IDS, ",") == "toggle,display,zoom,mode,keyboard,scroll_up,scroll_down,brightness,contrast,invert,close,more",
         table.concat(Toolbar.IDS, ","))
-    local before = Screen:getRotationMode()
-    tap_toolbar(app, "rotate")
-    assert_true(Screen:getRotationMode() == (before + 1) % 4, "rotated a quarter turn clockwise")
-    app:set_rotation_mode(before)
+    assert_true(Toolbar.TIPS.rotate == nil, "no Rotate button (orientation is in the Display panel)")
     tap_toolbar(app, "mode")
     assert_true(app:get_pointer_mode() == "mouse", "mode switches to mouse")
     UIManager:close(top())  -- the tooltip
@@ -6459,7 +6460,7 @@ check("toolbar_long_press_shows_a_tooltip_and_does_nothing_else", function()
         local Toolbar = require("vncoxide/toolbar")
         local want = {
             toggle = "Collapse toolbar", display = "Display settings", zoom = "Zoom: fit, 1:1, your own view",
-            mode = "Pointer mode: touch, mouse or hybrid", keyboard = "Keyboard (drag onto a field to click it and type)", rotate = "Rotate the screen",
+            mode = "Pointer mode: touch, mouse or hybrid", keyboard = "Keyboard (drag onto a field to click it and type)",
             scroll_up = "Scroll up",
             scroll_down = "Scroll down", brightness = "Frontlight", contrast = "Contrast of the remote picture",
             invert = "Invert the remote picture", close = "Disconnect", more = "Menu",
@@ -6613,8 +6614,8 @@ check("toolbar_drags_and_stays_on_screen", function()
     d = app.toolbar.dimen
     assert_true(d.x == m and d.y == H - d.h - m, string.format("clamped to the bottom left: %d,%d", d.x, d.y))
     assert_true(app.settings.toolbar_pos.x == 0 and app.settings.toolbar_pos.y == 1, "stored as 0, 1")
-    -- buttons still work where it is now
-    tap_toolbar(app, "rotate")
+    -- it keeps its place across a rotation
+    app:rotate(1)
     local W2, H2 = Screen:getWidth(), Screen:getHeight()
     d = app.toolbar.dimen
     assert_true(W2 == H and H2 == W, "rotated")
@@ -8484,7 +8485,7 @@ check("toolbar_pinned_buttons_stay_when_collapsed", function()
         local rows = collapsed_rows(menu)
         local texts = {}
         for _, r in ipairs(rows) do texts[#texts + 1] = r.text end
-        assert_true(table.concat(texts, "|") == "Display|Zoom|Mode|Keyboard|Rotate|Scroll up/down|"
+        assert_true(table.concat(texts, "|") == "Display|Zoom|Mode|Keyboard|Scroll up/down|"
             .. "Brightness|Contrast|Invert|More", table.concat(texts, "|"))
         for _, r in ipairs(rows) do
             local on = r.text == "Keyboard"

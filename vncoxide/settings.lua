@@ -70,14 +70,14 @@ Settings.DEFAULTS = {
 --- The toolbar buttons that can be hidden, and whether each is shown by default. The scroll pair
 --- is switched together; Brightness also needs a device with a frontlight.
 Settings.TOOLBAR_BUTTONS = {
-    toggle = true, display = true, zoom = true, mode = true, keyboard = true, rotate = true,
+    toggle = true, display = true, zoom = true, mode = true, keyboard = true,
     scroll_up = false, scroll_down = false, brightness = true, contrast = true,
     invert = true,
 }
 
 --- The buttons that can stay on the collapsed toolbar (`toolbar_pinned`), in bar order: all but
 --- Collapse (it is the round button itself) and Close.
-Settings.TOOLBAR_PINNABLE = { "display", "zoom", "mode", "keyboard", "rotate", "scroll_up",
+Settings.TOOLBAR_PINNABLE = { "display", "zoom", "mode", "keyboard", "scroll_up",
     "scroll_down", "brightness", "contrast", "invert", "more" }
 
 --- The buttons pinned to the collapsed toolbar by default (every other pinnable one is not).

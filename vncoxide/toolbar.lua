@@ -12,7 +12,7 @@ the same spot; a tap on that brings the bar back), Display (the display panel), 
 1:1 -> the user's own pinch/pan view -> fit, see `ViewerApp:cycle_zoom`; its icon shows the current
 state: `zoom.page`, the plugin's `zoom-1to1`, `zoom.manual`), Mode (Touch/Mouse, the label shows the
 current one), Keyboard (shows or hides the on-screen keyboard with the key strip, or closes the
-"Send keys" panel), Rotate, Scroll up/down, Brightness (KOReader's frontlight dialog; only on a device with
+"Send keys" panel), Scroll up/down, Brightness (KOReader's frontlight dialog; only on a device with
 a frontlight), Contrast (the contrast dialog, @{vncoxide.contrastdialog}), Invert (a toggle, drawn inverted
 while on: the remote picture drawn inverted), Close (disconnect, after a
 confirmation) and More (the menu). All but Close and More can be hidden (`toolbar_buttons`, the
@@ -57,7 +57,7 @@ local Toolbar = InputContainer:extend{
     app = nil, -- the @{vncoxide.app} instance
 }
 
-Toolbar.IDS = { "toggle", "display", "zoom", "mode", "keyboard", "rotate", "scroll_up", "scroll_down",
+Toolbar.IDS = { "toggle", "display", "zoom", "mode", "keyboard", "scroll_up", "scroll_down",
     "brightness", "contrast", "invert", "close", "more" }
 
 --- The long-press tooltip of each button; `expand` is the round button's.
@@ -68,7 +68,6 @@ Toolbar.TIPS = {
     zoom = _("Zoom: fit, 1:1, your own view"),
     mode = _("Pointer mode: touch, mouse or hybrid"),
     keyboard = _("Keyboard (drag onto a field to click it and type)"),
-    rotate = _("Rotate the screen"),
     scroll_up = _("Scroll up"),
     scroll_down = _("Scroll down"),
     brightness = _("Frontlight"),
@@ -129,7 +128,6 @@ local function specs(app)
             icon_file = Icons.path("keyboard"),
             callback = function() app:toggle_keyboard() end,
         },
-        rotate = { icon = "appbar.rotation", callback = function() app:rotate(1) end },
         scroll_up = { icon = "move.up", callback = function() app:scroll_wheel(-1, 1) end },
         scroll_down = { icon = "move.down", callback = function() app:scroll_wheel(1, 1) end },
         brightness = { icon_file = Icons.path("brightness"), callback = function() app:open_frontlight_dialog() end },
