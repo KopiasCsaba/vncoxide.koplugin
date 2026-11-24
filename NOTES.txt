@@ -366,7 +366,12 @@ move past hold_drag_slop (HOLD_DRAG_SLOP_DPI = 10) starts the drag, after that e
 followed; a second finger stops the tracking. GestureDetector's hold timer also trips for a finger
 moving slowly (under PAN_THRESHOLD in 0.5 s): a hold whose finger already went hold_drag_slop from
 where it came down is a slow drag (_slow_drag), handed to onPan / onPanRelease, so Mouse mode
-moves the pointer (no button) and Hybrid scrolls. The confirmation of a long press (canvas, keys,
+moves the pointer (no button) and Hybrid scrolls. So is a pending long press that moves before its
+confirmation (HOLD_CONFIRM): the finger never rested - on PocketBook typically InkView's stall in
+the middle of a drag (the hold trips, the moves come late in one burst). A long press then drag
+rests ~0.62 s (hold 0.5 s + HOLD_CONFIRM) before moving. tests: timing_matrix_* play taps, long
+presses, flicks, drags, pauses and InkView stalls through the real GestureDetector on a simulated
+clock and check what reaches the remote, the toolbar and the keyboard. The confirmation of a long press (canvas, keys,
 toolbar buttons) that runs more than HOLD_LATE (0.05 s) after it was due ran behind a paint: the
 lift may be waiting unread (UIManager runs due tasks before it reads input), so it looks again
 HOLD_RECHECK later, up to HOLD_CONFIRM_MAX (1.5 s) after the hold (Util.hold_check_late).

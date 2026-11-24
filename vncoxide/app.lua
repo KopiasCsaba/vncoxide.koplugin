@@ -1304,9 +1304,14 @@ function ViewerApp:onHoldPan(_, ges)
             self:_cancel_hold("two-finger gesture")
             return true
         end
-        -- it moves before its lift: a genuine long press
-        logger.dbg("vnc-hold:", "confirmed by a hold_pan")
-        self:_hold_confirmed()
+        -- It moves before its confirmation: the finger never rested, it was a drag all along -
+        -- a slow one, or InkView's burst after a stall (its hold tripped, the moves came late).
+        -- A long press then drag rests through HOLD_CONFIRM first.
+        logger.dbg("vnc-hold:", "moved before its confirmation: a drag, not a long press")
+        self._hold_pending = nil
+        UIManager:unschedule(self._hold_confirm_task)
+        self._slow_drag = true
+        return self:onHoldPan(nil, ges)
     end
     if not self._hold_active then return nil end
     if not self:_input_target() then

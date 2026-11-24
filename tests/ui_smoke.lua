@@ -8171,7 +8171,7 @@ check("genuine_hold_confirms_then_right_clicks", function()
     end
 end)
 
-check("hold_pan_before_confirmation_is_a_genuine_hold", function()
+check("hold_pan_before_confirmation_is_a_drag", function()
     local app, remote, sent = new_app(400, 300)
     local wire = wire_log(app)
     local c = app.canvas
@@ -8183,7 +8183,8 @@ check("hold_pan_before_confirmation_is_a_genuine_hold", function()
     hold_release_at(P)
     assert_true(wire() == "p0" and no_right_button(sent), "touch: released, no right button")
     close_viewer(app, remote)
-    -- Mouse mode: the button drag, moved by the hold_pan
+    -- Mouse mode: the finger never rested (a slow drag, or InkView's burst after a stall), so it
+    -- is what a drag is there: a pointer move, no button
     app, remote, sent = new_app(400, 300, { mode = "mouse" })
     wire = wire_log(app)
     c = app.canvas
@@ -8192,9 +8193,10 @@ check("hold_pan_before_confirmation_is_a_genuine_hold", function()
     assert_true(wire() == "", "mouse: nothing before the move")
     dispatch_gesture{ ges = "hold_pan", pos = Geom:new{ x = P.x + 40, y = P.y }, relative = { x = 40, y = 0 } }
     local got = wire()
-    assert_true(got == "p1,p1", "mouse: a left press, then the move: " .. got)
+    assert_true(got:match("^p0[p0,]*$") ~= nil, "mouse: the pointer moves, no button: " .. got)
     hold_release_at(Geom:new{ x = P.x + 40, y = P.y })
-    assert_true(wire() == "p0" and no_right_button(sent), "mouse: released, no right button")
+    assert_true(wire() == "" and no_right_button(sent), "mouse: nothing at the lift")
+    assert_true(not app:has_pointer_action() and app._mouse_moving == nil, "mouse: the move ended")
     close_viewer(app, remote)
 end)
 
@@ -9706,6 +9708,275 @@ check("long_press_tracking_stops_when_a_second_finger_comes", function()
         f.lift(1.0)
         close_viewer(app, remote)
     end
+end)
+
+-- ---------------------------------------------------------------- gesture timing matrix
+
+--[[ Plays a one-finger touch `script` through KOReader's real GestureDetector on a simulated clock
+that also drives UIManager's tasks (the viewer's hold confirmation, finger tracking and false-hold
+windows), in 10 ms steps. `script` = { points = { {t, x, y}, ... }, lift = t, withheld = W }: the
+finger is at each point from its time on, lifts at `lift`; with `withheld`, every event before W is
+delivered only at W (stamped W, as PocketBook's InkView input does after one of its ~0.5 s stalls).
+The hold timer trips at GestureDetector's own hold interval when no event says otherwise. ]]
+local function play_touch(script)
+    local time = require("ui/time")
+    local gd = Device.input.gesture_detector
+    local input = Device.input
+    local real_now = time.now
+    local t0 = real_now()
+    local clock = t0
+    time.now = function() return clock end
+    local ok, err = pcall(function()
+        local slot = 5
+        local tev
+        local made = {}
+        local function deliver(list)
+            for _, ges in ipairs(list) do
+                gd:adjustGesCoordinate(ges)
+                made[#made + 1] = ges.ges
+                dispatch_gesture(ges)
+            end
+        end
+        local function feed(x, y, at, lift)
+            if not tev then
+                tev = { slot = slot, id = slot, x = x, y = y, timev = at }
+            else
+                tev.timev = at
+                if lift then tev.id = -1 else tev.x, tev.y = x, y end
+            end
+            deliver(gd:feedEvent({ tev }))
+        end
+        local events = {}
+        for _, p in ipairs(script.points) do events[#events + 1] = { t = p[1], x = p[2], y = p[3] } end
+        events[#events + 1] = { t = script.lift, lift = true }
+        local hold_s = time.to_s(gd.ges_hold_interval)
+        local down_at, held, queue, i = nil, false, {}, 1
+        local last = script.lift + 1.0 -- room for the viewer's own timers after the lift
+        local steps = math.floor(last / 0.01 + 0.5)
+        for n = 0, steps do
+            local t = n * 0.01
+            clock = t0 + time.s(t)
+            -- the hold timer (Input's timer queue, here run by hand at its deadline)
+            if down_at and not held and t >= down_at + hold_s - 1e-9 then
+                held = true
+                for k, item in ipairs(input.timer_callbacks) do
+                    if item.slot == slot and item.gesture == "hold" then
+                        table.remove(input.timer_callbacks, k)
+                        if item.timerfd then input.input.clearTimer(item.timerfd) end
+                        local ges = item.callback()
+                        if ges then deliver({ ges }) end
+                        break
+                    end
+                end
+            end
+            while events[i] and events[i].t <= t + 1e-9 do
+                queue[#queue + 1] = events[i]
+                i = i + 1
+            end
+            -- `stall_after_down`: the first event goes through, the rest wait for `withheld`
+            local first_free = script.stall_after_down and not down_at and queue[1]
+            if first_free then
+                table.remove(queue, 1)
+                down_at = first_free.t
+                feed(first_free.x, first_free.y, t0 + time.s(first_free.t), first_free.lift)
+            end
+            if not (script.withheld and t < script.withheld - 1e-9) then
+                for _, e in ipairs(queue) do
+                    local at = script.withheld and math.max(e.t, script.withheld) or e.t
+                    if not down_at then down_at = at end
+                    feed(e.x, e.y, t0 + time.s(at), e.lift)
+                end
+                queue = {}
+            end
+            UIManager:_checkTasks()
+        end
+        input:clearTimeout(slot)
+        return made
+    end)
+    time.now = real_now
+    if not ok then error(err, 0) end
+    return err
+end
+
+--- Points of a finger at `p` for `dur` seconds, wobbling by `jitter` pixels every 20 ms.
+local function still(p, dur, jitter, from)
+    local pts, t, k = {}, from or 0, 0
+    while t <= (from or 0) + dur + 1e-9 do
+        local j = jitter or 0
+        pts[#pts + 1] = { t, p.x + ((k % 2 == 0) and 0 or j), p.y + ((k % 3 == 1) and j or 0) }
+        t, k = t + 0.02, k + 1
+    end
+    return pts
+end
+
+--- Points of a finger moving from `p` by (dx, dy) in `dur` seconds from time `from`, every 20 ms.
+local function moving(p, dx, dy, dur, from)
+    local pts, n = {}, math.max(1, math.floor(dur / 0.02 + 0.5))
+    for k = 0, n do
+        local f = k / n
+        pts[#pts + 1] = { from + dur * f, math.floor(p.x + dx * f + 0.5), math.floor(p.y + dy * f + 0.5) }
+    end
+    return pts
+end
+
+local function concat(...)
+    local out = {}
+    for _, list in ipairs{ ... } do for _, v in ipairs(list) do out[#out + 1] = v end end
+    return out
+end
+
+--- What a wire log (`wire_log`'s pointer part) amounts to: click, right, drag, move, scroll, none.
+local function classify(log)
+    local masks = {}
+    for m in log:gmatch("p(%d+)") do masks[#masks + 1] = tonumber(m) end
+    if #masks == 0 then return "none" end
+    local has = {}
+    for _, m in ipairs(masks) do has[m] = true end
+    for m in pairs(has) do
+        if m ~= 0 and m ~= 1 and m ~= 4 then
+            return (has[1] or has[4]) and "mixed" or "scroll"
+        end
+    end
+    if has[4] and not has[1] then return (masks[#masks] == 0) and "right" or "right-stuck" end
+    if has[1] and has[4] then return "mixed" end
+    if has[1] then
+        if masks[#masks] ~= 0 then return "drag-stuck" end
+        local ones = 0
+        for _, m in ipairs(masks) do if m == 1 then ones = ones + 1 end end
+        return ones == 1 and "click" or "drag"
+    end
+    return "move"
+end
+
+--[[ The scenarios: name, script builder (from the press point P), expected outcome per pointer
+mode. Durations follow common platform values: a tap lasts 133 +- 83 ms on average (Applied
+Ergonomics 2017), Android's long-press timeout is 400 ms and KOReader's hold 500 ms, a swipe's
+median is 130 ms. ]]
+local TIMING_SCENARIOS = {
+    { "tap 50 ms", function(P) return { points = still(P, 0.05), lift = 0.05 } end, "click" },
+    { "tap 133 ms", function(P) return { points = still(P, 0.13, 2), lift = 0.133 } end, "click" },
+    { "tap 300 ms", function(P) return { points = still(P, 0.3, 3), lift = 0.3 } end, "click" },
+    { "tap 450 ms", function(P) return { points = still(P, 0.45, 3), lift = 0.45 } end, "click" },
+    { "press 560 ms (just past the hold)", function(P) return { points = still(P, 0.56, 2), lift = 0.56 } end, "click" },
+    { "long press 700 ms", function(P) return { points = still(P, 0.7, 2), lift = 0.7 } end, "right" },
+    -- (Android's touch slop: 8 dp; the jitter goes up to 5 px on each axis, ~7 px)
+    { "long press 1 s, 7 px jitter", function(P) return { points = still(P, 1.0, 5), lift = 1.0 } end, "right" },
+    { "long press 1 s, 30 px wander", function(P)
+        return { points = concat(still(P, 0.7, 2), moving(P, 30, 0, 0.2, 0.72)), lift = 1.0 } end, "drag" },
+    { "long press 2 s", function(P) return { points = still(P, 2.0, 3), lift = 2.0 } end, "right" },
+    { "flick 150 px in 150 ms", function(P) return { points = moving(P, 150, 0, 0.15, 0), lift = 0.16 } end,
+      { touch = "drag", mouse = "move", hybrid = "scroll" } },
+    { "drag 200 px in 400 ms", function(P) return { points = moving(P, 200, 0, 0.4, 0), lift = 0.42 } end,
+      { touch = "drag", mouse = "move", hybrid = "scroll" } },
+    { "slow drag 200 px in 2 s", function(P) return { points = moving(P, 200, 0, 2.0, 0), lift = 2.02 } end,
+      { touch = "drag", mouse = "move", hybrid = "scroll" } },
+    { "drag with a 1 s pause", function(P)
+        return { points = concat(moving(P, 100, 0, 0.3, 0), still({ x = P.x + 100, y = P.y }, 1.0, 2, 0.32),
+                                 moving({ x = P.x + 100, y = P.y }, 100, 0, 0.3, 1.34)), lift = 1.66 } end,
+      { touch = "drag", mouse = "move", hybrid = "scroll" } },
+    { "hold 800 ms, then drag 200 px", function(P)
+        return { points = concat(still(P, 0.8, 2), moving(P, 200, 0, 0.5, 0.82)), lift = 1.34 } end, "drag" },
+    { "hold 800 ms, then drag 25 px", function(P)
+        return { points = concat(still(P, 0.8, 2), moving(P, 25, 0, 0.3, 0.82)), lift = 1.14 } end, "drag" },
+    { "tap 133 ms withheld 550 ms (InkView)", function(P)
+        return { points = still(P, 0.13, 2), lift = 0.133, withheld = 0.55 } end, "click" },
+    { "drag 200 px withheld 550 ms (InkView)", function(P)
+        return { points = moving(P, 200, 0, 0.4, 0), lift = 0.42, withheld = 0.55 } end,
+      { touch = "drag", mouse = "move", hybrid = "scroll" } },
+    -- InkView's stall after the down went through: GestureDetector's hold trips, the rest follows
+    -- in one burst (the false hold of ViewerApp.HOLD_CONFIRM)
+    { "tap 133 ms, stall after down (InkView)", function(P)
+        return { points = still(P, 0.13, 2), lift = 0.133, withheld = 0.55, stall_after_down = true } end, "click" },
+    { "drag 200 px, stall after down (InkView)", function(P)
+        return { points = moving(P, 200, 0, 0.4, 0), lift = 0.42, withheld = 0.55, stall_after_down = true } end,
+      { touch = "drag", mouse = "move", hybrid = "scroll" } },
+}
+
+check("timing_matrix_canvas", function()
+    local rows, bad = {}, {}
+    local gd = Device.input.gesture_detector
+    print(string.format("#   dpi %s: pan threshold %d px, hold slop %d px, Android touch slop (8 dp) %d px",
+        tostring(Screen:getDPI()), gd.PAN_THRESHOLD, Screen:scaleByDPI(10), Screen:scaleByDPI(8)))
+    for _, mode in ipairs{ "touch", "mouse", "hybrid" } do
+        for _, sc in ipairs(TIMING_SCENARIOS) do
+            local app, remote = new_app(400, 300, { mode = mode })
+            app.session:get_profile().hybrid_notch_px = 10
+            local wire = wire_log(app)
+            local c = app.canvas
+            local P = Geom:new{ x = c.x + 60, y = c.y + 80 }
+            local made = play_touch(sc[2](P))
+            local want = type(sc[3]) == "table" and sc[3][mode] or sc[3]
+            local got = classify(wire())
+            local line = string.format("%-6s %-40s -> %-6s (want %s) [%s]", mode, sc[1], got, want,
+                table.concat(made, " "))
+            rows[#rows + 1] = line
+            if got ~= want or app:has_pointer_action() then bad[#bad + 1] = line end
+            close_viewer(app, remote)
+        end
+    end
+    for _, r in ipairs(rows) do print("#   " .. r) end
+    assert_true(#bad == 0, "\n  " .. table.concat(bad, "\n  "))
+end)
+
+check("timing_matrix_toolbar", function()
+    local rows, bad = {}, {}
+    local cases = {
+        { "tap 133 ms", function(P) return { points = still(P, 0.13, 2), lift = 0.133 } end, true },
+        { "tap 450 ms", function(P) return { points = still(P, 0.45, 3), lift = 0.45 } end, true },
+        { "press 560 ms", function(P) return { points = still(P, 0.56, 2), lift = 0.56 } end, true },
+        { "tap withheld 550 ms (InkView)", function(P)
+            return { points = still(P, 0.13, 2), lift = 0.133, withheld = 0.55 } end, true },
+        { "tap, stall after down (InkView)", function(P)
+            return { points = still(P, 0.13, 2), lift = 0.133, withheld = 0.55, stall_after_down = true } end, true },
+        { "long press 1 s", function(P) return { points = still(P, 1.0, 3), lift = 1.0 } end, false },
+    }
+    for _, case in ipairs(cases) do
+        local app, remote = new_app(400, 300, { toolbar = true })
+        local P = toolbar_button_centre(app, "mode")
+        local before = app:get_pointer_mode()
+        local made = play_touch(case[2](P))
+        local acted = app:get_pointer_mode() ~= before
+        local line = string.format("%-32s -> %s (want %s) [%s]", case[1], acted and "acted" or "tooltip",
+            case[3] and "acted" or "tooltip", table.concat(made, " "))
+        rows[#rows + 1] = line
+        if acted ~= case[3] then bad[#bad + 1] = line end
+        close_viewer(app, remote)
+    end
+    for _, r in ipairs(rows) do print("#   " .. r) end
+    assert_true(#bad == 0, "\n  " .. table.concat(bad, "\n  "))
+end)
+
+check("timing_matrix_keyboard", function()
+    local rows, bad = {}, {}
+    local cases = {
+        { "tap 133 ms", function(P) return { points = still(P, 0.13, 2), lift = 0.133 } end, "typed" },
+        { "tap 450 ms", function(P) return { points = still(P, 0.45, 3), lift = 0.45 } end, "typed" },
+        { "press 560 ms", function(P) return { points = still(P, 0.56, 2), lift = 0.56 } end, "typed" },
+        { "tap withheld 550 ms (InkView)", function(P)
+            return { points = still(P, 0.13, 2), lift = 0.133, withheld = 0.55 } end, "typed" },
+        { "tap, stall after down (InkView)", function(P)
+            return { points = still(P, 0.13, 2), lift = 0.133, withheld = 0.55, stall_after_down = true } end, "typed" },
+        { "long press 1 s", function(P) return { points = still(P, 1.0, 3), lift = 1.0 } end, "popup" },
+    }
+    for _, case in ipairs(cases) do
+        local app, remote = new_app()
+        app:toggle_keyboard()
+        UIManager:forceRePaint()
+        local key = find_vk_key(app.vk, "e")
+        assert_true(key ~= nil, "the keyboard has an e key")
+        local wire = wire_log(app)
+        local made = play_touch(case[2](centre_of(key.dimen)))
+        local got = wire()
+        local popup = key_popup(app)
+        local outcome = popup and "popup" or (got == "+0x65,-0x65" and "typed" or ("sent " .. got))
+        local line = string.format("%-32s -> %s (want %s) [%s]", case[1], outcome, case[3], table.concat(made, " "))
+        rows[#rows + 1] = line
+        if outcome ~= case[3] then bad[#bad + 1] = line end
+        if popup then UIManager:close(popup) end
+        close_viewer(app, remote)
+    end
+    for _, r in ipairs(rows) do print("#   " .. r) end
+    assert_true(#bad == 0, "\n  " .. table.concat(bad, "\n  "))
 end)
 
 check("toolbar_false_hold_is_a_tap", function()
