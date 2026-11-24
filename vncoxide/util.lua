@@ -355,4 +355,50 @@ function Util.finger_still_down(f)
     return nil
 end
 
+--[[--
+Where finger `f` (a `{ slot =, contact = }` from @{Util.fingers_down}) is now, in screen
+coordinates: GestureDetector's latest touch position of that contact, translated the way a
+gesture's are. Nil once it lifted, its slot holds a new contact, or GestureDetector does not tell.
+GestureDetector reports no movement of a held finger until it has gone PAN_THRESHOLD from where it
+came down (Contact:holdState), so this is how a long press follows smaller movements.
+]]
+function Util.finger_pos(f)
+    if not f then return nil end
+    local ok, res = pcall(function()
+        local gd = require("device").input
+        gd = gd and gd.gesture_detector
+        local contacts = gd and gd.active_contacts
+        if type(contacts) ~= "table" or contacts[f.slot] ~= f.contact or f.contact.down ~= true then
+            return nil
+        end
+        local tev = f.contact.current_tev
+        if type(tev) ~= "table" or type(tev.x) ~= "number" or type(tev.y) ~= "number" or tev.id == -1 then
+            return nil
+        end
+        local probe = { ges = "touch", pos = require("ui/geometry"):new{ x = tev.x, y = tev.y, w = 0, h = 0 } }
+        if gd.adjustGesCoordinate then gd:adjustGesCoordinate(probe) end
+        return probe.pos
+    end)
+    if ok then return res end
+    return nil
+end
+
+--[[--
+Whether a long press's confirmation task, due at `due` for a hold that came at `since` (both
+`ui/time` values), ran late: more than `late` seconds after it was due, and less than `max`
+seconds after the hold. KOReader runs due tasks before it reads input again, so a confirmation
+that ran late (the UI thread was busy painting) cannot tell whether the finger lifted meanwhile:
+its lift may be waiting unread. The caller then checks again HOLD_RECHECK seconds later, after the
+input loop had a turn. `late` and `max` default to HOLD_LATE and HOLD_CONFIRM_MAX.
+]]
+function Util.hold_check_late(due, since, late, max)
+    local time = require("ui/time")
+    local now = time.now()
+    return due ~= nil and now - due > time.s(late or Util.HOLD_LATE)
+        and (since == nil or now - since < time.s(max or Util.HOLD_CONFIRM_MAX))
+end
+Util.HOLD_LATE = 0.05
+Util.HOLD_RECHECK = 0.05
+Util.HOLD_CONFIRM_MAX = 1.5
+
 return Util

@@ -48,7 +48,17 @@ package.path = plugin_dir .. "/?.lua;" .. package.path
 -- ---------------------------------------------------------------- helpers
 
 local failures = 0
+-- UI_ONLY=<pattern>[,<pattern>...] (Lua patterns): run only the checks whose name matches one
+local only = os.getenv("UI_ONLY")
+local function selected(name)
+    if not only or only == "" then return true end
+    for pat in only:gmatch("[^,]+") do
+        if name:find(pat) then return true end
+    end
+    return false
+end
 local function check(name, fn)
+    if not selected(name) then return end
     UIManager._window_stack = {}
     local ok, err = pcall(fn)
     UIManager._window_stack = {}
@@ -733,6 +743,13 @@ end
 local function hold_toolbar(app, id)
     local pos = toolbar_button_centre(app, id)
     UIManager:sendEvent(Event:new("Gesture", { ges = "hold", pos = pos }))
+    -- its confirmation time passes, the finger still down (see the toolbar's `arm_hold`)
+    local button = app.toolbar.button_by_id[id]
+    local h = button and button.vnc_hold or (app.toolbar.expand_button and app.toolbar.expand_button.vnc_hold)
+    if h and h.since then
+        UIManager:unschedule(h.task)
+        h.task()
+    end
     UIManager:sendEvent(Event:new("Gesture", { ges = "hold_release", pos = pos }))
 end
 
@@ -9486,6 +9503,218 @@ check("paint_timing_line_reports_toolbar_cpu_and_screen_buffer", function()
     local want = string.format(" toolbar_ms=%%d+%%.%%d cpu_ms=%%d+%%.%%d bb=%d/rot%d/inv%d cbb=%%a+",
         Screen.bb:getType(), Screen.bb:getRotation(), Screen.bb:getInverse())
     assert_true(joined:find("vnc%-timing: paint ms=[^\n]*" .. want), "paint line: " .. joined)
+end)
+
+-- ---------------------------------------------------------------- real GestureDetector
+
+--[[ A finger on KOReader's real GestureDetector at screen position (x, y) (the test runs upright,
+so screen and touch coordinates are the same): its events go through `feedEvent` and every gesture
+it makes is dispatched through the real widget stack. `move`, `lift` feed the next events; `hold`
+trips its hold timer (GestureDetector's own callback, so it emits a hold only when its rules say
+so). Times are seconds after the contact came down. ]]
+local function real_finger(x, y, slot)
+    local gd = Device.input.gesture_detector
+    local input = Device.input
+    local time = require("ui/time")
+    slot = slot or 3
+    local t0 = time.now()
+    local tev = { slot = slot, id = slot, x = x, y = y, timev = t0 }
+    local made = {}
+    local function deliver(list)
+        for _, ges in ipairs(list) do
+            gd:adjustGesCoordinate(ges)
+            made[#made + 1] = ges.ges
+            dispatch_gesture(ges)
+        end
+    end
+    deliver(gd:feedEvent({ tev }))
+    local f = { made = made }
+    function f.move(nx, ny, t)
+        tev.x, tev.y, tev.timev = nx, ny, t0 + time.s(t or 0.1)
+        deliver(gd:feedEvent({ tev }))
+    end
+    function f.hold()
+        for i, item in ipairs(input.timer_callbacks) do
+            if item.slot == slot and item.gesture == "hold" then
+                table.remove(input.timer_callbacks, i)
+                if item.timerfd then input.input.clearTimer(item.timerfd) end
+                local ges = item.callback()
+                if ges then deliver({ ges }) end
+                return ges
+            end
+        end
+    end
+    function f.lift(t)
+        tev.id, tev.timev = -1, t0 + time.s(t or 1)
+        deliver(gd:feedEvent({ tev }))
+        input:clearTimeout(slot)
+    end
+    return f
+end
+
+--- Runs the viewer's long-press finger tracking once now (see ViewerApp:_hold_track_tick).
+local function track_hold(app)
+    UIManager:unschedule(app._hold_track_task)
+    app._hold_track_task()
+end
+
+check("real_gd_no_hold_pan_under_its_pan_threshold", function()
+    -- the GestureDetector behaviour the long-press tracking exists for: once held, a finger that
+    -- moves less than PAN_THRESHOLD from where it came down makes no event at all
+    local gd = Device.input.gesture_detector
+    local app, remote = new_app(400, 300, { mode = "mouse" })
+    local c = app.canvas
+    local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+    local f = real_finger(P.x, P.y)
+    assert_true(f.hold() ~= nil, "the hold timer trips a hold")
+    local small = math.floor(gd.PAN_THRESHOLD / 2)
+    local n = #f.made
+    f.move(P.x + small, P.y, 0.7)
+    assert_true(#f.made == n, "no gesture for a move under the threshold: " .. table.concat(f.made, ","))
+    f.move(P.x + gd.PAN_THRESHOLD, P.y, 0.8)
+    assert_true(f.made[#f.made] == "hold_pan", "a hold_pan once past it: " .. table.concat(f.made, ","))
+    f.move(P.x + small, P.y, 0.9)
+    assert_true(f.made[#f.made] == "hold_pan" and #f.made == n + 1,
+        "and none again back under it: " .. table.concat(f.made, ","))
+    f.lift(1.0)
+    close_viewer(app, remote)
+end)
+
+check("long_press_then_short_drag_drags_below_the_pan_threshold", function()
+    local gd = Device.input.gesture_detector
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+        local slop = app:hold_drag_slop()
+        assert_true(slop < gd.PAN_THRESHOLD / 2, mode .. ": the slop is well under the pan threshold")
+        local f = real_finger(P.x, P.y)
+        f.hold()
+        confirm_hold(app)
+        -- a jitter under the slop: still a long press
+        f.move(P.x + math.floor(slop / 2), P.y, 0.7)
+        track_hold(app)
+        assert_true(wire() == "", mode .. ": nothing sent for a jitter")
+        -- a short drag, still under GestureDetector's pan threshold: the left button goes down
+        f.move(P.x + slop + 2, P.y, 0.8)
+        track_hold(app)
+        assert_true(app._hold_active == mode .. "_drag", mode .. ": dragging: " .. tostring(app._hold_active))
+        local before = last_pointer(sent).x
+        -- back towards the start (GestureDetector is silent there): the drag follows
+        f.move(P.x + 1, P.y, 0.9)
+        track_hold(app)
+        assert_true(last_pointer(sent).x < before, mode .. ": the pointer follows back: "
+            .. before .. " -> " .. last_pointer(sent).x)
+        assert_true(last_pointer(sent).mask == 1, mode .. ": with the button down")
+        f.lift(1.0)
+        local got = wire()
+        assert_true(got:match("^p1[p1,]*,p0$") ~= nil, mode .. ": a left drag, no right click: " .. got)
+        assert_true(not app:has_pointer_action(), mode .. ": nothing held")
+        close_viewer(app, remote)
+    end
+end)
+
+check("slow_drag_whose_hold_timer_trips_is_a_drag_not_a_long_press", function()
+    -- the finger was already moving (under GestureDetector's pan threshold) when its hold timer
+    -- tripped: a slow drag. Mouse mode moves the pointer (no button), Touch mode drags from where
+    -- the finger came down.
+    local gd = Device.input.gesture_detector
+    for _, mode in ipairs{ "mouse", "touch" } do
+        local app, remote, sent = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+        local f = real_finger(P.x, P.y)
+        local moved = app:hold_drag_slop() + 3
+        f.move(P.x + moved, P.y, 0.3)
+        f.hold()
+        assert_true(app._hold_pending == nil and app._hold_active == nil,
+            mode .. ": not a long press: " .. tostring(app._hold_active))
+        f.move(P.x + moved + gd.PAN_THRESHOLD, P.y, 0.8)
+        track_hold(app)
+        f.lift(1.0)
+        local got = wire()
+        if mode == "mouse" then
+            assert_true(got:match("^p0[p0,]*$") ~= nil, mode .. ": pointer moves only: " .. got)
+            assert_true(app._mouse_moving == nil, mode .. ": the move ended")
+        else
+            assert_true(got:match("^p1[p1,]*,p0$") ~= nil, mode .. ": a left drag: " .. got)
+            local x0, y0 = app:_to_remote(P.x, P.y)
+            assert_true(sent.pointer[1].x == x0 and sent.pointer[1].y == y0, mode .. ": pressed where it came down")
+        end
+        assert_true(not app:has_pointer_action(), mode .. ": nothing held")
+        close_viewer(app, remote)
+    end
+end)
+
+check("late_hold_confirmation_waits_for_the_input_loop", function()
+    -- the confirmation ran late (the UI thread was busy painting): the lift may be waiting unread,
+    -- so it is checked again after the input loop had its turn; a lift then is a tap
+    local time = require("ui/time")
+    for _, mode in ipairs{ "touch", "mouse" } do
+        local app, remote = new_app(400, 300, { mode = mode })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 50, y = c.y + 60 }
+        dispatch_gesture{ ges = "hold", pos = P }
+        local p = app._hold_pending
+        p.due = time.now() - time.s(0.5)
+        UIManager:unschedule(app._hold_confirm_task)
+        app._hold_confirm_task()
+        assert_true(app._hold_pending == p and app._hold_active == nil, mode .. ": still pending after a late run")
+        assert_true(scheduled_delay(app._hold_confirm_task) ~= nil, mode .. ": checked again later")
+        dispatch_gesture{ ges = "hold_release", pos = P }
+        UIManager:unschedule(app._false_hold_task)
+        app._false_hold_task()
+        local got = wire()
+        assert_true(got == "p0,p1,p0", mode .. ": a left click, not a right click: " .. got)
+        -- one that keeps running late is confirmed in the end
+        dispatch_gesture{ ges = "hold", pos = P }
+        p = app._hold_pending
+        p.due = time.now() - time.s(0.5)
+        p.since = time.now() - time.s(app.HOLD_CONFIRM_MAX + 0.1)
+        UIManager:unschedule(app._hold_confirm_task)
+        app._hold_confirm_task()
+        assert_true(app._hold_active == mode .. "_wait", mode .. ": confirmed after HOLD_CONFIRM_MAX")
+        dispatch_gesture{ ges = "hold_release", pos = P }
+        assert_true(wire() == "p4,p0", mode .. ": a right click")
+        close_viewer(app, remote)
+    end
+end)
+
+check("long_press_tracking_stops_when_a_second_finger_comes", function()
+    for _, slow in ipairs{ false, true } do
+        local what = slow and "slow drag" or "long press"
+        local app, remote = new_app(400, 300, { mode = "mouse" })
+        local wire = wire_log(app)
+        local c = app.canvas
+        local P = Geom:new{ x = c.x + 100, y = c.y + 100 }
+        local slop = app:hold_drag_slop()
+        local f = real_finger(P.x, P.y, 3)
+        if slow then f.move(P.x + slop + 3, P.y, 0.3) end
+        f.hold()
+        confirm_hold(app)
+        wire()
+        local g = real_finger(P.x + 150, P.y, 4)
+        f.move(P.x + 2 * slop + 6, P.y + 4, 0.8)
+        track_hold(app)
+        assert_true(wire() == "", what .. ": the first finger's moves are not followed any more")
+        assert_true(app._hold_finger == nil, what .. ": tracking stopped")
+        g.lift(0.9)
+        f.lift(1.0)
+        close_viewer(app, remote)
+    end
+end)
+
+check("toolbar_false_hold_is_a_tap", function()
+    local app, remote = new_app(400, 300, { toolbar = true })
+    local pos = toolbar_button_centre(app, "mode")
+    local before = app:get_pointer_mode()
+    UIManager:sendEvent(Event:new("Gesture", { ges = "hold", pos = pos }))
+    UIManager:sendEvent(Event:new("Gesture", { ges = "hold_release", pos = pos }))
+    assert_true(app:get_pointer_mode() ~= before, "the button acted: " .. before .. " -> " .. app:get_pointer_mode())
+    close_viewer(app, remote)
 end)
 
 if failures > 0 then

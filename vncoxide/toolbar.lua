@@ -48,8 +48,10 @@ local Icons = require("vncoxide/icons")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Size = require("ui/size")
 local UIManager = require("ui/uimanager")
+local logger = require("logger")
 
 local Settings = require("vncoxide/settings")
+local Util = require("vncoxide/util")
 
 local Screen = Device.screen
 
@@ -158,6 +160,50 @@ local function show_tip(app, text)
     return toast
 end
 
+--[[--
+A button's long press shows its tooltip only once confirmed, like the canvas's (see
+`ViewerApp.HOLD_CONFIRM`): still down HOLD_CONFIRM seconds after the hold (a confirmation that ran
+behind a busy UI thread looks again, `Util.hold_check_late`). Lifted sooner it is InkView's late
+burst of a tap (PocketBook withholds a tap's events for ~0.5 s at times, long enough for the hold
+timer to trip): the button's `callback` runs, as for a tap. `button.vnc_hold` is the state (tests).
+]]
+local function arm_hold(app, button, callback, tip)
+    local time = require("ui/time")
+    local confirm = app.HOLD_CONFIRM or 0.12
+    local h = {}
+    button.vnc_hold = h
+    h.task = function()
+        if not h.since then return end
+        if Util.hold_check_late(h.due, h.since) then
+            h.due = time.now() + time.s(Util.HOLD_RECHECK)
+            UIManager:scheduleIn(Util.HOLD_RECHECK, h.task)
+            return
+        end
+        h.since = nil
+        show_tip(app, tip)
+    end
+    button.hold_callback = function()
+        UIManager:unschedule(h.task)
+        h.since = time.now()
+        h.due = h.since + time.s(confirm)
+        UIManager:scheduleIn(confirm, h.task)
+    end
+    local release = button.onHoldReleaseSelectButton
+    button.onHoldReleaseSelectButton = function(b)
+        if h.since then
+            h.since = nil
+            UIManager:unschedule(h.task)
+            if b._hold_handled and callback then
+                logger.dbg("vncoxide: toolbar hold lifted before", confirm, "s: a tap")
+                b._hold_handled = nil
+                callback()
+                return true
+            end
+        end
+        return release(b)
+    end
+end
+
 function Toolbar:init()
     self:relayout()
 end
@@ -260,13 +306,14 @@ function Toolbar:relayout(at)
             radius = 0,
             padding = padding,
             callback = spec.callback,
-            -- a long press only tells what the button is
-            hold_callback = function() show_tip(app, tip) end,
+            -- a long press only tells what the button is (once confirmed, see `arm_hold`)
+            hold_callback = function() end,
             -- a toggle that is on is drawn inverted
             preselect = spec.selected or nil,
             show_parent = app,
         }
         if spec.icon_file then Icons.set_button_icon(button, spec.icon_file, icon_size) end
+        arm_hold(app, button, spec.callback, tip)
         return button
     end
     self.collapsed = self:wants_collapsed()

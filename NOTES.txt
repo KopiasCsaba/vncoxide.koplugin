@@ -311,7 +311,9 @@ The toast (ViewerApp:show_toast) is pushed below the bar only when the bar
 is where the toast would be drawn; the contrast box goes under the bar, or above it when there is
 no room; the Display panel's anchor is the bar's rectangle (MovableContainer pops it down, or up).
 
-Long press on a button: a one-line tooltip (Toolbar.TIPS) and nothing else. KOReader closes a
+Long press on a button: a one-line tooltip (Toolbar.TIPS) and nothing else, once confirmed like the
+canvas's (still down HOLD_CONFIRM after the hold); lifted sooner it is InkView's late burst of a tap
+and the button acts (the toolbar's arm_hold). KOReader closes a
 toast on any input that passes it, and the hold's own hold_release would close it the moment the
 finger lifts, so the tooltip's toast lets hold_release and hold_pan through without closing.
 
@@ -353,8 +355,22 @@ viewer keeps a remote pointer position, a one-finger drag moves it by the drag d
 the zoom and times the speed, and a tap clicks at the pointer at once (two quick taps are a double click; the armed modifiers go
 with the click). A drag only moves the pointer, even right after a tap. A long press waits for its
 lift (a right click at the pointer) or its first move (a left-button drag from the pointer, moved
-through _mouse_move). Everything is built from GestureDetector's tap / hold / pan, no raw touch
-handling. Touch mode clicks are as immediate. Hybrid mode ("hybrid"): taps and long presses as in Touch mode,
+through _mouse_move). Everything is built from GestureDetector's tap / hold / pan, plus one read
+of its contact state: a held finger's position (Util.finger_pos). GestureDetector emits no
+hold_pan until a held finger has gone PAN_THRESHOLD (35 DPI-scaled px, ~66 px on a 300-dpi Era)
+from where it came down, checked on every move - so a short drag never started, the pointer jumped
+by that much when one did, and a drag back towards its start stopped (the real-GestureDetector
+check real_gd_no_hold_pan_under_its_pan_threshold shows it). While a long press is pending or
+under way, ViewerApp:_hold_track_tick looks at its finger every HOLD_TRACK_INTERVAL (0.03 s): a
+move past hold_drag_slop (HOLD_DRAG_SLOP_DPI = 10) starts the drag, after that every position is
+followed; a second finger stops the tracking. GestureDetector's hold timer also trips for a finger
+moving slowly (under PAN_THRESHOLD in 0.5 s): a hold whose finger already went hold_drag_slop from
+where it came down is a slow drag (_slow_drag), handed to onPan / onPanRelease, so Mouse mode
+moves the pointer (no button) and Hybrid scrolls. The confirmation of a long press (canvas, keys,
+toolbar buttons) that runs more than HOLD_LATE (0.05 s) after it was due ran behind a paint: the
+lift may be waiting unread (UIManager runs due tasks before it reads input), so it looks again
+HOLD_RECHECK later, up to HOLD_CONFIRM_MAX (1.5 s) after the hold (Util.hold_check_late).
+Touch mode clicks are as immediate. Hybrid mode ("hybrid"): taps and long presses as in Touch mode,
 a one-finger drag never presses a button but scrolls (_hybrid_pan_move -> _scroll_by_drag, at where the drag
 began). The step is in remote pixels: one wheel notch per hybrid_notch_px (a profile field, default 240,
 10..1000, the viewer menu's "Hybrid scroll distance") of finger movement divided by the zoom
@@ -637,6 +653,10 @@ UI plumbing (headless, no KOReader process, no server):
       rm -rf /tmp/vncv_ui_home && KO_HOME=/tmp/vncv_ui_home \
       LUA_PATH="$PLUGIN/?.lua;;" LUA_CPATH="./common/?.so;;" \
       ./luajit "$PLUGIN/tests/ui_smoke.lua"
+
+UI_ONLY=<pattern>[,<pattern>...] (Lua patterns) runs only the checks whose name matches one. A
+headless box needs XDG_RUNTIME_DIR set and SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy (KOReader's
+SDL build segfaults without a display otherwise).
 
 The ui suite is not idempotent: a reused KO_HOME keeps the "fresh profile" settings of an earlier run
 and fails two checks, so it needs a fresh (wiped) KO_HOME every time.

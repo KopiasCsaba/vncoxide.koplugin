@@ -275,7 +275,17 @@ function Keyboard.new(session, on_height_changed, press)
         require("logger").dbg("vncoxide: key hold confirmed:", why)
         pass(vk, event)
     end
-    hold.task = function() confirm("still down after " .. Keyboard.HOLD_CONFIRM .. " s") end
+    hold.task = function()
+        -- run late (the UI thread was busy): its lift may be waiting unread, look again after
+        -- the input loop had a turn (see Util.hold_check_late)
+        if hold.event and Util.hold_check_late(hold.due, hold.since) then
+            local time = require("ui/time")
+            hold.due = time.now() + time.s(Util.HOLD_RECHECK)
+            require("ui/uimanager"):scheduleIn(Util.HOLD_RECHECK, hold.task)
+            return
+        end
+        confirm("still down after " .. Keyboard.HOLD_CONFIRM .. " s")
+    end
     vk.handleEvent = function(w, event)
         if event.handler == "onGesture" then
             local ges = event.args and event.args[1]
@@ -283,6 +293,9 @@ function Keyboard.new(session, on_height_changed, press)
             if kind == "hold" and w.visible and key_at(w, ges.pos) then
                 Keyboard.drop_key_hold(w, "a new hold")
                 hold.event, hold.ges = event, ges
+                local time = require("ui/time")
+                hold.since = time.now()
+                hold.due = hold.since + time.s(Keyboard.HOLD_CONFIRM)
                 require("ui/uimanager"):scheduleIn(Keyboard.HOLD_CONFIRM, hold.task)
                 return true
             elseif hold.event and kind == "hold_pan" then
