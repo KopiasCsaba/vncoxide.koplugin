@@ -8051,6 +8051,28 @@ check("help_lists_hybrid", function()
     assert_true(text:find("Mode: switch between Touch, Mouse and Hybrid mode", 1, true), "the Mode button text")
 end)
 
+check("version_resolve_rules", function()
+    local Version = require("vncoxide/version")
+    assert_true(Version.resolve("1.0.0", "$Format:%(describe:tags)$") == "1.0.0-dev", "unexpanded stamp")
+    assert_true(Version.resolve("1.0.0", "") == "1.0.0-dev", "empty stamp")
+    assert_true(Version.resolve("1.0.0", nil) == "1.0.0-dev", "nil stamp")
+    assert_true(Version.resolve("1.0.0", "v1.0.0") == "1.0.0", "tag")
+    assert_true(Version.resolve("1.0.0", "v1.0.0-12-gabc1234") == "1.0.0-12-gabc1234", "describe past a tag")
+end)
+
+check("version_get_in_checkout", function()
+    local Version = require("vncoxide/version")
+    local meta = dofile(plugin_dir .. "/_meta.lua")
+    assert_true(meta.version and meta.version:match("^%d+%.%d+%.%d+$"), "_meta.version is X.Y.Z, got " .. tostring(meta.version))
+    assert_true(Version.get() == meta.version .. "-dev", "checkout is a dev build, got " .. tostring(Version.get()))
+end)
+
+check("help_starts_with_version", function()
+    local Help = require("vncoxide/help")
+    local Version = require("vncoxide/version")
+    assert_true(Help.text("touch"):sub(1, #Version.get() + 11) == "VNCoxide " .. Version.get() .. "\n\n", "first line is the version")
+end)
+
 -- ---------------------------------------------------------------- hold confirmation
 
 --[[ InkView (PocketBook) can withhold a touch's events for ~0.5 s and then deliver them in one

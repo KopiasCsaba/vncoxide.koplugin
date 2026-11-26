@@ -8,6 +8,7 @@ first. Shown by `ViewerApp:open_help` in a TextViewer.
 ]]
 
 local _ = require("gettext")
+local Version = require("vncoxide/version")
 
 local Help = {}
 
@@ -59,6 +60,7 @@ end
 function Help.text(mode)
     if not Help.ROWS[mode] then mode = "touch" end
     local sections = {
+        "VNCoxide " .. Version.get(),
         _("GESTURES"),
         gestures(mode),
     }
