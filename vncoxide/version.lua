@@ -8,9 +8,6 @@ archive. A checkout, where the stamp is still the literal `$Format:...$`, report
 
 local Version = {}
 
---- The pattern the release Makefile mirrors with sed to rewrite `version = "..."` in `_meta.lua`.
-Version.META_PATTERN = '(version%s*=%s*")([^"]*)(")'
-
 local cached
 
 --- Combines the number from `_meta.lua` with the archive stamp (nil, "", an unexpanded

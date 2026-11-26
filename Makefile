@@ -33,7 +33,8 @@ release: ## see help
 	@! git rev-parse -q --verify "refs/tags/v$(V)" >/dev/null || { echo "error: tag v$(V) already exists" >&2; exit 1; }
 	$(TEST)
 	@if [ "$(V)" = "$(VER)" ]; then echo "_meta.lua already at $(V): tagging HEAD"; else \
-	  sed -i -e 's/version = "[^"]*"/version = "$(V)"/' -e 's/Version [0-9.]*/Version $(V)/' _meta.lua && \
+	  sed -e 's/version = "[^"]*"/version = "$(V)"/' -e 's/Version [0-9.]*/Version $(V)/' _meta.lua > _meta.lua.tmp && \
+	  mv _meta.lua.tmp _meta.lua && \
 	  git commit -qam "release: v$(V)" && echo "committed release: v$(V)"; fi
 	git tag -a "v$(V)" -m "v$(V)"
 	$(MAKE) dist V=$(V)
@@ -47,6 +48,7 @@ dist: ## see help
 	echo "built dist/vncoxide.koplugin-$$V.zip from $$ref"
 
 publish: ## see help
+	@git rev-parse -q --verify "refs/tags/v$(VER)" >/dev/null || { echo "error: tag v$(VER) does not exist; run \`make release V=$(VER)\` first" >&2; exit 1; }
 	git push origin HEAD
 	git push origin "v$(VER)"
 	@echo "Create the release: https://github.com/KopiasCsaba/vncoxide.koplugin/releases/new?tag=v$(VER)"
