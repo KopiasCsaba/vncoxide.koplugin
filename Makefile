@@ -3,6 +3,7 @@ SHELL := /bin/bash
 KO    ?= tmp/ko/lib/koreader
 KOABS := $(abspath $(KO))
 PLUG  := $(CURDIR)
+TEST  ?= $(MAKE) test
 VER   := $(shell sed -n 's/^ *version = "\([^"]*\)".*/\1/p' _meta.lua)
 
 .DEFAULT_GOAL := help
@@ -30,9 +31,10 @@ release: ## see help
 	@[[ "$(V)" =~ ^[0-9]+\.[0-9]+\.[0-9]+$$ ]] || { echo "error: V=X.Y.Z required (semver), got '$(V)'" >&2; exit 1; }
 	@[ -z "$$(git status --porcelain)" ] || { echo "error: working tree not clean" >&2; exit 1; }
 	@! git rev-parse -q --verify "refs/tags/v$(V)" >/dev/null || { echo "error: tag v$(V) already exists" >&2; exit 1; }
-	$(MAKE) test
-	sed -i -e 's/version = "[^"]*"/version = "$(V)"/' -e 's/Version [0-9.]*/Version $(V)/' _meta.lua
-	git commit -am "release: v$(V)"
+	$(TEST)
+	@if [ "$(V)" = "$(VER)" ]; then echo "_meta.lua already at $(V): tagging HEAD"; else \
+	  sed -i -e 's/version = "[^"]*"/version = "$(V)"/' -e 's/Version [0-9.]*/Version $(V)/' _meta.lua && \
+	  git commit -qam "release: v$(V)" && echo "committed release: v$(V)"; fi
 	git tag -a "v$(V)" -m "v$(V)"
 	$(MAKE) dist V=$(V)
 	@echo "Release v$(V) built; run \`make publish\` to push"
