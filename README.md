@@ -5,9 +5,11 @@ Use your reader as a second screen, a remote terminal or a distraction-free disp
 desktop by touch, on-screen keyboard or physical keyboard.
 
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Language: Lua](https://img.shields.io/badge/language-Lua%20%2B%20LuaJIT%20FFI-000080)
-![Protocol: RFB 3.8](https://img.shields.io/badge/protocol-RFB%203.8-informational)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/KopiasCsaba)
+[![Liberapay](https://img.shields.io/badge/Liberapay-Donate-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/KCsaba/donate)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-Support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/kcsaba)
+[![One-time support](https://img.shields.io/badge/One--time-Support-635BFF?logo=stripe&logoColor=white)](https://buy.stripe.com/00wbJ179Q3lD4eB0U31sQ00)
+[![Monthly support](https://img.shields.io/badge/Monthly-Support-635BFF?logo=stripe&logoColor=white)](https://buy.stripe.com/5kQbJ19hYf4l26tauD1sQ01)
 
 Pure Lua and LuaJIT FFI, built only on what KOReader already ships: nothing to compile, no native
 component. Works with standard VNC servers (x11vnc, TigerVNC, TightVNC, …).
@@ -79,7 +81,16 @@ Bug reports and patches are welcome. Two headless suites cover the code: `tests/
 KOReader's real widget stack). How to run them, the architecture and what has been verified are in
 [NOTES.txt](NOTES.txt).
 
-If VNCoxide is useful to you, consider [sponsoring its development](https://github.com/sponsors/KopiasCsaba).
+## Support
+
+VNCoxide is free and open source. If it is useful to you, sponsoring helps keep it maintained and
+moving forward:
+
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/KopiasCsaba)
+[![Liberapay](https://img.shields.io/badge/Liberapay-Donate-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/KCsaba/donate)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-Support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/kcsaba)
+[![One-time support](https://img.shields.io/badge/One--time-Support-635BFF?logo=stripe&logoColor=white)](https://buy.stripe.com/00wbJ179Q3lD4eB0U31sQ00)
+[![Monthly support](https://img.shields.io/badge/Monthly-Support-635BFF?logo=stripe&logoColor=white)](https://buy.stripe.com/5kQbJ19hYf4l26tauD1sQ01)
 
 ## Credits
 
