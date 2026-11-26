@@ -36,9 +36,18 @@ component. Works with standard VNC servers (x11vnc, TigerVNC, TightVNC, …).
 
 ## Install
 
+**Stable (recommended):** open the project's Releases page, download `vncoxide.koplugin-X.Y.Z.zip`
+(the attached asset, not the automatic "Source code" archives), unzip it into KOReader's `plugins`
+directory and restart KOReader.
+
+**Nightly (latest development state, may be unstable):**
+
 1. Download the repository (**Code ▸ Download ZIP**) and unpack it.
 2. Rename the folder to **`vncoxide.koplugin`**: KOReader only loads folders ending in `.koplugin`.
 3. Copy it into KOReader's `plugins` directory and restart KOReader.
+
+The version is shown in Plugin management and at the top of **⋯ ▸ Help** (nightlies show e.g.
+`1.0.0-12-gabc1234`).
 
 ## Quick start
 

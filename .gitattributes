@@ -1,1 +1,10 @@
 vncoxide/build.lua export-subst
+tests/ export-ignore
+docs/ export-ignore
+tools/ export-ignore
+.github/ export-ignore
+.claude/ export-ignore
+NOTES.txt export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+Makefile export-ignore

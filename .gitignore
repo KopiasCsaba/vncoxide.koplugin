@@ -5,3 +5,4 @@ tmp/
 .idea/
 vnc.passwd
 docs/superpowers/
+dist/
