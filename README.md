@@ -9,11 +9,12 @@ desktop by touch, on-screen keyboard or physical keyboard.
 ![Protocol: RFB 3.8](https://img.shields.io/badge/protocol-RFB%203.8-informational)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/KopiasCsaba)
 
-> **Status:** being prepared for its first public release. Documentation and screenshots are still
-> being finalised.
-
 Pure Lua and LuaJIT FFI, built only on what KOReader already ships: nothing to compile, no native
 component. Works with standard VNC servers (x11vnc, TigerVNC, TightVNC, …).
+
+<a href="https://youtu.be/vbbjLrvFx6k"><img src="docs/assets/video_thumbnail.jpg" alt="VNCoxide feature tour on YouTube" width="560"></a>
+
+▶ **[Watch the feature tour on YouTube](https://youtu.be/vbbjLrvFx6k)** (4.5 min)
 
 
 ## Highlights
